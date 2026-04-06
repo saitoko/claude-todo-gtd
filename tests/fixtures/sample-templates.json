@@ -1,0 +1,25 @@
+{
+  "週次レポート": {
+    "gtd": "next",
+    "context": ["@PC"],
+    "recur": "weekly",
+    "desc": "先週の進捗・今週の計画・課題をそれぞれ記載する"
+  },
+  "月次バックアップ": {
+    "gtd": "next",
+    "context": ["@PC"],
+    "recur": "monthly",
+    "due-offset": 5
+  },
+  "定例ミーティング準備": {
+    "gtd": "next",
+    "context": ["@会社"],
+    "recur": "weekly",
+    "desc": "アジェンダを事前に確認・配布する"
+  },
+  "期限付きタスク": {
+    "gtd": "next",
+    "context": ["@PC", "@自宅"],
+    "due-offset": 7
+  }
+}
