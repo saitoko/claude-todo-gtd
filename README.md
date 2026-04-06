@@ -252,3 +252,53 @@ bash tests/gh-tests.sh
 ## ライセンス
 
 MIT
+
+## Pro 機能
+
+基本機能（30+ コマンド）はすべて無料で利用できます。以下は生産性をさらに高めるための追加機能です。
+
+### ダッシュボード
+
+今日やるべきことにフォーカスした俯瞰ビュー。
+
+```bash
+/todo dashboard   # または /todo dash
+```
+
+期限超過・今日やること・今週期限・Next Actions・完了実績をまとめて表示します。
+
+### デイリーレビュー
+
+朝の計画と夜の振り返りを対話形式で実施。
+
+```bash
+/todo daily-review          # 時刻で自動判定（15時前→朝、15時以降→夜）
+/todo daily-review morning  # 朝の計画
+/todo daily-review evening  # 夜の振り返り
+```
+
+**Morning:** ダッシュボード → Inbox仕分け → 今日やるタスク選定 → 計画サマリー
+**Evening:** 完了実績 → 未完了タスク処理 → 明日の予定 → 一日のサマリー
+
+### カスタムビュー
+
+よく使うフィルタ条件を名前付きで保存・呼び出し。
+
+```bash
+/todo view save 仕事 next @会社 p1   # ビューを保存
+/todo view 仕事                       # 保存したビューで表示
+/todo view list                       # ビュー一覧
+/todo view delete 仕事                # ビューを削除
+```
+
+### レポート出力
+
+週次・月次の生産性レポートをMarkdownで出力。
+
+```bash
+/todo report weekly    # 直近7日間
+/todo report monthly   # 直近30日間
+/todo report 14d       # 直近14日間
+```
+
+完了サマリー、日別バーチャート、カテゴリ別・優先度別集計、完了タスク一覧を含みます。

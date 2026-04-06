@@ -214,3 +214,77 @@ todo-dev/
 
 本番: `~/.claude/commands/todo.md`
 マニュアル: `todo-manual.md`（プロジェクトルート）
+
+---
+
+## Day 2 午後: 2026-04-06（日）— 学習・マネタイズ計画・公開
+
+### デイリーレポートからの学習
+
+デイリーリサーチレポートを起点に、今日深掘りすべきテーマとして2つを選定し学習を実施した。
+
+**学習1: Swift 6.2 + Liquid Glass UI（60分）**
+
+iOS 26 の主要変更点を4ステップで学習:
+1. iOS 26 / SwiftUI の全体像 — プラットフォーム統一（全OSが「26」に）、SwiftUI UIKitパリティ達成、パフォーマンス改善（GPU 40%削減、レンダリング39%高速化）
+2. Liquid Glass 深掘り — `.glassEffect()`、`GlassEffectContainer`、`glassEffectID` によるモーフィングアニメーション。iOS 18からの移行マッピング（`.ultraThinMaterial` → `.glassEffect()`）と `adaptiveGlass()` Extension パターン
+3. Swift 6.2 Concurrency — デフォルト Main Actor Isolation。「バックグラウンドだけ明示する」思考への切り替え。`nonisolated` と `@concurrent` の使い分け
+4. 業務影響整理 — 銀行アプリ向けのP0/P1/P2対応リストとチェックリスト作成
+
+**学習2: 個人開発マネタイズ戦略（45分）**
+
+マネタイズ手法の全体像（9手法）と失敗/成功パターンを学んだ後、todo-devをベースに収益化の方向性を検討した。
+
+### マネタイズ計画の策定
+
+todo-dev を個人開発プロダクトとして収益化する計画を立てた:
+
+- **案A（主軸）**: 基本版を無料公開 → Pro版を有料販売（Gumroad, ¥1,000〜3,000）
+- **案B（並行）**: Zenn Book / note でGTD×Claude Code解説コンテンツ販売
+- **案C（将来）**: チーム向けGTD管理SaaS化
+
+3フェーズのロードマップを策定し、メモリに保存した。
+
+### GitHub 公開
+
+個人情報を含む `saitoko/000-partner` は private のまま維持し、todo-dev のファイルだけを新規 public リポジトリとして公開する方針を採用。
+
+- **リポジトリ作成**: `saitoko/claude-todo-gtd` を public で作成
+- **README.md 作成**: プロダクト概要、特徴（9項目）、インストール手順（5ステップ）、クイックスタート、コマンド一覧（9カテゴリ・30+コマンド）、セキュリティ、開発ガイド
+- **ファイル一式をpush**: todo.md, README.md, DEVELOPMENT.md, CHANGELOG-DIARY.md, tests/ 一式
+- **トピックタグ追加**: claude-code, gtd, task-management, github-issues, cli, productivity, japanese
+
+公開リポジトリ: https://github.com/saitoko/claude-todo-gtd
+
+### 告知文作成
+
+X (Twitter) と Zenn 用の告知文を作成:
+- X投稿文: メイン投稿 + リプライスレッド（補足）
+- Zenn記事: 「Claude Code で GTD を回す /todo スラッシュコマンドを作った」
+
+いずれも「便利なツールを作ったので共有する」というスタンスで、マネタイズ意図は前面に出さない方針。
+
+### Zenn セットアップ
+
+Zenn での技術記事公開環境を構築:
+1. `saitoko/zenn-content` リポジトリを作成
+2. `zenn-cli` をインストール、`npx zenn init` で初期化
+3. 記事ファイル `articles/claude-code-todo-gtd.md` を作成
+4. Zenn アカウント（tottoko_hamu）と GitHub リポジトリを連携
+5. `published: true` にして push → 自動デプロイ
+
+記事URL: https://zenn.dev/tottoko_hamu/articles/claude-code-todo-gtd
+
+### 今日の成果まとめ
+
+| やったこと | 成果物 |
+|-----------|--------|
+| iOS 26 / Swift 6.2 学習 | 業務影響リスト・チェックリスト |
+| マネタイズ計画策定 | 3案 + 3フェーズロードマップ（メモリ保存済み） |
+| README.md 作成 | todo-dev/README.md |
+| GitHub 公開 | saitoko/claude-todo-gtd（public） |
+| X告知文 | logs/2026-04-06_announcement-x.md |
+| Zenn記事 | zenn-content/articles/claude-code-todo-gtd.md |
+| Zenn環境構築 | saitoko/zenn-content + Zenn連携 |
+
+Phase 1（公開準備）はほぼ完了。次は Phase 2（コンテンツで認知拡大）へ移行する。

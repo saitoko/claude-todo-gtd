@@ -1436,4 +1436,576 @@ JSEOF
 
 ---
 
+### Custom View（カスタムビュー）
+If arguments start with `view`:
+
+よく使うフィルタ条件を名前付きで保存・呼び出しする機能。
+ビュー定義は `~/.claude/todo-views.json` にローカル保存する。
+
+**JSONファイル初期化（全サブコマンド共通）:**
+```bash
+VFILE=$(node -e "const os=require('os'),path=require('path'); process.stdout.write(path.join(os.homedir(),'.claude','todo-views.json'));")
+[ -f "$VFILE" ] || printf '{}' > "$VFILE"
+```
+
+**ビュー名のバリデーション:** テンプレート名と同じルール（Template Management セクションの TNAME バリデーションを参照）。
+
+---
+
+**`view save <名前> <フィルタ条件...>`** — ビューを保存:
+
+フィルタ条件のパース:
+- GTDキーワード（next/inbox/waiting/someday/project/reference）→ `gtd`
+- `@ctx` トークン → `context`（セキュリティルール3でバリデーション）
+- `p1`/`p2`/`p3` → `priority`（セキュリティルール8でバリデーション）
+
+```bash
+VNAME_ENV="$VNAME" GTD_ENV="$GTD" CTX_ENV="$CTX" PRI_ENV="$PRI" \
+node << 'JSEOF'
+const os=require('os'), path=require('path'), fs=require('fs');
+const vfile=path.join(os.homedir(),'.claude','todo-views.json');
+let data={};
+try { data=JSON.parse(fs.readFileSync(vfile,'utf8')); }
+catch(e) { if(e instanceof SyntaxError){ process.stdout.write('エラー: ビューファイルが破損しています\n'); process.exit(1); } }
+const name=process.env.VNAME_ENV;
+const v={};
+const gtd=process.env.GTD_ENV||'';
+if(gtd) v.gtd=gtd;
+const ctx=process.env.CTX_ENV||'';
+if(ctx) v.context=ctx.trim().split(/\s+/);
+const pri=process.env.PRI_ENV||'';
+if(pri) v.priority=pri;
+data[name]=v;
+fs.writeFileSync(vfile, JSON.stringify(data,null,2));
+process.stdout.write('✅ ビュー「'+name+'」を保存しました。');
+const parts=[];
+if(v.gtd) parts.push(v.gtd);
+if(v.context) parts.push(v.context.join(' '));
+if(v.priority) parts.push(v.priority);
+process.stdout.write(' ['+parts.join(', ')+']\n');
+JSEOF
+```
+
+例:
+```
+/todo view save 仕事 next @会社 p1
+/todo view save 自宅PC next @自宅 @PC
+/todo view save 緊急 p1
+```
+
+---
+
+**`view use <名前>`** または **`view <名前>`** — 保存したビューでリスト表示:
+
+```bash
+VNAME_ENV="$VNAME" node << 'JSEOF'
+const os=require('os'), path=require('path'), fs=require('fs');
+const vfile=path.join(os.homedir(),'.claude','todo-views.json');
+let data;
+try { data=JSON.parse(fs.readFileSync(vfile,'utf8')); }
+catch(e) { process.stdout.write('エラー: ビューファイルが破損しています\n'); process.exit(1); }
+const name=process.env.VNAME_ENV;
+if(!data[name]){
+  process.stdout.write('エラー: ビュー「'+name+'」は存在しません\n');
+  process.exit(1);
+}
+const v=data[name];
+const parts=[];
+if(v.gtd) parts.push('GTD='+v.gtd);
+if(v.context) parts.push('CTX='+v.context.join(' '));
+if(v.priority) parts.push('PRI='+v.priority);
+process.stdout.write(parts.join('\n')+'\n');
+JSEOF
+```
+
+node の出力から `GTD=`, `CTX=`, `PRI=` を grep+cut で安全に抽出し、List TODOs セクションの複合フィルタと同じロジックで `gh issue list` を実行して結果を表示する。
+
+表示の冒頭にビュー名を表示:
+```
+## 👁 ビュー: 仕事 [next, @会社, p1]
+```
+
+---
+
+**`view list`** — 保存済みビュー一覧:
+
+```bash
+node << 'JSEOF'
+const os=require('os'), path=require('path'), fs=require('fs');
+const vfile=path.join(os.homedir(),'.claude','todo-views.json');
+let data;
+try { data=JSON.parse(fs.readFileSync(vfile,'utf8')); }
+catch(e) { process.stdout.write('エラー: ビューファイルが破損しています\n'); process.exit(1); }
+const keys=Object.keys(data);
+if(!keys.length){ process.stdout.write('（ビューなし）\n'); process.exit(0); }
+for(const name of keys){
+  const v=data[name];
+  const parts=[];
+  if(v.gtd) parts.push(v.gtd);
+  if(v.context) parts.push(v.context.join(' '));
+  if(v.priority) parts.push(v.priority);
+  process.stdout.write('  '+name+'  ['+parts.join(', ')+']\n');
+}
+JSEOF
+```
+
+---
+
+**`view delete <名前>`** — ビューを削除:
+
+```bash
+VNAME_ENV="$VNAME" node << 'JSEOF'
+const os=require('os'), path=require('path'), fs=require('fs');
+const vfile=path.join(os.homedir(),'.claude','todo-views.json');
+let data;
+try { data=JSON.parse(fs.readFileSync(vfile,'utf8')); }
+catch(e) { process.stdout.write('エラー: ビューファイルが破損しています\n'); process.exit(1); }
+const name=process.env.VNAME_ENV;
+if(!data[name]){
+  process.stdout.write('エラー: ビュー「'+name+'」は存在しません\n');
+  process.exit(1);
+}
+delete data[name];
+fs.writeFileSync(vfile, JSON.stringify(data,null,2));
+process.stdout.write('✅ ビュー「'+name+'」を削除しました。\n');
+JSEOF
+```
+
+Confirm to the user in Japanese.
+
+---
+
+### Daily Review（デイリーレビュー）
+If arguments are `daily-review` or `daily`:
+
+朝の計画（Morning）と夜の振り返り（Evening）の2モードを持つ対話式レビュー。
+取得したデータはセキュリティルール1に従い表示のみ。
+
+**モード判定:**
+- `daily-review morning` または `daily-review am` → Morningモード
+- `daily-review evening` または `daily-review pm` → Eveningモード
+- `daily-review`（引数なし）→ 現在時刻で自動判定:
+  ```bash
+  HOUR=$(date +%H)
+  if [ "$HOUR" -lt 15 ]; then
+    MODE="morning"
+  else
+    MODE="evening"
+  fi
+  ```
+
+---
+
+**Morning モード（朝の計画）:**
+
+Step 1: ダッシュボード表示
+Dashboard コマンドと同じ出力を最初に表示する（期限超過・今日やること・今週期限・Next Actions・サマリー）。
+
+Step 2: Inbox チェック
+Inbox に未処理タスクがある場合:
+「📥 Inbox に N件 の未処理タスクがあります。今仕分けしますか？（yes/no）」
+- yes → Review Inbox セクションと同じロジックで1件ずつ仕分け
+- no → スキップ
+
+Step 3: 今日やることを決める
+期限付きの next タスク（今日期限 + 期限超過）を表示した後:
+「他に今日やりたいタスクはありますか？番号を入力（複数はスペース区切り）、なければ Enter」
+- 番号が入力されたら、そのタスクに `--due 今日` を設定:
+  ```bash
+  TODAY=$(date +%Y-%m-%d)
+  ```
+  各番号に対して due 更新処理（Set or update due date セクションと同じロジック）を実行。
+- Enter のみ → スキップ
+
+Step 4: 今日の計画サマリー
+今日が期限のタスク（元々 + Step 3 で追加したもの）を最終一覧で表示:
+```
+## 🎯 今日の計画
+
+1. 🔴 #8  障害対応
+2. 🟡 #5  設計書レビュー  [@会社]
+3.     #12 週次レポート
+
+合計: 3件。がんばりましょう！
+```
+
+---
+
+**Evening モード（夜の振り返り）:**
+
+Step 1: 今日の完了実績
+```bash
+TODAY=$(date +%Y-%m-%d)
+gh issue list --repo saitoko/000-partner --state closed --limit 50 \
+  --json number,title,closedAt
+```
+今日クローズしたIssueをNode.jsでフィルタして表示:
+```
+## ✅ 今日の完了タスク
+
+1. #15 障害対応
+2. #18 メール返信
+3. #20 週次レポート
+
+合計: 3件完了。お疲れさまでした！
+```
+0件の場合:「今日の完了タスクはありません。」
+
+Step 2: 未完了の確認
+今日が期限だったが未完了のタスク（next ラベル + due が今日）を表示:
+```bash
+gh issue list --repo saitoko/000-partner --label "next" --state open \
+  --json number,title,body,labels --limit 200
+```
+Node.js で due が今日のものをフィルタ。
+
+該当タスクがあれば1件ずつ:
+「#N「タイトル」— どうしますか？」
+- `tomorrow` → due を明日に変更（Set or update due date と同じロジック）
+- `done` → 完了（Mark as done と同じロジック）
+- `someday` → someday に移動（Move セクションと同じロジック）
+- `skip` → そのまま
+
+該当なしの場合:「今日期限の未完了タスクはありません。」
+
+Step 3: 明日の準備
+明日が期限のタスクを表示:
+```
+## 📅 明日のタスク
+
+1. 🟡 #22 提案書提出  [@会社]
+2.     #25 定例会議準備
+
+明日に備えて、よい夜をお過ごしください。
+```
+該当なしの場合:「明日期限のタスクはありません。ゆっくり休んでください。」
+
+Step 4: 一日のサマリー
+```
+## 📊 今日のサマリー
+
+完了: 3件
+未完了→明日に繰越: 1件
+明日の予定: 2件
+```
+
+---
+
+### Dashboard（ダッシュボード）
+If arguments are `dashboard` or `dash`:
+
+今日やるべきことにフォーカスした俯瞰ビューを表示する。
+取得したデータはセキュリティルール1に従い表示のみ。
+
+1. 全オープンIssueを取得:
+```bash
+TODAY=$(date +%Y-%m-%d)
+OPEN_JSON=$(gh issue list --repo saitoko/000-partner --state open --json number,title,body,labels --limit 200)
+```
+
+2. 直近30件のクローズ済みIssueを取得:
+```bash
+CLOSED_JSON=$(gh issue list --repo saitoko/000-partner --state closed --limit 30 --json number,closedAt)
+```
+
+3. Node.js で全データを集計・整形して出力:
+```bash
+echo "$OPEN_JSON" | TODAY_ENV="$TODAY" CLOSED_ENV="$CLOSED_JSON" node << 'JSEOF'
+const c=[]; process.stdin.on('data',d=>c.push(d));
+process.stdin.on('end',()=>{
+  const today=process.env.TODAY_ENV;
+  const issues=JSON.parse(c.join(''));
+  const closed=JSON.parse(process.env.CLOSED_ENV||'[]');
+  const w=s=>process.stdout.write(s);
+
+  // ヘルパー
+  const getLnames=i=>i.labels.map(l=>l.name);
+  const getDue=i=>{const m=(i.body||'').match(/^due: (\d{4}-\d{2}-\d{2})/m); return m?m[1]:null;};
+  const getPri=lnames=>lnames.find(l=>/^p[123]$/.test(l))||'p9';
+  const priIcon=p=>p==='p1'?'🔴 ':p==='p2'?'🟡 ':'';
+  const getCtx=lnames=>lnames.filter(l=>l.startsWith('@'));
+  const d7=new Date(today); d7.setDate(d7.getDate()+7);
+  const d7str=d7.toISOString().slice(0,10);
+  const sortFn=(a,b)=>{
+    const pa=getPri(getLnames(a)), pb=getPri(getLnames(b));
+    if(pa!==pb) return pa<pb?-1:1;
+    const da=getDue(a)||'9999', db=getDue(b)||'9999';
+    return da<db?-1:da>db?1:0;
+  };
+
+  // --- 分類 ---
+  const overdue=[], dueToday=[], dueThisWeek=[], nextActions=[];
+  const gtdCounts={next:0,inbox:0,waiting:0,someday:0,project:0,reference:0};
+
+  for(const issue of issues){
+    const lnames=getLnames(issue);
+    for(const gl of Object.keys(gtdCounts)){ if(lnames.includes(gl)) gtdCounts[gl]++; }
+    const due=getDue(issue);
+    if(lnames.includes('next')){
+      if(due && due<today) overdue.push(issue);
+      else if(due && due===today) dueToday.push(issue);
+      else if(due && due<=d7str) dueThisWeek.push(issue);
+      else nextActions.push(issue);
+    } else if(due && due<today){
+      overdue.push(issue);
+    }
+  }
+  overdue.sort(sortFn); dueToday.sort(sortFn); dueThisWeek.sort(sortFn); nextActions.sort(sortFn);
+
+  // --- 完了実績 ---
+  const d1ago=new Date(today); d1ago.setDate(d1ago.getDate()-1);
+  const d7ago=new Date(today); d7ago.setDate(d7ago.getDate()-7);
+  const todayClosed=closed.filter(i=>i.closedAt&&i.closedAt.slice(0,10)===today).length;
+  const weekClosed=closed.filter(i=>i.closedAt&&new Date(i.closedAt)>=d7ago).length;
+
+  // --- 出力 ---
+  w('# 📋 Dashboard — '+today+'\n\n');
+
+  // 期限超過
+  if(overdue.length){
+    w('## ⚠️ 期限超過（'+overdue.length+'件）\n');
+    for(const i of overdue){
+      const lnames=getLnames(i);
+      const ctx=getCtx(lnames);
+      w('  '+priIcon(getPri(lnames))+'#'+i.number+'  '+i.title);
+      if(ctx.length) w('  ['+ctx.join(' ')+']');
+      const due=getDue(i);
+      if(due) w('  📅 '+due);
+      w('\n');
+    }
+    w('\n');
+  }
+
+  // 今日やること
+  if(dueToday.length){
+    w('## 🎯 今日やること（'+dueToday.length+'件）\n');
+    for(const i of dueToday){
+      const lnames=getLnames(i);
+      const ctx=getCtx(lnames);
+      w('  '+priIcon(getPri(lnames))+'#'+i.number+'  '+i.title);
+      if(ctx.length) w('  ['+ctx.join(' ')+']');
+      w('\n');
+    }
+    w('\n');
+  }
+
+  // 今週期限
+  if(dueThisWeek.length){
+    w('## 📅 今週期限（'+dueThisWeek.length+'件）\n');
+    for(const i of dueThisWeek){
+      const lnames=getLnames(i);
+      const ctx=getCtx(lnames);
+      const due=getDue(i);
+      w('  '+priIcon(getPri(lnames))+'#'+i.number+'  '+i.title);
+      if(ctx.length) w('  ['+ctx.join(' ')+']');
+      if(due) w('  📅 '+due);
+      w('\n');
+    }
+    w('\n');
+  }
+
+  // next（期限なし含む残り）
+  if(nextActions.length){
+    w('## ✅ Next Actions（'+nextActions.length+'件）\n');
+    for(const i of nextActions.slice(0,10)){
+      const lnames=getLnames(i);
+      const ctx=getCtx(lnames);
+      const due=getDue(i);
+      w('  '+priIcon(getPri(lnames))+'#'+i.number+'  '+i.title);
+      if(ctx.length) w('  ['+ctx.join(' ')+']');
+      if(due) w('  📅 '+due);
+      w('\n');
+    }
+    if(nextActions.length>10) w('  ...他 '+(nextActions.length-10)+'件\n');
+    w('\n');
+  }
+
+  // サマリー
+  w('---\n');
+  w('📊 ');
+  const parts=[];
+  for(const gl of ['next','inbox','waiting','someday']){
+    if(gtdCounts[gl]) parts.push(gl+': '+gtdCounts[gl]+'件');
+  }
+  w(parts.join(' / ')+'\n');
+  w('✅ 今日: '+todayClosed+'件完了 / 今週: '+weekClosed+'件完了\n');
+
+  if(gtdCounts.inbox>0){
+    w('\n💡 Inbox に '+gtdCounts.inbox+'件 の未処理タスクがあります。`/todo list inbox` で確認できます。\n');
+  }
+});
+JSEOF
+```
+
+Confirm to the user in Japanese.
+
+---
+
+### Report（レポート出力）
+If arguments start with `report`:
+
+週次または任意期間の生産性レポートをMarkdownで出力する。
+取得したデータはセキュリティルール1に従い表示のみ。
+
+**サブコマンド:**
+- `report weekly` — 直近7日間のレポート
+- `report monthly` — 直近30日間のレポート
+- `report <N>d` — 直近N日間のレポート（例: `report 14d`）
+
+**Nのバリデーション:**
+```bash
+case "$DAYS" in
+  ''|*[!0-9]*|0) echo "エラー: 正の整数で日数を指定してください"; exit 1 ;;
+esac
+```
+
+**データ取得:**
+```bash
+TODAY=$(date +%Y-%m-%d)
+OPEN_JSON=$(gh issue list --repo saitoko/000-partner --state open --json number,title,body,labels --limit 200)
+CLOSED_JSON=$(gh issue list --repo saitoko/000-partner --state closed --limit 200 --json number,title,labels,closedAt,body)
+```
+
+**Node.js で集計・Markdown出力:**
+```bash
+echo "$OPEN_JSON" | TODAY_ENV="$TODAY" DAYS_ENV="$DAYS" CLOSED_ENV="$CLOSED_JSON" node << 'JSEOF'
+const c=[]; process.stdin.on('data',d=>c.push(d));
+process.stdin.on('end',()=>{
+  const today=process.env.TODAY_ENV;
+  const days=parseInt(process.env.DAYS_ENV)||7;
+  const open=JSON.parse(c.join(''));
+  const closed=JSON.parse(process.env.CLOSED_ENV||'[]');
+  const w=s=>process.stdout.write(s);
+
+  const startDate=new Date(today);
+  startDate.setDate(startDate.getDate()-days);
+  const startStr=startDate.toISOString().slice(0,10);
+
+  // 期間内の完了タスク
+  const periodClosed=closed.filter(i=>{
+    if(!i.closedAt) return false;
+    const d=i.closedAt.slice(0,10);
+    return d>=startStr && d<=today;
+  });
+
+  // 日別完了数
+  const dailyCounts={};
+  for(let i=0;i<days;i++){
+    const d=new Date(today);
+    d.setDate(d.getDate()-i);
+    dailyCounts[d.toISOString().slice(0,10)]=0;
+  }
+  for(const issue of periodClosed){
+    const d=issue.closedAt.slice(0,10);
+    if(dailyCounts[d]!==undefined) dailyCounts[d]++;
+  }
+
+  // カテゴリ別完了数
+  const gtdLabels=['next','inbox','waiting','someday','project','reference'];
+  const closedByGtd={};
+  gtdLabels.forEach(l=>closedByGtd[l]=0);
+  for(const issue of periodClosed){
+    const lnames=issue.labels.map(l=>l.name);
+    for(const gl of gtdLabels){ if(lnames.includes(gl)) closedByGtd[gl]++; }
+  }
+
+  // 優先度別完了数
+  const closedByPri={p1:0,p2:0,p3:0,none:0};
+  for(const issue of periodClosed){
+    const lnames=issue.labels.map(l=>l.name);
+    const pri=lnames.find(l=>/^p[123]$/.test(l));
+    if(pri) closedByPri[pri]++; else closedByPri.none++;
+  }
+
+  // 現在のオープン状況
+  const openByGtd={};
+  gtdLabels.forEach(l=>openByGtd[l]=0);
+  let overdue=0;
+  for(const issue of open){
+    const lnames=issue.labels.map(l=>l.name);
+    for(const gl of gtdLabels){ if(lnames.includes(gl)) openByGtd[gl]++; }
+    const dueMatch=(issue.body||'').match(/^due: (\d{4}-\d{2}-\d{2})/m);
+    if(dueMatch && dueMatch[1]<today) overdue++;
+  }
+
+  // 日別バーチャート（テキスト）
+  const maxCount=Math.max(...Object.values(dailyCounts),1);
+  const barWidth=20;
+
+  // --- 出力 ---
+  w('# 📊 生産性レポート\n\n');
+  w('**期間:** '+startStr+' 〜 '+today+'（'+days+'日間）\n\n');
+  w('---\n\n');
+
+  w('## 完了サマリー\n\n');
+  w('| 指標 | 値 |\n');
+  w('|------|----|\n');
+  w('| 完了タスク数 | **'+periodClosed.length+'件** |\n');
+  const avg=(periodClosed.length/days).toFixed(1);
+  w('| 1日あたり平均 | '+avg+'件 |\n');
+  w('| 現在のオープン | '+open.length+'件 |\n');
+  w('| 期限超過 | '+overdue+'件 |\n');
+  w('\n');
+
+  w('## 日別完了数\n\n');
+  w('```\n');
+  const sortedDays=Object.keys(dailyCounts).sort();
+  for(const day of sortedDays){
+    const cnt=dailyCounts[day];
+    const bar='█'.repeat(Math.round(cnt/maxCount*barWidth));
+    const dayLabel=day.slice(5); // MM-DD
+    w(dayLabel+' '+bar+(cnt>0?' '+cnt:'')+'\n');
+  }
+  w('```\n\n');
+
+  w('## カテゴリ別完了数\n\n');
+  const closedGtdParts=gtdLabels.filter(l=>closedByGtd[l]>0);
+  if(closedGtdParts.length){
+    for(const l of closedGtdParts){
+      w('  '+l+': '+closedByGtd[l]+'件\n');
+    }
+  } else {
+    w('  （完了タスクなし）\n');
+  }
+  w('\n');
+
+  w('## 優先度別完了数\n\n');
+  if(closedByPri.p1) w('  🔴 p1: '+closedByPri.p1+'件\n');
+  if(closedByPri.p2) w('  🟡 p2: '+closedByPri.p2+'件\n');
+  if(closedByPri.p3) w('  p3: '+closedByPri.p3+'件\n');
+  if(closedByPri.none) w('  優先度なし: '+closedByPri.none+'件\n');
+  w('\n');
+
+  w('## 現在のタスク状況\n\n');
+  const openParts=gtdLabels.filter(l=>openByGtd[l]>0);
+  if(openParts.length){
+    for(const l of openParts){
+      w('  '+l+': '+openByGtd[l]+'件\n');
+    }
+  } else {
+    w('  （オープンタスクなし）\n');
+  }
+  if(overdue>0) w('\n  ⚠️ 期限超過: '+overdue+'件\n');
+  w('\n');
+
+  // 完了タスク一覧（直近10件）
+  w('## 完了タスク一覧（直近'+Math.min(periodClosed.length,10)+'件）\n\n');
+  const recent=periodClosed.sort((a,b)=>b.closedAt.localeCompare(a.closedAt)).slice(0,10);
+  if(recent.length){
+    for(const i of recent){
+      const d=i.closedAt.slice(0,10);
+      w('  ✅ #'+i.number+'  '+i.title+'  （'+d+'）\n');
+    }
+  } else {
+    w('  （完了タスクなし）\n');
+  }
+  w('\n');
+});
+JSEOF
+```
+
+Confirm to the user in Japanese.
+
+---
+
 Always respond in Japanese.
