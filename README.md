@@ -8,7 +8,9 @@ GitHub Issues をバックエンドに使った、Claude Code 用の GTD（Getti
 
 - **GTD メソッド準拠** — inbox / next / waiting / someday / project / reference の6カテゴリで仕分け
 - **30+ コマンド** — タスクCRUD、一括操作、週次レビュー、テンプレート、統計まで網羅
+- **多言語対応** — 日本語（デフォルト）と英語に対応。`LANG_ENV=en` で英語モード
 - **日本語ネイティブ** — `--due 明日`、`--due 来週金曜`、`--due 3日後` など日本語で日付指定可能
+- **英語日付対応** — `--due tomorrow`、`--due "next week"`、`--due "in 3 days"` など英語でも指定可能（言語設定に関係なく常に使用可）
 - **コンテキスト管理** — `@PC` `@会社` `@外出中` で場所・状況に応じたフィルタリング
 - **優先度** — p1（緊急）/ p2（重要）/ p3（通常）の3段階
 - **繰り返しタスク** — daily / weekly / monthly / weekdays の4パターン
@@ -47,6 +49,22 @@ repository `<your-username>/<your-repo>`
 ```
 
 5. Claude Code で `/todo` と入力して動作確認。
+
+### 言語設定
+
+デフォルトは日本語です。英語で使用するには環境変数 `LANG_ENV` を設定してください:
+
+```bash
+# ~/.bashrc や ~/.zshrc に追加
+export LANG_ENV=en
+```
+
+または CLAUDE.md に記述:
+```markdown
+環境変数: LANG_ENV=en
+```
+
+> **Note:** 日付入力（`--due 明日` / `--due tomorrow`）は言語設定に関係なく、日本語・英語の両方が常に使用可能です。
 
 ## クイックスタート
 
@@ -99,6 +117,8 @@ repository `<your-username>/<your-repo>`
 | `--priority` | 優先度 | `--priority p1` |
 
 **日本語日付の対応パターン:** 今日 / 明日 / 明後日 / 来週 / 来月 / 今週末 / 今月末 / 来月末 / N日後 / N週間後 / Nヶ月後 / 来週月曜〜来週日曜
+
+**English date patterns:** today / tomorrow / day after tomorrow / next week / next month / this weekend / end of this month / end of next month / in N days / in N weeks / in N months / next Monday〜next Sunday
 
 ### 一覧表示・検索
 

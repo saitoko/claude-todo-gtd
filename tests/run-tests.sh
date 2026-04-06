@@ -4,6 +4,7 @@
 
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ENGINE="$SCRIPT_DIR/../scripts/todo-engine.js"  # todo-engine.js
 FMT_JS="$SCRIPT_DIR/helpers/date-fmt.js"  # 共通日付フォーマット関数
 TEMP_TFILE=$(mktemp /tmp/todo-test-templates-XXXXXX.json)
 printf '{}' > "$TEMP_TFILE"
@@ -31,13 +32,25 @@ assert_eq() {
 
 assert_contains() {
   local desc="$1" pattern="$2" actual="$3"
-  if printf '%s' "$actual" | grep -q "$pattern"; then
+  if printf '%s' "$actual" | grep -aq "$pattern"; then
     printf "  ✅ %s\n" "$desc"; PASS=$((PASS+1))
   else
     printf "  ❌ %s\n" "$desc"
     printf "     パターン [%s] が含まれていない\n" "$pattern"
     printf "     実際: [%s]\n" "$actual"
     FAIL=$((FAIL+1))
+  fi
+}
+
+assert_not_contains() {
+  local desc="$1" pattern="$2" actual="$3"
+  if printf '%s' "$actual" | grep -aq "$pattern"; then
+    printf "  ❌ %s\n" "$desc"
+    printf "     パターン [%s] が含まれてはいけない\n" "$pattern"
+    printf "     実際: [%s]\n" "$actual"
+    FAIL=$((FAIL+1))
+  else
+    printf "  ✅ %s\n" "$desc"; PASS=$((PASS+1))
   fi
 }
 
@@ -140,6 +153,47 @@ assert_eq "来週日曜(日曜起点)" "2026-04-12" "$(normalize_due_test '来�
 # 変換されないパターンはそのまま返す (シナリオ 16-2)
 assert_eq "未対応パターンはそのまま返す(先週)" "先週" "$(normalize_due_test '先週')"
 assert_eq "未対応パターンはそのまま返す(おととい)" "おととい" "$(normalize_due_test 'おととい')"
+
+# ──────────────────────────────────────────
+# § 1b  normalize_due — English relative expressions
+# ──────────────────────────────────────────
+echo ""
+echo "§1b  normalize_due — English relative expressions"
+
+# Basic patterns
+assert_eq "en: today"                "$TEST_TODAY" "$(node "$ENGINE" normalize-due 'today' "$TEST_TODAY")"
+assert_eq "en: tomorrow"             "2026-04-06"  "$(node "$ENGINE" normalize-due 'tomorrow' "$TEST_TODAY")"
+assert_eq "en: day after tomorrow"   "2026-04-07"  "$(node "$ENGINE" normalize-due 'day after tomorrow' "$TEST_TODAY")"
+assert_eq "en: next week"            "2026-04-12"  "$(node "$ENGINE" normalize-due 'next week' "$TEST_TODAY")"
+assert_eq "en: next month"           "2026-05-05"  "$(node "$ENGINE" normalize-due 'next month' "$TEST_TODAY")"
+assert_eq "en: this weekend"         "2026-04-11"  "$(node "$ENGINE" normalize-due 'this weekend' "$TEST_TODAY")"
+assert_eq "en: end of this month"    "2026-04-30"  "$(node "$ENGINE" normalize-due 'end of this month' "$TEST_TODAY")"
+assert_eq "en: end of next month"    "2026-05-31"  "$(node "$ENGINE" normalize-due 'end of next month' "$TEST_TODAY")"
+
+# Relative patterns (in N days/weeks/months)
+assert_eq "en: in 3 days"            "2026-04-08"  "$(node "$ENGINE" normalize-due 'in 3 days' "$TEST_TODAY")"
+assert_eq "en: in 1 day"             "2026-04-06"  "$(node "$ENGINE" normalize-due 'in 1 day' "$TEST_TODAY")"
+assert_eq "en: in 2 weeks"           "2026-04-19"  "$(node "$ENGINE" normalize-due 'in 2 weeks' "$TEST_TODAY")"
+assert_eq "en: in 1 week"            "2026-04-12"  "$(node "$ENGINE" normalize-due 'in 1 week' "$TEST_TODAY")"
+assert_eq "en: in 3 months"          "2026-07-05"  "$(node "$ENGINE" normalize-due 'in 3 months' "$TEST_TODAY")"
+assert_eq "en: in 1 month"           "2026-05-05"  "$(node "$ENGINE" normalize-due 'in 1 month' "$TEST_TODAY")"
+
+# Next weekday (TEST_TODAY=2026-04-05 is Sunday)
+# next Monday = 2026-04-06, next Tuesday = 2026-04-07, ...
+assert_eq "en: next monday"          "2026-04-06"  "$(node "$ENGINE" normalize-due 'next monday' "$TEST_TODAY")"
+assert_eq "en: next friday"          "2026-04-10"  "$(node "$ENGINE" normalize-due 'next friday' "$TEST_TODAY")"
+assert_eq "en: next saturday"        "2026-04-11"  "$(node "$ENGINE" normalize-due 'next saturday' "$TEST_TODAY")"
+assert_eq "en: next sunday"          "2026-04-12"  "$(node "$ENGINE" normalize-due 'next sunday' "$TEST_TODAY")"
+
+# Case insensitivity
+assert_eq "en: Next Week (caps)"     "2026-04-12"  "$(node "$ENGINE" normalize-due 'Next Week' "$TEST_TODAY")"
+assert_eq "en: IN 1 DAY (caps)"      "2026-04-06"  "$(node "$ENGINE" normalize-due 'IN 1 DAY' "$TEST_TODAY")"
+
+# Cross-language: LANG_ENV=en but Japanese input still works
+assert_eq "en+ja: 明日 still works"  "2026-04-06"  "$(LANG_ENV=en node "$ENGINE" normalize-due '明日' "$TEST_TODAY")"
+
+# Passthrough for unknown English
+assert_eq "en: unknown passthrough"  "yesterday"   "$(node "$ENGINE" normalize-due 'yesterday' "$TEST_TODAY")"
 
 # ──────────────────────────────────────────
 # § 2  normalize_due — 月初計算の境界値
@@ -864,6 +918,767 @@ process.stdout.write(fmt(dt));
 JSEOF
 )
 assert_eq "うるう年2/29→12ヶ月後=翌年3/1(繰り上がり)" "2029-03-01" "$result"
+
+# ──────────────────────────────────────────
+# § 22a  todo-engine.js ユニットテスト
+# ──────────────────────────────────────────
+echo ""
+echo "§22a  todo-engine.js — ユーティリティ・バリデーション"
+
+# normalize-due（エンジン版）
+assert_eq "engine: normalize-due 今日" "$TEST_TODAY" "$(node "$ENGINE" normalize-due '今日' "$TEST_TODAY")"
+assert_eq "engine: normalize-due 明日" "2026-04-06" "$(node "$ENGINE" normalize-due '明日' "$TEST_TODAY")"
+assert_eq "engine: normalize-due 来週" "2026-04-12" "$(node "$ENGINE" normalize-due '来週' "$TEST_TODAY")"
+assert_eq "engine: normalize-due パススルー" "4/10" "$(node "$ENGINE" normalize-due '4/10' "$TEST_TODAY")"
+
+# add-days / add-month
+assert_eq "engine: add-days +7" "2026-04-12" "$(node "$ENGINE" add-days "$TEST_TODAY" 7)"
+assert_eq "engine: add-month" "2026-05-05" "$(node "$ENGINE" add-month "$TEST_TODAY")"
+
+# parse-body
+PB_OUT=$(node "$ENGINE" parse-body "due: 2026-04-10
+recur: weekly
+project: #7
+
+説明テスト")
+PB_DUE=$(printf '%s\n' "$PB_OUT" | grep '^DUE=' | cut -d= -f2-)
+PB_RECUR=$(printf '%s\n' "$PB_OUT" | grep '^RECUR=' | cut -d= -f2-)
+PB_PROJ=$(printf '%s\n' "$PB_OUT" | grep '^PROJECT=' | cut -d= -f2-)
+PB_B64=$(printf '%s\n' "$PB_OUT" | grep '^DESC_B64=' | cut -d= -f2-)
+PB_DESC=$(node "$ENGINE" decode-b64 "$PB_B64")
+assert_eq "engine: parse-body DUE" "2026-04-10" "$PB_DUE"
+assert_eq "engine: parse-body RECUR" "weekly" "$PB_RECUR"
+assert_eq "engine: parse-body PROJECT" "7" "$PB_PROJ"
+assert_eq "engine: parse-body DESC" "説明テスト" "$PB_DESC"
+
+# parse-body 空
+PB_EMPTY=$(node "$ENGINE" parse-body "")
+PB_EMPTY_DUE=$(printf '%s\n' "$PB_EMPTY" | grep '^DUE=' | cut -d= -f2-)
+assert_eq "engine: parse-body empty DUE" "" "$PB_EMPTY_DUE"
+
+# build-body
+BB_OUT=$(node "$ENGINE" build-body "2026-04-10" "weekly" "7" "説明文")
+assert_contains "engine: build-body due" "due: 2026-04-10" "$BB_OUT"
+assert_contains "engine: build-body recur" "recur: weekly" "$BB_OUT"
+assert_contains "engine: build-body project" "project: #7" "$BB_OUT"
+assert_contains "engine: build-body desc" "説明文" "$BB_OUT"
+
+# priority-color
+assert_eq "engine: priority-color p1" "B60205" "$(node "$ENGINE" priority-color p1)"
+assert_eq "engine: priority-color p2" "FBCA04" "$(node "$ENGINE" priority-color p2)"
+assert_eq "engine: priority-color p3" "0075CA" "$(node "$ENGINE" priority-color p3)"
+
+# next-due
+assert_eq "engine: next-due daily" "2026-04-06" "$(node "$ENGINE" next-due daily "$TEST_TODAY")"
+assert_eq "engine: next-due weekly" "2026-04-12" "$(node "$ENGINE" next-due weekly "$TEST_TODAY")"
+assert_eq "engine: next-due weekdays(土→月)" "2026-04-06" "$(node "$ENGINE" next-due weekdays "2026-04-04")"
+
+# validate（正常系はexit 0、異常系はexit 1）
+node "$ENGINE" validate ctx "@PC" 2>/dev/null && printf "  ✅ engine: validate ctx OK\n" && PASS=$((PASS+1)) || { printf "  ❌ engine: validate ctx OK\n"; FAIL=$((FAIL+1)); }
+node "$ENGINE" validate ctx '@PC;rm' 2>/dev/null && { printf "  ❌ engine: validate ctx reject\n"; FAIL=$((FAIL+1)); } || { printf "  ✅ engine: validate ctx reject\n"; PASS=$((PASS+1)); }
+node "$ENGINE" validate number 42 2>/dev/null && printf "  ✅ engine: validate number OK\n" && PASS=$((PASS+1)) || { printf "  ❌ engine: validate number OK\n"; FAIL=$((FAIL+1)); }
+node "$ENGINE" validate number 0 2>/dev/null && { printf "  ❌ engine: validate number reject\n"; FAIL=$((FAIL+1)); } || { printf "  ✅ engine: validate number reject\n"; PASS=$((PASS+1)); }
+node "$ENGINE" validate recur weekly 2>/dev/null && printf "  ✅ engine: validate recur OK\n" && PASS=$((PASS+1)) || { printf "  ❌ engine: validate recur OK\n"; FAIL=$((FAIL+1)); }
+node "$ENGINE" validate recur biweekly 2>/dev/null && { printf "  ❌ engine: validate recur reject\n"; FAIL=$((FAIL+1)); } || { printf "  ✅ engine: validate recur reject\n"; PASS=$((PASS+1)); }
+node "$ENGINE" validate name "テスト" 2>/dev/null && printf "  ✅ engine: validate name OK\n" && PASS=$((PASS+1)) || { printf "  ❌ engine: validate name OK\n"; FAIL=$((FAIL+1)); }
+node "$ENGINE" validate name "" 2>/dev/null && { printf "  ❌ engine: validate name reject\n"; FAIL=$((FAIL+1)); } || { printf "  ✅ engine: validate name reject\n"; PASS=$((PASS+1)); }
+
+# done-count
+# done-count uses Date→local format to handle TZ (closedAt 18:00 UTC = next day in JST)
+DC_RESULT=$(CLOSED_ENV='[{"number":1,"closedAt":"2026-04-05T01:00:00Z"},{"number":2,"closedAt":"2026-04-05T10:00:00Z"},{"number":3,"closedAt":"2026-04-04T10:00:00Z"}]' TODAY_ENV="$TEST_TODAY" node "$ENGINE" done-count)
+assert_eq "engine: done-count 今日=2" "2" "$DC_RESULT"
+
+# gtd-label（絵文字付きラベル名変換）
+assert_eq "engine: gtd-label next"      "🎯 next"      "$(node "$ENGINE" gtd-label next)"
+assert_eq "engine: gtd-label inbox"     "📥 inbox"     "$(node "$ENGINE" gtd-label inbox)"
+assert_eq "engine: gtd-label waiting"   "⏳ waiting"   "$(node "$ENGINE" gtd-label waiting)"
+assert_eq "engine: gtd-label someday"   "🌈 someday"   "$(node "$ENGINE" gtd-label someday)"
+assert_eq "engine: gtd-label project"   "📁 project"   "$(node "$ENGINE" gtd-label project)"
+assert_eq "engine: gtd-label reference" "📎 reference" "$(node "$ENGINE" gtd-label reference)"
+assert_eq "engine: gtd-label unknown"   "unknown"      "$(node "$ENGINE" gtd-label unknown)"
+
+# parse-time / format-time
+assert_eq "engine: parse-time 30m"    "30"    "$(node "$ENGINE" parse-time '30m')"
+assert_eq "engine: parse-time 1h"     "60"    "$(node "$ENGINE" parse-time '1h')"
+assert_eq "engine: parse-time 1h30m"  "90"    "$(node "$ENGINE" parse-time '1h30m')"
+assert_eq "engine: parse-time 2h"     "120"   "$(node "$ENGINE" parse-time '2h')"
+assert_eq "engine: parse-time 90(数字)" "90"  "$(node "$ENGINE" parse-time '90')"
+assert_eq "engine: parse-time invalid" "null"  "$(node "$ENGINE" parse-time 'abc')"
+assert_eq "engine: format-time 30"    "30m"   "$(node "$ENGINE" format-time 30)"
+assert_eq "engine: format-time 60"    "1h"    "$(node "$ENGINE" format-time 60)"
+assert_eq "engine: format-time 90"    "1h30m" "$(node "$ENGINE" format-time 90)"
+assert_eq "engine: format-time 120"   "2h"    "$(node "$ENGINE" format-time 120)"
+
+# validate time
+node "$ENGINE" validate time "2h" 2>/dev/null && printf "  ✅ engine: validate time OK\n" && PASS=$((PASS+1)) || { printf "  ❌ engine: validate time OK\n"; FAIL=$((FAIL+1)); }
+node "$ENGINE" validate time "abc" 2>/dev/null && { printf "  ❌ engine: validate time reject\n"; FAIL=$((FAIL+1)); } || { printf "  ✅ engine: validate time reject\n"; PASS=$((PASS+1)); }
+
+# parse-body with estimate/actual
+PB_EST=$(node "$ENGINE" parse-body "due: 2026-04-10
+estimate: 120
+actual: 90
+
+desc")
+PB_EST_V=$(printf '%s\n' "$PB_EST" | grep '^ESTIMATE=' | cut -d= -f2-)
+PB_ACT_V=$(printf '%s\n' "$PB_EST" | grep '^ACTUAL=' | cut -d= -f2-)
+assert_eq "engine: parse-body ESTIMATE" "120" "$PB_EST_V"
+assert_eq "engine: parse-body ACTUAL"   "90"  "$PB_ACT_V"
+
+# build-body with estimate/actual (6 args)
+BB_EST=$(node "$ENGINE" build-body "2026-04-10" "" "" "120" "90" "desc")
+assert_contains "engine: build-body estimate" "estimate: 120" "$BB_EST"
+assert_contains "engine: build-body actual"   "actual: 90"    "$BB_EST"
+
+# list-all テスト
+LIST_MOCK='[
+  {"number":1,"title":"next-p1","body":"due: 2026-04-03","labels":[{"name":"🎯 next"},{"name":"p1"},{"name":"@PC"}]},
+  {"number":2,"title":"next-p2","body":"due: 2026-04-10","labels":[{"name":"🎯 next"},{"name":"p2"}]},
+  {"number":3,"title":"inbox-task","body":"","labels":[{"name":"📥 inbox"}]},
+  {"number":7,"title":"proj","body":"","labels":[{"name":"📁 project"}]}
+]'
+LIST_ALL_OUT=$(OPEN_ENV="$LIST_MOCK" TODAY_ENV="$TEST_TODAY" node "$ENGINE" list-all)
+assert_contains "engine: list-all next ヘッダー"    "Next Actions"    "$LIST_ALL_OUT"
+assert_contains "engine: list-all inbox ヘッダー"   "Inbox"           "$LIST_ALL_OUT"
+assert_contains "engine: list-all #1 表示"          "#1"              "$LIST_ALL_OUT"
+assert_contains "engine: list-all サマリー"          "next: 2件"       "$LIST_ALL_OUT"
+assert_contains "engine: list-all project Next有無" "Next Action"     "$LIST_ALL_OUT"
+
+# list-all フィルタテスト
+LIST_FILT_OUT=$(OPEN_ENV="$LIST_MOCK" TODAY_ENV="$TEST_TODAY" FILTER_GTD_ENV="next" node "$ENGINE" list-all)
+assert_contains "engine: list-all filter=next #1"   "#1"   "$LIST_FILT_OUT"
+assert_contains "engine: list-all filter=next #2"   "#2"   "$LIST_FILT_OUT"
+if ! printf '%s' "$LIST_FILT_OUT" | grep -aq '#3'; then
+  printf "  ✅ engine: list-all filter=next excludes inbox\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ engine: list-all filter=next excludes inbox\n"; FAIL=$((FAIL+1))
+fi
+
+# list-all ctx フィルタ
+LIST_CTX_OUT=$(OPEN_ENV="$LIST_MOCK" TODAY_ENV="$TEST_TODAY" FILTER_CTX_ENV="@PC" node "$ENGINE" list-all)
+assert_contains "engine: list-all filter=@PC #1"   "#1"   "$LIST_CTX_OUT"
+if ! printf '%s' "$LIST_CTX_OUT" | grep -aq '#2'; then
+  printf "  ✅ engine: list-all filter=@PC excludes #2\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ engine: list-all filter=@PC excludes #2\n"; FAIL=$((FAIL+1))
+fi
+
+# list-all 優先度フィルタ
+LIST_PRI_OUT=$(OPEN_ENV="$LIST_MOCK" TODAY_ENV="$TEST_TODAY" FILTER_PRI_ENV="p1" node "$ENGINE" list-all)
+assert_contains "engine: list-all filter=p1 #1" "#1" "$LIST_PRI_OUT"
+if ! printf '%s' "$LIST_PRI_OUT" | grep -aq '#2'; then
+  printf "  ✅ engine: list-all filter=p1 excludes p2\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ engine: list-all filter=p1 excludes p2\n"; FAIL=$((FAIL+1))
+fi
+
+# list-all プロジェクトフィルタ
+LIST_PROJ_MOCK='[
+  {"number":10,"title":"proj-task","body":"due: 2026-04-10\nproject: #7","labels":[{"name":"🎯 next"},{"name":"p1"}]},
+  {"number":11,"title":"no-proj-task","body":"","labels":[{"name":"🎯 next"}]}
+]'
+LIST_PROJ_OUT=$(OPEN_ENV="$LIST_PROJ_MOCK" TODAY_ENV="$TEST_TODAY" FILTER_PROJ_ENV="7" node "$ENGINE" list-all)
+assert_contains "engine: list-all filter=proj #10" "#10" "$LIST_PROJ_OUT"
+if ! printf '%s' "$LIST_PROJ_OUT" | grep -aq '#11'; then
+  printf "  ✅ engine: list-all filter=proj excludes #11\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ engine: list-all filter=proj excludes #11\n"; FAIL=$((FAIL+1))
+fi
+
+# sortByPriDue テスト（フィルタ指定でフラットリスト＋ソート）
+SORT_MOCK='[
+  {"number":1,"title":"a","body":"due: 2026-04-10","labels":[{"name":"🎯 next"},{"name":"p2"}]},
+  {"number":2,"title":"b","body":"due: 2026-04-05","labels":[{"name":"🎯 next"},{"name":"p1"}]},
+  {"number":3,"title":"c","body":"","labels":[{"name":"🎯 next"},{"name":"p3"}]}
+]'
+SORT_OUT=$(OPEN_ENV="$SORT_MOCK" TODAY_ENV="$TEST_TODAY" FILTER_GTD_ENV="next" node "$ENGINE" list-all)
+POS_S2=$(printf '%s\n' "$SORT_OUT" | grep -n '#2' | head -1 | cut -d: -f1)
+POS_S1=$(printf '%s\n' "$SORT_OUT" | grep -n '#1' | head -1 | cut -d: -f1)
+POS_S3=$(printf '%s\n' "$SORT_OUT" | grep -n '#3' | head -1 | cut -d: -f1)
+if [ "$POS_S2" -lt "$POS_S1" ] && [ "$POS_S1" -lt "$POS_S3" ]; then
+  printf "  ✅ engine: sortByPriDue p1→p2→p3\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ engine: sortByPriDue p1→p2→p3 (pos: #2=%s #1=%s #3=%s)\n" "$POS_S2" "$POS_S1" "$POS_S3"; FAIL=$((FAIL+1))
+fi
+
+# renderIssueList テスト（estimate/ctx/due 表示確認）
+RENDER_MOCK='[
+  {"number":1,"title":"est-task","body":"due: 2026-04-10\nestimate: 90","labels":[{"name":"🎯 next"},{"name":"p1"},{"name":"@PC"}]}
+]'
+RENDER_OUT=$(OPEN_ENV="$RENDER_MOCK" TODAY_ENV="$TEST_TODAY" FILTER_GTD_ENV="next" node "$ENGINE" list-all)
+assert_contains "engine: renderIssueList estimate表示" "1h30m" "$RENDER_OUT"
+assert_contains "engine: renderIssueList ctx表示" "@PC" "$RENDER_OUT"
+assert_contains "engine: renderIssueList due表示" "2026-04-10" "$RENDER_OUT"
+
+# listSummary テスト
+LSUM_OUT=$(OPEN_ENV="$LIST_MOCK" TODAY_ENV="$TEST_TODAY" node "$ENGINE" list-summary)
+assert_contains "engine: list-summary next" "next: 2件" "$LSUM_OUT"
+assert_contains "engine: list-summary inbox" "inbox: 1件" "$LSUM_OUT"
+
+# weeklySummary テスト
+WSUM_MOCK='[
+  {"number":1,"title":"overdue","body":"due: 2026-04-03","labels":[{"name":"🎯 next"}]},
+  {"number":2,"title":"thisweek","body":"due: 2026-04-08","labels":[{"name":"🎯 next"}]},
+  {"number":3,"title":"inbox-task","body":"","labels":[{"name":"📥 inbox"}]}
+]'
+WSUM_OUT=$(OPEN_ENV="$WSUM_MOCK" TODAY_ENV="$TEST_TODAY" node "$ENGINE" weekly-summary)
+assert_contains "engine: weekly-summary ヘッダー" "週次レビュー" "$WSUM_OUT"
+assert_contains "engine: weekly-summary 期限超過" "期限超過: 1件" "$WSUM_OUT"
+assert_contains "engine: weekly-summary inbox" "Inbox に 1件" "$WSUM_OUT"
+
+# ──────────────────────────────────────────
+# § 22  Dashboard — 分類・ソート・サマリー（Pro機能）
+# ──────────────────────────────────────────
+echo ""
+echo "§22  Dashboard — 分類・ソート・サマリー"
+
+# モック Issue JSON（TEST_TODAY=2026-04-05）
+DASH_OPEN='[
+  {"number":1,"title":"overdue-p1","body":"due: 2026-04-03","labels":[{"name":"🎯 next"},{"name":"p1"}]},
+  {"number":2,"title":"overdue-p2","body":"due: 2026-04-01","labels":[{"name":"🎯 next"},{"name":"p2"}]},
+  {"number":3,"title":"today-p1","body":"due: 2026-04-05","labels":[{"name":"🎯 next"},{"name":"p1"}]},
+  {"number":4,"title":"today-p2","body":"due: 2026-04-05","labels":[{"name":"🎯 next"},{"name":"p2"}]},
+  {"number":5,"title":"thisweek-p3","body":"due: 2026-04-08","labels":[{"name":"🎯 next"},{"name":"p3"}]},
+  {"number":6,"title":"thisweek-p2","body":"due: 2026-04-11","labels":[{"name":"🎯 next"},{"name":"p2"}]},
+  {"number":7,"title":"nodue-next","body":"","labels":[{"name":"🎯 next"},{"name":"p3"}]},
+  {"number":8,"title":"inbox-task","body":"","labels":[{"name":"📥 inbox"}]},
+  {"number":9,"title":"waiting-overdue","body":"due: 2026-04-02","labels":[{"name":"⏳ waiting"}]},
+  {"number":10,"title":"someday-task","body":"","labels":[{"name":"🌈 someday"}]}
+]'
+DASH_CLOSED='[
+  {"number":90,"closedAt":"2026-04-05T10:00:00Z"},
+  {"number":91,"closedAt":"2026-04-05T14:00:00Z"},
+  {"number":92,"closedAt":"2026-04-02T10:00:00Z"},
+  {"number":93,"closedAt":"2026-03-20T10:00:00Z"}
+]'
+
+DASH_OUT=$(OPEN_ENV="$DASH_OPEN" TODAY_ENV="$TEST_TODAY" CLOSED_ENV="$DASH_CLOSED" node "$ENGINE" dashboard)
+
+# 分類テスト
+assert_contains "Dashboard: 期限超過 3件"       "期限超過（3件）"     "$DASH_OUT"
+assert_contains "Dashboard: 今日やること 2件"    "今日やること（2件）" "$DASH_OUT"
+assert_contains "Dashboard: 今週期限 2件"        "今週期限（2件）"     "$DASH_OUT"
+assert_contains "Dashboard: Next Actions 1件"    "Next Actions（1件）" "$DASH_OUT"
+
+# ソートテスト（期限超過: p1→p2→p9）
+OVERDUE_SECTION=$(echo "$DASH_OUT" | sed -n '/期限超過/,/^$/p')
+POS_1=$(echo "$OVERDUE_SECTION" | grep -n '#1 ' | head -1 | cut -d: -f1)
+POS_2=$(echo "$OVERDUE_SECTION" | grep -n '#2 ' | head -1 | cut -d: -f1)
+POS_9=$(echo "$OVERDUE_SECTION" | grep -n '#9 ' | head -1 | cut -d: -f1)
+if [ "$POS_1" -lt "$POS_2" ] && [ "$POS_2" -lt "$POS_9" ]; then
+  printf "  ✅ Dashboard: 期限超過ソート p1→p2→p9\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ Dashboard: 期限超過ソート p1→p2→p9\n"
+  printf "     位置: #1=%s #2=%s #9=%s\n" "$POS_1" "$POS_2" "$POS_9"
+  FAIL=$((FAIL+1))
+fi
+
+# 今日やること: p1→p2
+TODAY_SECTION=$(echo "$DASH_OUT" | grep -aA 10 '今日やること')
+POS_T3=$(echo "$TODAY_SECTION" | grep -n '#3 ' | head -1 | cut -d: -f1)
+POS_T4=$(echo "$TODAY_SECTION" | grep -n '#4 ' | head -1 | cut -d: -f1)
+if [ -n "$POS_T3" ] && [ -n "$POS_T4" ] && [ "$POS_T3" -lt "$POS_T4" ]; then
+  printf "  ✅ Dashboard: 今日ソート p1→p2\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ Dashboard: 今日ソート p1→p2\n"; FAIL=$((FAIL+1))
+fi
+
+# 今週期限: p2(#6)→p3(#5)
+WEEK_SECTION=$(echo "$DASH_OUT" | sed -n '/今週期限/,/^$/p')
+POS_W6=$(echo "$WEEK_SECTION" | grep -n '#6 ' | head -1 | cut -d: -f1)
+POS_W5=$(echo "$WEEK_SECTION" | grep -n '#5 ' | head -1 | cut -d: -f1)
+if [ "$POS_W6" -lt "$POS_W5" ]; then
+  printf "  ✅ Dashboard: 今週ソート p2→p3\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ Dashboard: 今週ソート p2→p3\n"; FAIL=$((FAIL+1))
+fi
+
+# GTDカウント
+assert_contains "Dashboard: next 7件"           "next: 7件"    "$DASH_OUT"
+assert_contains "Dashboard: inbox 1件"          "inbox: 1件"   "$DASH_OUT"
+assert_contains "Dashboard: waiting 1件"        "waiting: 1件" "$DASH_OUT"
+assert_contains "Dashboard: someday 1件"        "someday: 1件" "$DASH_OUT"
+
+# 完了統計
+assert_contains "Dashboard: 今日 2件完了"       "今日: 2件完了"  "$DASH_OUT"
+assert_contains "Dashboard: 今週 3件完了"       "今週: 3件完了"  "$DASH_OUT"
+
+# Inbox ヒント
+assert_contains "Dashboard: Inbox ヒント"       "Inbox に 1件"   "$DASH_OUT"
+
+# ヘッダー
+assert_contains "Dashboard: ヘッダー"           "Dashboard — 2026-04-05" "$DASH_OUT"
+
+# priority アイコン（grepがUTF-8絵文字非対応のためnodeで検証）
+ICON_P1=$(DASH_ENV="$DASH_OUT" node -e "process.stdout.write(process.env.DASH_ENV.includes('\uD83D\uDD34')?'YES':'NO');")
+assert_eq "Dashboard: p1 アイコン"  "YES"  "$ICON_P1"
+ICON_P2=$(DASH_ENV="$DASH_OUT" node -e "process.stdout.write(process.env.DASH_ENV.includes('\uD83D\uDFE1')?'YES':'NO');")
+assert_eq "Dashboard: p2 アイコン"  "YES"  "$ICON_P2"
+
+# --- エッジケース: 空データ ---
+DASH_EMPTY=$(OPEN_ENV='[]' TODAY_ENV="$TEST_TODAY" CLOSED_ENV='[]' node "$ENGINE" dashboard)
+assert_contains "Dashboard空: ヘッダーあり"     "Dashboard — 2026-04-05"  "$DASH_EMPTY"
+if ! echo "$DASH_EMPTY" | grep -q '期限超過'; then
+  printf "  ✅ Dashboard空: 期限超過セクションなし\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ Dashboard空: 期限超過セクションなし\n"; FAIL=$((FAIL+1))
+fi
+if ! echo "$DASH_EMPTY" | grep -q 'Inbox に'; then
+  printf "  ✅ Dashboard空: Inbox ヒントなし\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ Dashboard空: Inbox ヒントなし\n"; FAIL=$((FAIL+1))
+fi
+
+# --- エッジケース: nextActions 10件超 ---
+NA12='['
+for i in $(seq 1 12); do
+  [ "$i" -gt 1 ] && NA12="$NA12,"
+  NA12="$NA12{\"number\":$i,\"title\":\"task-$i\",\"body\":\"\",\"labels\":[{\"name\":\"next\"}]}"
+done
+NA12="$NA12]"
+DASH_NA12=$(OPEN_ENV="$NA12" TODAY_ENV="$TEST_TODAY" CLOSED_ENV='[]' node "$ENGINE" dashboard)
+assert_contains "Dashboard: nextActions 12件表示"  "Next Actions（12件）"  "$DASH_NA12"
+assert_contains "Dashboard: ...他 2件"            "他 2件"               "$DASH_NA12"
+
+# --- Dashboard: 見積もり合計表示 ---
+DASH_EST_OPEN='[
+  {"number":1,"title":"overdue-est","body":"due: 2026-04-03\nestimate: 60","labels":[{"name":"🎯 next"},{"name":"p1"}]},
+  {"number":2,"title":"today-est","body":"due: 2026-04-05\nestimate: 90","labels":[{"name":"🎯 next"},{"name":"p2"}]}
+]'
+DASH_EST_OUT=$(OPEN_ENV="$DASH_EST_OPEN" TODAY_ENV="$TEST_TODAY" CLOSED_ENV='[]' node "$ENGINE" dashboard)
+assert_contains "Dashboard: 見積合計表示" "2h30m" "$DASH_EST_OUT"
+
+# --- stats テスト（見積もり情報含む） ---
+echo ""
+echo "§22b  Stats — 見積もり情報"
+STATS_MOCK='[
+  {"number":1,"title":"t1","body":"estimate: 60","labels":[{"name":"🎯 next"},{"name":"p1"}]},
+  {"number":2,"title":"t2","body":"estimate: 120","labels":[{"name":"🎯 next"},{"name":"p2"}]},
+  {"number":3,"title":"t3","body":"","labels":[{"name":"🎯 next"}]}
+]'
+STATS_OUT=$(OPEN_ENV="$STATS_MOCK" TODAY_ENV="$TEST_TODAY" CLOSED_ENV='[]' node "$ENGINE" stats)
+assert_contains "Stats: 見積合計" "3h" "$STATS_OUT"
+assert_contains "Stats: 見積件数" "2件" "$STATS_OUT"
+assert_contains "Stats: 見積なし" "見積なし: 1件" "$STATS_OUT"
+
+# ──────────────────────────────────────────
+# § 23  Daily Review — モード判定・フィルタ（Pro機能）
+# ──────────────────────────────────────────
+echo ""
+echo "§23  Daily Review — モード判定・フィルタ"
+
+detect_mode() {
+  local hour="$1"
+  if [ "$hour" -lt 15 ]; then echo "morning"; else echo "evening"; fi
+}
+
+assert_eq "Daily Review: hour=0→morning"  "morning" "$(detect_mode 0)"
+assert_eq "Daily Review: hour=9→morning"  "morning" "$(detect_mode 9)"
+assert_eq "Daily Review: hour=14→morning" "morning" "$(detect_mode 14)"
+assert_eq "Daily Review: hour=15→evening" "evening" "$(detect_mode 15)"
+assert_eq "Daily Review: hour=23→evening" "evening" "$(detect_mode 23)"
+
+# Evening step1: closedAt フィルタ
+DR_CLOSED='[
+  {"number":50,"title":"done-today-1","closedAt":"2026-04-05T10:00:00Z"},
+  {"number":51,"title":"done-today-2","closedAt":"2026-04-05T18:30:00Z"},
+  {"number":52,"title":"done-yesterday","closedAt":"2026-04-04T12:00:00Z"},
+  {"number":53,"title":"done-old","closedAt":"2026-03-30T08:00:00Z"}
+]'
+DR_TODAY_COUNT=$(TODAY_ENV="$TEST_TODAY" CLOSED_ENV="$DR_CLOSED" node -e "
+  const today=process.env.TODAY_ENV;
+  const closed=JSON.parse(process.env.CLOSED_ENV);
+  const cnt=closed.filter(i=>i.closedAt&&i.closedAt.slice(0,10)===today).length;
+  process.stdout.write(String(cnt));
+")
+assert_eq "Daily Review: closedAt 今日=2件" "2" "$DR_TODAY_COUNT"
+
+# closedAt ゼロ件
+DR_ZERO_COUNT=$(TODAY_ENV="$TEST_TODAY" CLOSED_ENV='[{"number":60,"title":"old","closedAt":"2026-03-01T10:00:00Z"}]' node -e "
+  const today=process.env.TODAY_ENV;
+  const closed=JSON.parse(process.env.CLOSED_ENV);
+  const cnt=closed.filter(i=>i.closedAt&&i.closedAt.slice(0,10)===today).length;
+  process.stdout.write(String(cnt));
+")
+assert_eq "Daily Review: closedAt 今日=0件" "0" "$DR_ZERO_COUNT"
+
+# Evening step3: 明日の due フィルタ
+DR_OPEN='[
+  {"number":70,"title":"due-today","body":"due: 2026-04-05","labels":[{"name":"🎯 next"}]},
+  {"number":71,"title":"due-tomorrow","body":"due: 2026-04-06","labels":[{"name":"🎯 next"}]},
+  {"number":72,"title":"due-later","body":"due: 2026-04-10","labels":[{"name":"🎯 next"}]},
+  {"number":73,"title":"no-due","body":"","labels":[{"name":"🎯 next"}]}
+]'
+DR_TOMORROW=$(TODAY_ENV="$TEST_TODAY" OPEN_ENV="$DR_OPEN" node -e "
+  const today=process.env.TODAY_ENV;
+  const issues=JSON.parse(process.env.OPEN_ENV);
+  const tmr=new Date(today); tmr.setDate(tmr.getDate()+1);
+  const tmrStr=tmr.toISOString().slice(0,10);
+  const result=issues.filter(i=>{
+    const m=(i.body||'').match(/^due: (\d{4}-\d{2}-\d{2})/m);
+    return m && m[1]===tmrStr;
+  });
+  process.stdout.write(result.map(i=>'#'+i.number).join(','));
+")
+assert_eq "Daily Review: 明日期限=#71" "#71" "$DR_TOMORROW"
+
+# 明日期限ゼロ件
+DR_TOMORROW_ZERO=$(TODAY_ENV="$TEST_TODAY" OPEN_ENV='[{"number":80,"title":"no-due","body":"","labels":[{"name":"🎯 next"}]}]' node -e "
+  const today=process.env.TODAY_ENV;
+  const issues=JSON.parse(process.env.OPEN_ENV);
+  const tmr=new Date(today); tmr.setDate(tmr.getDate()+1);
+  const tmrStr=tmr.toISOString().slice(0,10);
+  const result=issues.filter(i=>{
+    const m=(i.body||'').match(/^due: (\d{4}-\d{2}-\d{2})/m);
+    return m && m[1]===tmrStr;
+  });
+  process.stdout.write(String(result.length));
+")
+assert_eq "Daily Review: 明日期限=0件" "0" "$DR_TOMORROW_ZERO"
+
+# ──────────────────────────────────────────
+# § 24  Custom Views — フィルタパース・CRUD（Pro機能）
+# ──────────────────────────────────────────
+echo ""
+echo "§24  Custom Views — フィルタパース・CRUD"
+
+TEMP_VFILE=$(mktemp /tmp/todo-test-views-XXXXXX.json)
+printf '{}' > "$TEMP_VFILE"
+
+# フィルタパーステスト用ヘルパー
+parse_view_filter() {
+  local input="$1"
+  FILTER_ENV="$input" node -e "
+    const tokens=(process.env.FILTER_ENV||'').trim().split(/\s+/).filter(Boolean);
+    const gtdLabels=['next','inbox','waiting','someday','project','reference'];
+    let gtd='', ctx=[], pri='';
+    for(const t of tokens){
+      if(gtdLabels.includes(t)) gtd=t;
+      else if(t.startsWith('@')) ctx.push(t);
+      else if(/^p[123]$/.test(t)) pri=t;
+    }
+    process.stdout.write('GTD='+gtd+' CTX='+ctx.join(' ')+' PRI='+pri);
+  "
+}
+
+assert_eq "View parse: next @会社 p1"  "GTD=next CTX=@会社 PRI=p1"  "$(parse_view_filter 'next @会社 p1')"
+assert_eq "View parse: inbox"          "GTD=inbox CTX= PRI="        "$(parse_view_filter 'inbox')"
+assert_eq "View parse: @PC @自宅"      "GTD= CTX=@PC @自宅 PRI="   "$(parse_view_filter '@PC @自宅')"
+assert_eq "View parse: p2"             "GTD= CTX= PRI=p2"          "$(parse_view_filter 'p2')"
+assert_eq "View parse: next @会社 @PC p1" "GTD=next CTX=@会社 @PC PRI=p1" "$(parse_view_filter 'next @会社 @PC p1')"
+assert_eq "View parse: 空"             "GTD= CTX= PRI="            "$(parse_view_filter '')"
+
+# View save テスト
+VIEW_SAVE1=$(VNAME_ENV="仕事" GTD_ENV="next" CTX_ENV="@会社" PRI_ENV="p1" VFILE_ENV="$TEMP_VFILE" node -e "
+  const fs=require('fs');
+  const vfile=process.env.VFILE_ENV;
+  let data={};
+  try { data=JSON.parse(fs.readFileSync(vfile,'utf8')); } catch(e){}
+  const name=process.env.VNAME_ENV;
+  const v={};
+  const gtd=process.env.GTD_ENV||'';
+  if(gtd) v.gtd=gtd;
+  const ctx=process.env.CTX_ENV||'';
+  if(ctx) v.context=ctx.trim().split(/\s+/);
+  const pri=process.env.PRI_ENV||'';
+  if(pri) v.priority=pri;
+  data[name]=v;
+  fs.writeFileSync(vfile, JSON.stringify(data,null,2));
+  process.stdout.write('SAVED');
+")
+assert_eq "View save: 仕事"  "SAVED"  "$VIEW_SAVE1"
+
+VIEW_SAVE2=$(VNAME_ENV="自宅PC" GTD_ENV="next" CTX_ENV="@自宅 @PC" PRI_ENV="" VFILE_ENV="$TEMP_VFILE" node -e "
+  const fs=require('fs');
+  const vfile=process.env.VFILE_ENV;
+  let data={};
+  try { data=JSON.parse(fs.readFileSync(vfile,'utf8')); } catch(e){}
+  const name=process.env.VNAME_ENV;
+  const v={};
+  const gtd=process.env.GTD_ENV||'';
+  if(gtd) v.gtd=gtd;
+  const ctx=process.env.CTX_ENV||'';
+  if(ctx) v.context=ctx.trim().split(/\s+/);
+  const pri=process.env.PRI_ENV||'';
+  if(pri) v.priority=pri;
+  data[name]=v;
+  fs.writeFileSync(vfile, JSON.stringify(data,null,2));
+  process.stdout.write('SAVED');
+")
+assert_eq "View save: 自宅PC"  "SAVED"  "$VIEW_SAVE2"
+
+# View load テスト
+VIEW_LOAD=$(VNAME_ENV="仕事" VFILE_ENV="$TEMP_VFILE" node -e "
+  const fs=require('fs');
+  const vfile=process.env.VFILE_ENV;
+  const data=JSON.parse(fs.readFileSync(vfile,'utf8'));
+  const name=process.env.VNAME_ENV;
+  if(!data[name]){ process.stdout.write('ERROR'); process.exit(0); }
+  const v=data[name];
+  const parts=[];
+  if(v.gtd) parts.push('GTD='+v.gtd);
+  if(v.context) parts.push('CTX='+v.context.join(' '));
+  if(v.priority) parts.push('PRI='+v.priority);
+  process.stdout.write(parts.join(' '));
+")
+assert_eq "View load: 仕事"  "GTD=next CTX=@会社 PRI=p1"  "$VIEW_LOAD"
+
+# View load 存在しない
+VIEW_LOAD_MISS=$(VNAME_ENV="ない" VFILE_ENV="$TEMP_VFILE" node -e "
+  const fs=require('fs');
+  const vfile=process.env.VFILE_ENV;
+  const data=JSON.parse(fs.readFileSync(vfile,'utf8'));
+  const name=process.env.VNAME_ENV;
+  if(!data[name]){ process.stdout.write('存在しません'); process.exit(0); }
+  process.stdout.write('FOUND');
+")
+assert_contains "View load 存在しない: エラー" "存在しません" "$VIEW_LOAD_MISS"
+
+# View list テスト
+VIEW_LIST=$(VFILE_ENV="$TEMP_VFILE" node -e "
+  const fs=require('fs');
+  const vfile=process.env.VFILE_ENV;
+  const data=JSON.parse(fs.readFileSync(vfile,'utf8'));
+  const keys=Object.keys(data);
+  if(!keys.length){ process.stdout.write('（ビューなし）'); process.exit(0); }
+  for(const name of keys){
+    const v=data[name];
+    const parts=[];
+    if(v.gtd) parts.push(v.gtd);
+    if(v.context) parts.push(v.context.join(' '));
+    if(v.priority) parts.push(v.priority);
+    process.stdout.write(name+'  ['+parts.join(', ')+']\n');
+  }
+")
+assert_contains "View list: 仕事あり"    "仕事"    "$VIEW_LIST"
+assert_contains "View list: 自宅PCあり"  "自宅PC"  "$VIEW_LIST"
+
+# View delete テスト
+VIEW_DEL=$(VNAME_ENV="仕事" VFILE_ENV="$TEMP_VFILE" node -e "
+  const fs=require('fs');
+  const vfile=process.env.VFILE_ENV;
+  let data=JSON.parse(fs.readFileSync(vfile,'utf8'));
+  const name=process.env.VNAME_ENV;
+  if(!data[name]){ process.stdout.write('存在しません'); process.exit(0); }
+  delete data[name];
+  fs.writeFileSync(vfile, JSON.stringify(data,null,2));
+  process.stdout.write('DELETED');
+")
+assert_eq "View delete: 仕事"  "DELETED"  "$VIEW_DEL"
+
+# 削除後 list で仕事が消えている
+VIEW_LIST2=$(VFILE_ENV="$TEMP_VFILE" node -e "
+  const fs=require('fs');
+  const data=JSON.parse(fs.readFileSync(process.env.VFILE_ENV,'utf8'));
+  process.stdout.write(Object.keys(data).join(','));
+")
+assert_eq "View delete後: 自宅PCのみ" "自宅PC" "$VIEW_LIST2"
+
+# 存在しないビュー削除
+VIEW_DEL_MISS=$(VNAME_ENV="ない" VFILE_ENV="$TEMP_VFILE" node -e "
+  const fs=require('fs');
+  const vfile=process.env.VFILE_ENV;
+  let data=JSON.parse(fs.readFileSync(vfile,'utf8'));
+  const name=process.env.VNAME_ENV;
+  if(!data[name]){ process.stdout.write('存在しません'); process.exit(0); }
+  process.stdout.write('DELETED');
+")
+assert_contains "View delete 存在しない: エラー" "存在しません" "$VIEW_DEL_MISS"
+
+# 空 list
+printf '{}' > "$TEMP_VFILE"
+VIEW_LIST_EMPTY=$(VFILE_ENV="$TEMP_VFILE" node -e "
+  const fs=require('fs');
+  const data=JSON.parse(fs.readFileSync(process.env.VFILE_ENV,'utf8'));
+  const keys=Object.keys(data);
+  if(!keys.length){ process.stdout.write('（ビューなし）'); process.exit(0); }
+  process.stdout.write(keys.join(','));
+")
+assert_contains "View list 空: ビューなし" "ビューなし" "$VIEW_LIST_EMPTY"
+
+# ──────────────────────────────────────────
+# § 25  Report — 期間パース・集計（Pro機能）
+# ──────────────────────────────────────────
+echo ""
+echo "§25  Report — 期間パース・集計"
+
+# 期間パーステスト
+parse_report_period() {
+  local input="$1"
+  case "$input" in
+    weekly)  echo 7 ;;
+    monthly) echo 30 ;;
+    *d)
+      local n="${input%d}"
+      case "$n" in
+        ''|*[!0-9]*|0) echo "ERROR"; return 1 ;;
+      esac
+      echo "$n" ;;
+    *) echo "ERROR"; return 1 ;;
+  esac
+}
+
+assert_eq "Report period: weekly→7"   "7"     "$(parse_report_period weekly)"
+assert_eq "Report period: monthly→30" "30"    "$(parse_report_period monthly)"
+assert_eq "Report period: 14d→14"     "14"    "$(parse_report_period 14d)"
+assert_eq "Report period: 1d→1"       "1"     "$(parse_report_period 1d)"
+assert_eq "Report period: abc→ERROR"  "ERROR" "$(parse_report_period abc)"
+assert_eq "Report period: 0→ERROR"    "ERROR" "$(parse_report_period 0)"
+assert_eq "Report period: -5d→ERROR"  "ERROR" "$(parse_report_period -5d)"
+
+# レポート集計テスト
+RPT_OPEN='[
+  {"number":100,"title":"open-next","body":"due: 2026-04-03","labels":[{"name":"🎯 next"},{"name":"p1"}]},
+  {"number":101,"title":"open-inbox","body":"","labels":[{"name":"📥 inbox"}]},
+  {"number":102,"title":"open-waiting","body":"due: 2026-04-10","labels":[{"name":"⏳ waiting"}]}
+]'
+RPT_CLOSED='[
+  {"number":200,"title":"closed-1","closedAt":"2026-04-05T10:00:00Z","labels":[{"name":"🎯 next"},{"name":"p1"}],"body":""},
+  {"number":201,"title":"closed-2","closedAt":"2026-04-05T14:00:00Z","labels":[{"name":"🎯 next"},{"name":"p2"}],"body":""},
+  {"number":202,"title":"closed-3","closedAt":"2026-04-04T10:00:00Z","labels":[{"name":"🎯 next"},{"name":"p3"}],"body":""},
+  {"number":203,"title":"closed-4","closedAt":"2026-04-03T10:00:00Z","labels":[{"name":"📥 inbox"}],"body":""},
+  {"number":204,"title":"closed-5","closedAt":"2026-04-03T16:00:00Z","labels":[{"name":"⏳ waiting"},{"name":"p1"}],"body":""},
+  {"number":205,"title":"closed-6","closedAt":"2026-04-01T10:00:00Z","labels":[{"name":"🎯 next"},{"name":"p2"}],"body":""},
+  {"number":206,"title":"closed-7","closedAt":"2026-03-30T10:00:00Z","labels":[{"name":"🌈 someday"}],"body":""},
+  {"number":207,"title":"closed-outside","closedAt":"2026-03-28T10:00:00Z","labels":[{"name":"🎯 next"}],"body":""}
+]'
+
+RPT_OUT=$(OPEN_ENV="$RPT_OPEN" TODAY_ENV="$TEST_TODAY" DAYS_ENV="7" CLOSED_ENV="$RPT_CLOSED" node "$ENGINE" report)
+
+# レポートヘッダー
+assert_contains "Report: ヘッダー"               "生産性レポート"     "$RPT_OUT"
+assert_contains "Report: 期間表示"               "2026-03-29 〜 2026-04-05" "$RPT_OUT"
+
+# 完了数（期間内7件、期間外1件除外）
+assert_contains "Report: 完了7件"                "**7件**"            "$RPT_OUT"
+assert_contains "Report: 日平均1.0"              "1.0件"              "$RPT_OUT"
+
+# 日別カウント（04-05 に2件）
+assert_contains "Report: 04-05 日別2件"          "04-05 .*2"          "$RPT_OUT"
+
+# バーチャート
+assert_contains "Report: バーチャート █"          "█"                  "$RPT_OUT"
+
+# カテゴリ別
+assert_contains "Report: next 4件完了"            "next: 4件"          "$RPT_OUT"
+assert_contains "Report: inbox 1件完了"           "inbox: 1件"         "$RPT_OUT"
+assert_contains "Report: waiting 1件完了"         "waiting: 1件"       "$RPT_OUT"
+assert_contains "Report: someday 1件完了"         "someday: 1件"       "$RPT_OUT"
+
+# 優先度別
+assert_contains "Report: p1 2件"                  "p1: 2件"            "$RPT_OUT"
+assert_contains "Report: p2 2件"                  "p2: 2件"            "$RPT_OUT"
+assert_contains "Report: p3 1件"                  "p3: 1件"            "$RPT_OUT"
+assert_contains "Report: 優先度なし 2件"           "優先度なし: 2件"     "$RPT_OUT"
+
+# オープン状況
+assert_contains "Report: open next 1件"           "next: 1件"          "$RPT_OUT"
+assert_contains "Report: 期限超過 1件"             "期限超過: 1件"       "$RPT_OUT"
+
+# 完了タスク一覧（最新順）
+assert_contains "Report: 完了一覧 #200"           "#200"               "$RPT_OUT"
+assert_contains "Report: 完了一覧 #206"           "#206"               "$RPT_OUT"
+
+# --- エッジケース: 完了ゼロ ---
+RPT_EMPTY=$(OPEN_ENV='[]' TODAY_ENV="$TEST_TODAY" DAYS_ENV="7" CLOSED_ENV='[]' node "$ENGINE" report)
+assert_contains "Report空: 完了タスクなし"  "完了タスクなし"  "$RPT_EMPTY"
+
+# --- Report: 見積 vs 実績 ---
+RPT_EST_CLOSED='[
+  {"number":300,"title":"est-task","closedAt":"2026-04-05T10:00:00Z","labels":[{"name":"🎯 next"}],"body":"estimate: 60\nactual: 90"},
+  {"number":301,"title":"est-task2","closedAt":"2026-04-04T10:00:00Z","labels":[{"name":"🎯 next"}],"body":"estimate: 120\nactual: 100"}
+]'
+RPT_EST_OUT=$(OPEN_ENV='[]' TODAY_ENV="$TEST_TODAY" DAYS_ENV="7" CLOSED_ENV="$RPT_EST_CLOSED" node "$ENGINE" report)
+assert_contains "Report: 見積合計" "3h" "$RPT_EST_OUT"
+assert_contains "Report: 実績合計" "3h10m" "$RPT_EST_OUT"
+assert_contains "Report: 予実比" "106%" "$RPT_EST_OUT"
+assert_contains "Report: 見積+実績あり件数" "2件 / 2件" "$RPT_EST_OUT"
+
+# 一時ファイルクリーンアップ
+rm -f "$TEMP_VFILE"
+
+# ──────────────────────────────────────────
+# § 26  English output (LANG_ENV=en)
+# ──────────────────────────────────────────
+echo ""
+echo "§26  English output (LANG_ENV=en)"
+
+# list-all English headers
+LIST_EN_OUT=$(LANG_ENV=en OPEN_ENV="$LIST_MOCK" TODAY_ENV="$TEST_TODAY" node "$ENGINE" list-all)
+assert_contains "en: list-all Next Actions header" "## ✅ Next Actions$" "$LIST_EN_OUT"
+assert_not_contains "en: list-all Inbox header no JP" "受信トレイ"        "$LIST_EN_OUT"
+assert_contains "en: list-all summary no 件"       "next: 2"            "$LIST_EN_OUT"
+assert_contains "en: list-all No Next Action"      "No Next Action"     "$LIST_EN_OUT"
+
+# list-all filter English
+LIST_EN_EMPTY=$(LANG_ENV=en OPEN_ENV='[]' TODAY_ENV="$TEST_TODAY" FILTER_GTD_ENV="next" node "$ENGINE" list-all)
+assert_contains "en: list-all empty filter"        "No matching tasks"  "$LIST_EN_EMPTY"
+
+# list-summary English
+LSUM_EN_OUT=$(LANG_ENV=en OPEN_ENV="$LIST_MOCK" TODAY_ENV="$TEST_TODAY" node "$ENGINE" list-summary)
+assert_contains "en: list-summary Overdue"         "Overdue"            "$LSUM_EN_OUT"
+
+# weekly-summary English
+WSUM_EN_OUT=$(LANG_ENV=en OPEN_ENV="$WSUM_MOCK" TODAY_ENV="$TEST_TODAY" node "$ENGINE" weekly-summary)
+assert_contains "en: weekly-summary header"        "Weekly Review"      "$WSUM_EN_OUT"
+assert_contains "en: weekly-summary no overdue text" "Overdue"          "$WSUM_EN_OUT"
+assert_contains "en: weekly-summary Starting"      "Starting review"    "$WSUM_EN_OUT"
+assert_contains "en: weekly-summary inbox"         "Inbox has"          "$WSUM_EN_OUT"
+
+# dashboard English
+DASH_EN_OUT=$(LANG_ENV=en OPEN_ENV="$DASH_OPEN" TODAY_ENV="$TEST_TODAY" CLOSED_ENV="$DASH_CLOSED" node "$ENGINE" dashboard)
+assert_contains "en: dashboard Overdue"            "Overdue"            "$DASH_EN_OUT"
+assert_contains "en: dashboard Due Today"          "Due Today"          "$DASH_EN_OUT"
+assert_contains "en: dashboard Due This Week"      "Due This Week"      "$DASH_EN_OUT"
+assert_contains "en: dashboard Next Actions"       "Next Actions"       "$DASH_EN_OUT"
+assert_contains "en: dashboard completed"          "completed"          "$DASH_EN_OUT"
+
+# stats English
+STATS_EN_OUT=$(LANG_ENV=en OPEN_ENV="$STATS_MOCK" TODAY_ENV="$TEST_TODAY" CLOSED_ENV='[]' node "$ENGINE" stats)
+assert_contains "en: stats header"                 "Task Statistics"    "$STATS_EN_OUT"
+assert_contains "en: stats By Category"            "By Category"        "$STATS_EN_OUT"
+assert_contains "en: stats By Priority"            "By Priority"        "$STATS_EN_OUT"
+assert_contains "en: stats Deadlines"              "Deadlines"          "$STATS_EN_OUT"
+assert_contains "en: stats Completed"              "Completed"          "$STATS_EN_OUT"
+
+# report English
+RPT_EN_OUT=$(LANG_ENV=en OPEN_ENV="$RPT_OPEN" TODAY_ENV="$TEST_TODAY" DAYS_ENV="7" CLOSED_ENV="$RPT_CLOSED" node "$ENGINE" report)
+assert_contains "en: report header"                "Productivity Report" "$RPT_EN_OUT"
+assert_contains "en: report period 'to'"           " to "                "$RPT_EN_OUT"
+assert_contains "en: report Completed Summary"     "Completed Summary"   "$RPT_EN_OUT"
+assert_contains "en: report Metric/Value"          "Metric"              "$RPT_EN_OUT"
+assert_contains "en: report By Category"           "Completed by Category" "$RPT_EN_OUT"
+assert_contains "en: report Current Status"        "Current Task Status" "$RPT_EN_OUT"
+
+# template English
+TEMP_TFILE_EN=$(mktemp /tmp/todo-test-templates-en-XXXXXX.json)
+printf '{}' > "$TEMP_TFILE_EN"
+REAL_HOME="$HOME"
+REAL_USERPROFILE="${USERPROFILE:-}"
+FAKE_HOME=$(mktemp -d /tmp/todo-test-home-en-XXXXXX)
+export HOME="$FAKE_HOME"
+export USERPROFILE="$FAKE_HOME"
+mkdir -p "$HOME/.claude"
+printf '{}' > "$HOME/.claude/todo-templates.json"
+printf '{}' > "$HOME/.claude/todo-views.json"
+
+TPL_LIST_EN=$(LANG_ENV=en node "$ENGINE" template list)
+assert_contains "en: template list empty"          "No templates"        "$TPL_LIST_EN"
+
+LANG_ENV=en TNAME_ENV="test-en" GTD_ENV="next" CONTEXTS_ENV='["@PC"]' PRIORITY_ENV="p1" node "$ENGINE" template save
+TPL_SAVED_EN=$(LANG_ENV=en node "$ENGINE" template list)
+assert_contains "en: template list after save"     "test-en"             "$TPL_SAVED_EN"
+
+VIEW_LIST_EN=$(LANG_ENV=en node "$ENGINE" view list)
+assert_contains "en: view list empty"              "No views"            "$VIEW_LIST_EN"
+
+export HOME="$REAL_HOME"
+if [ -n "$REAL_USERPROFILE" ]; then export USERPROFILE="$REAL_USERPROFILE"; else unset USERPROFILE; fi
+rm -rf "$FAKE_HOME" 2>/dev/null || true
+
+# Verify default (ja) still works
+LIST_JA_OUT=$(OPEN_ENV="$LIST_MOCK" TODAY_ENV="$TEST_TODAY" node "$ENGINE" list-all)
+assert_contains "ja default: list 件 suffix"       "2件"                 "$LIST_JA_OUT"
+assert_contains "ja default: section header"        "次のアクション"     "$LIST_JA_OUT"
 
 # ──────────────────────────────────────────
 # 結果サマリー
