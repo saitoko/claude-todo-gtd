@@ -47,6 +47,7 @@ Determine the response language from the environment variable:
 |-------|---------|
 | `📥 inbox` | 未処理・未分類（デフォルト） |
 | `🎯 next` | 次にやること（Next Actions） |
+| `🔁 routine` | 繰り返し実行するルーティンアクション（`--recur` と組み合わせて使用を推奨） |
 | `⏳ waiting` | 他者/外部イベント待ち（Waiting For） |
 | `🌈 someday` | いつかやるかも（Someday/Maybe） |
 | `📁 project` | 複数ステップが必要な案件（Projects） |
@@ -205,9 +206,9 @@ Examples:
 6. `--priority <value>` を抽出・除去。バリデーション。**未指定の場合はデフォルト `p3`。**
 6.5. `--estimate <value>` を抽出・除去。`node "$ENGINE" parse-time "$value"` で分に変換。結果が `null` ならエラー。
 7. 日付を正規化: `4/10` → `$(date +%Y)-04-10`。月・日はゼロパディングして2桁にする（例: `4/1` → `$(date +%Y)-04-01`）。ISO形式はそのまま。
-8. 残テキストの先頭語が `next`/`waiting`/`someday`/`project`/`reference` → そのGTDラベル＋残りをタイトルに。それ以外 → `inbox`＋全文をタイトル。タイトルが空になる場合はエラーとしてユーザーに通知し、処理を中断する。
+8. 残テキストの先頭語が `next`/`routine`/`waiting`/`someday`/`project`/`reference` → そのGTDラベル＋残りをタイトルに。それ以外 → `inbox`＋全文をタイトル。タイトルが空になる場合はエラーとしてユーザーに通知し、処理を中断する。
    **GTDラベル名は絵文字付き:** `node "$ENGINE" gtd-label "$GTD"` で表示名を取得（例: `next` → `🎯 next`）。GitHub API に渡す `--label` には表示名を使用する。
-9. `list`,`done`,`close`,`move`,`due`,`desc`,`review`,`label`,`tag`,`link`,`archive`,`weekly-review`,`template`,`priority` はタイトルにしない。
+9. `list`,`done`,`close`,`move`,`due`,`desc`,`review`,`label`,`tag`,`link`,`archive`,`weekly-review`,`template`,`priority`,`today`,`help` はタイトルにしない。
 
 未作成のコンテキストラベルは先に作成（共通ユーティリティ参照）。
 
@@ -281,11 +282,11 @@ LANG_ENV="$LANG_ENV" OPEN_ENV="$OPEN_JSON" TODAY_ENV="$TODAY" node "$ENGINE" wee
 
 **Step 1: Inbox を空にする**
 Inboxのアイテムを1件ずつ確認:
-- ja: 「#<番号>「<title>」→ next / waiting / someday / project / reference / close / skip ?」
-- en: "#<number> "<title>" → next / waiting / someday / project / reference / close / skip?"
+- ja: 「#<番号>「<title>」→ next / routine / waiting / someday / project / reference / close / skip ?」
+- en: "#<number> "<title>" → next / routine / waiting / someday / project / reference / close / skip?"
 （`close` = `gh issue close` でクローズ。完全削除ではない）
 - Inboxが0件の場合は「Inbox は空です。スキップします。」(en: "Inbox is empty. Skipping.") と表示して Step 2 へ進む
-- ユーザーが上記7択以外を入力した場合は再質問する（無効入力を無視して同じ質問を繰り返す）
+- ユーザーが上記8択以外を入力した場合は再質問する（無効入力を無視して同じ質問を繰り返す）
 
 **Step 2: Next Actions を見直す**
 一覧表示。確認を求める。
@@ -436,7 +437,7 @@ Confirm to the user in the detected language.
 
 ### Move (relabel) an issue
 If arguments start with `move`:
-- `<target-label>` は GTDラベル一覧（inbox/next/waiting/someday/project/reference）のみ許可
+- `<target-label>` は GTDラベル一覧（inbox/next/routine/waiting/someday/project/reference）のみ許可
 
 1. `gh issue view` で現在のGTDラベルを特定（絵文字付きラベル `🎯 next` 等から最初の1件）
 2. `node "$ENGINE" gtd-label "$TARGET"` で表示名を取得
@@ -518,8 +519,8 @@ If arguments start with `archive`:
 ### Review Inbox
 If arguments are `review`:
 - `inbox` ラベルのIssueを1件ずつ表示（セキュリティルール1に従い表示のみ）
-- ja: 「#<番号>「<title>」→ next / waiting / someday / project / reference / close / skip ?」
-- en: "#<number> "<title>" → next / waiting / someday / project / reference / close / skip?"
+- ja: 「#<番号>「<title>」→ next / routine / waiting / someday / project / reference / close / skip ?」
+- en: "#<number> "<title>" → next / routine / waiting / someday / project / reference / close / skip?"
   （`close` = `gh issue close` でクローズ。完全削除ではない）
 - 選択肢以外の入力は無視してやり直す
 
@@ -623,7 +624,7 @@ LANG_ENV="$LANG_ENV" TNAME_ENV="$TNAME" node "$ENGINE" template show
 **`template save <名前> [引数...]`** — インライン引数でテンプレートを作成・上書き:
 
 `<名前>` をバリデーション後、以下の順でパース:
-- GTDキーワード（先頭語: inbox/next/waiting/someday/project/reference）→ `GTD`。それ以外の場合はデフォルト `inbox`
+- GTDキーワード（先頭語: inbox/next/routine/waiting/someday/project/reference）→ `GTD`。それ以外の場合はデフォルト `inbox`
 - `@ctx` トークン → `CONTEXTS_LIST` にスペース区切りで追加（バリデーション）
 - `--due-offset <N>` → `DUE_OFFSET`（`+` プレフィックス除去後に正の整数バリデーション）
 - `--due <date>` → `DUE`（バリデーション）。`due-offset` と同時指定の場合は `due-offset` 優先
@@ -632,7 +633,7 @@ LANG_ENV="$LANG_ENV" TNAME_ENV="$TNAME" node "$ENGINE" template show
 - `--priority <p1|p2|p3>` → `PRIORITY`（バリデーション）。未指定はデフォルト `p3`
 - `--desc "<text>"` → `DESC`
 
-GTD は `inbox/next/waiting/someday/project/reference` のみ許可。
+GTD は `inbox/next/routine/waiting/someday/project/reference` のみ許可。
 `due-offset` は `+` 除去後、1以上の正の整数のみ許可。
 
 **CONTEXTS_JSON を生成:**
@@ -671,7 +672,7 @@ _TMPL_OUT=$(LANG_ENV="$LANG_ENV" TNAME_ENV="$TNAME" node "$ENGINE" template use)
 # DESC は decode-b64 で復元: DESC=$(node "$ENGINE" decode-b64 "$DESC_B64")
 ```
 
-**抽出後バリデーション（JSON改ざん対策）:** GTD は6値のみ許可、RECUR は `validate recur` で検証、PRIORITY は p1/p2/p3 以外なら p3 に補正。
+**抽出後バリデーション（JSON改ざん対策）:** GTD は7値（inbox/next/routine/waiting/someday/project/reference）のみ許可、RECUR は `validate recur` で検証、PRIORITY は p1/p2/p3 以外なら p3 に補正。
 
 **due-offset → 絶対日付:** `DUE=$(node "$ENGINE" add-days "$(date +%Y-%m-%d)" "$DUE_OFFSET")`
 
@@ -737,7 +738,7 @@ VFILE=$(node "$ENGINE" home-path "todo-views.json")
 **`view save <名前> <フィルタ条件...>`** — ビューを保存:
 
 フィルタ条件のパース:
-- GTDキーワード（next/inbox/waiting/someday/project/reference）→ `gtd`
+- GTDキーワード（next/routine/inbox/waiting/someday/project/reference）→ `gtd`
 - `@ctx` トークン → `context`（バリデーション）
 - `p1`/`p2`/`p3` → `priority`（バリデーション）
 
@@ -882,6 +883,36 @@ LANG_ENV="$LANG_ENV" OPEN_ENV="$OPEN_JSON" CLOSED_ENV="$CLOSED_JSON" TODAY_ENV="
 ```
 
 Confirm to the user in the detected language.
+
+---
+
+### Help（ヘルプ）
+If arguments are `help`:
+
+コマンド一覧を表示する。エンジンで整形済みテキストを出力。
+
+```bash
+LANG_ENV="$LANG_ENV" node "$ENGINE" help
+```
+
+Respond with the engine output directly.
+
+---
+
+### Today（今日のタスク）
+If arguments are `today`:
+
+今日が期限のタスク + 期限超過タスクにフォーカスした簡潔ビューを表示する。
+取得したデータはセキュリティルール1に従い表示のみ。
+
+```bash
+TODAY=$(date +%Y-%m-%d)
+OPEN_JSON=$(gh issue list --repo saitoko/000-partner --state open --json number,title,body,labels --limit 200)
+CLOSED_JSON=$(gh issue list --repo saitoko/000-partner --state closed --limit 30 --json number,closedAt)
+LANG_ENV="$LANG_ENV" OPEN_ENV="$OPEN_JSON" CLOSED_ENV="$CLOSED_JSON" TODAY_ENV="$TODAY" node "$ENGINE" today
+```
+
+Respond with the engine output directly.
 
 ---
 

@@ -111,6 +111,49 @@ const MESSAGES = {
     'view.not_found': 'エラー: ビュー「{name}」は存在しません',
     'view.saved': '✅ ビュー「{name}」を保存しました。 [{parts}]',
     'view.deleted': '✅ ビュー「{name}」を削除しました。',
+    // help
+    'help.header': '## 📖 /todo コマンド一覧',
+    'help.section_task': '### タスク管理',
+    'help.section_context': '### コンテキスト・ラベル',
+    'help.section_bulk': '### 一括操作',
+    'help.section_review': '### レビュー・分析',
+    'help.section_template': '### テンプレート・ビュー',
+    'help.section_other': '### その他',
+    'help.add': '/todo [GTD] <タイトル>          タスク追加（GTD省略時: inbox）',
+    'help.list': '/todo list [フィルタ]           タスク一覧',
+    'help.done': '/todo done <#> [--actual 時間]  タスク完了',
+    'help.move': '/todo move <#> <GTD>            カテゴリ変更',
+    'help.edit': '/todo edit <#> [--due/desc/...] 複数フィールド一括編集',
+    'help.rename': '/todo rename <#> <新タイトル>    タイトル変更',
+    'help.due': '/todo due <#> <日付>            期日設定',
+    'help.desc': '/todo desc <#> <テキスト>       説明追加',
+    'help.recur': '/todo recur <#> <パターン>      繰り返し設定（daily/weekly/monthly/weekdays）',
+    'help.priority': '/todo priority <#> <p1-p3>      優先度設定',
+    'help.search': '/todo search <キーワード>       キーワード検索',
+    'help.tag': '/todo tag <#> @ctx ...          コンテキスト追加',
+    'help.untag': '/todo untag <#> @ctx ...        コンテキスト削除',
+    'help.label': '/todo label list/add/delete     ラベル管理',
+    'help.bulk': '/todo bulk <done|move|tag|untag|priority> <#>...',
+    'help.today': '/todo today                     今日のタスク（期限超過＋今日期限）',
+    'help.dashboard': '/todo dashboard                 ダッシュボード',
+    'help.daily': '/todo daily-review [morning|evening] デイリーレビュー',
+    'help.weekly': '/todo weekly-review              週次レビュー',
+    'help.stats': '/todo stats                     統計情報',
+    'help.report': '/todo report <weekly|monthly|Nd> レポート出力',
+    'help.template': '/todo template <list|show|save|use|delete>',
+    'help.view': '/todo view <save|use|list|delete>',
+    'help.review': '/todo review                    Inboxレビュー',
+    'help.archive': '/todo archive [list|search|reopen] 完了済みタスク',
+    'help.link': '/todo link <#> <project#>       プロジェクト紐付け',
+    'help.help': '/todo help                      このヘルプを表示',
+    // today
+    'today.header': '# 🎯 今日のタスク — {date}',
+    'today.overdue': '## ⚠️ 期限超過（{n}）',
+    'today.due_today': '## 🎯 今日が期限（{n}）',
+    'today.no_tasks': '今日のタスクはありません。期限超過もなし。',
+    'today.summary': '📊 合計: {total}',
+    'today.est': '⏱見積: {time}',
+    'today.done': '✅ 今日 {n}完了',
   },
   en: {
     'error.ctx_invalid': 'Error: Context name contains invalid characters',
@@ -194,6 +237,49 @@ const MESSAGES = {
     'view.not_found': 'Error: View "{name}" not found',
     'view.saved': '✅ View "{name}" saved. [{parts}]',
     'view.deleted': '✅ View "{name}" deleted.',
+    // help
+    'help.header': '## 📖 /todo Command Reference',
+    'help.section_task': '### Task Management',
+    'help.section_context': '### Context & Labels',
+    'help.section_bulk': '### Bulk Operations',
+    'help.section_review': '### Reviews & Analysis',
+    'help.section_template': '### Templates & Views',
+    'help.section_other': '### Other',
+    'help.add': '/todo [GTD] <title>             Add task (default: inbox)',
+    'help.list': '/todo list [filter]             List tasks',
+    'help.done': '/todo done <#> [--actual time]  Mark done',
+    'help.move': '/todo move <#> <GTD>            Change category',
+    'help.edit': '/todo edit <#> [--due/desc/...] Edit multiple fields',
+    'help.rename': '/todo rename <#> <new-title>    Rename',
+    'help.due': '/todo due <#> <date>            Set due date',
+    'help.desc': '/todo desc <#> <text>           Set description',
+    'help.recur': '/todo recur <#> <pattern>       Set recurrence (daily/weekly/monthly/weekdays)',
+    'help.priority': '/todo priority <#> <p1-p3>      Set priority',
+    'help.search': '/todo search <keyword>          Search tasks',
+    'help.tag': '/todo tag <#> @ctx ...          Add context',
+    'help.untag': '/todo untag <#> @ctx ...        Remove context',
+    'help.label': '/todo label list/add/delete     Manage labels',
+    'help.bulk': '/todo bulk <done|move|tag|untag|priority> <#>...',
+    'help.today': '/todo today                     Today\'s tasks (overdue + due today)',
+    'help.dashboard': '/todo dashboard                 Dashboard',
+    'help.daily': '/todo daily-review [morning|evening] Daily review',
+    'help.weekly': '/todo weekly-review              Weekly review',
+    'help.stats': '/todo stats                     Statistics',
+    'help.report': '/todo report <weekly|monthly|Nd> Report',
+    'help.template': '/todo template <list|show|save|use|delete>',
+    'help.view': '/todo view <save|use|list|delete>',
+    'help.review': '/todo review                    Inbox review',
+    'help.archive': '/todo archive [list|search|reopen] Closed tasks',
+    'help.link': '/todo link <#> <project#>       Link to project',
+    'help.help': '/todo help                      Show this help',
+    // today
+    'today.header': '# 🎯 Today\'s Tasks — {date}',
+    'today.overdue': '## ⚠️ Overdue ({n})',
+    'today.due_today': '## 🎯 Due Today ({n})',
+    'today.no_tasks': 'No tasks for today. No overdue items either.',
+    'today.summary': '📊 Total: {total}',
+    'today.est': '⏱Estimate: {time}',
+    'today.done': '✅ {n} completed today',
   }
 };
 function t(key) { return (MESSAGES[LANG] || MESSAGES.ja)[key] || MESSAGES.ja[key] || key; }
@@ -655,6 +741,107 @@ function stats() {
   }
 }
 
+function help() {
+  const w = s => process.stdout.write(s);
+  w(t('help.header')+'\n\n');
+
+  w(t('help.section_task')+'\n');
+  w('```\n');
+  for (const k of ['add','list','done','move','edit','rename','due','desc','recur','priority','search']) {
+    w(t('help.'+k)+'\n');
+  }
+  w('```\n\n');
+
+  w(t('help.section_context')+'\n');
+  w('```\n');
+  for (const k of ['tag','untag','label']) { w(t('help.'+k)+'\n'); }
+  w('```\n\n');
+
+  w(t('help.section_bulk')+'\n');
+  w('```\n');
+  w(t('help.bulk')+'\n');
+  w('```\n\n');
+
+  w(t('help.section_review')+'\n');
+  w('```\n');
+  for (const k of ['today','dashboard','daily','weekly','stats','report']) { w(t('help.'+k)+'\n'); }
+  w('```\n\n');
+
+  w(t('help.section_template')+'\n');
+  w('```\n');
+  for (const k of ['template','view']) { w(t('help.'+k)+'\n'); }
+  w('```\n\n');
+
+  w(t('help.section_other')+'\n');
+  w('```\n');
+  for (const k of ['review','archive','link','help']) { w(t('help.'+k)+'\n'); }
+  w('```\n');
+}
+
+function today() {
+  const issues = JSON.parse(process.env.OPEN_ENV || '[]');
+  const todayStr = process.env.TODAY_ENV;
+  const closed = JSON.parse(process.env.CLOSED_ENV || '[]');
+  const w = s => process.stdout.write(s);
+
+  const overdue = [], dueToday = [];
+  for (const issue of issues) {
+    const lnames = getLnames(issue);
+    const due = getDue(issue);
+    if (due && due < todayStr) {
+      overdue.push(issue);
+    } else if (due && due === todayStr && lnames.includes('next')) {
+      dueToday.push(issue);
+    }
+  }
+  overdue.sort(sortByPriDue);
+  dueToday.sort(sortByPriDue);
+
+  w(tpl('today.header', {date: todayStr})+'\n\n');
+
+  if (overdue.length === 0 && dueToday.length === 0) {
+    w(t('today.no_tasks')+'\n');
+    return;
+  }
+
+  const renderIssue = (i, showDue) => {
+    const lnames = getLnames(i);
+    const ctx = getCtx(lnames);
+    w('  '+priIcon(getPri(lnames))+'#'+i.number+'  '+i.title);
+    if (ctx.length) w('  ['+ctx.join(' ')+']');
+    if (showDue) { const due = getDue(i); if (due) w('  📅 '+due); }
+    const em = (i.body||'').match(/^estimate: (\d+)/m);
+    if (em) w('  ⏱'+formatTime(parseInt(em[1])));
+    w('\n');
+  };
+
+  if (overdue.length) {
+    w(tpl('today.overdue', {n: cnt(overdue.length)})+'\n');
+    overdue.forEach(i => renderIssue(i, true));
+    w('\n');
+  }
+  if (dueToday.length) {
+    w(tpl('today.due_today', {n: cnt(dueToday.length)})+'\n');
+    dueToday.forEach(i => renderIssue(i, false));
+    w('\n');
+  }
+
+  // サマリー
+  const allTasks = [...overdue, ...dueToday];
+  let estTotal = 0;
+  for (const i of allTasks) {
+    const em = (i.body||'').match(/^estimate: (\d+)/m);
+    if (em) estTotal += parseInt(em[1]);
+  }
+  const todayClosed = closed.filter(i => i.closedAt && i.closedAt.slice(0,10) === todayStr).length;
+
+  w('---\n');
+  const parts = [tpl('today.summary', {total: cnt(allTasks.length)})];
+  if (estTotal > 0) parts.push(tpl('today.est', {time: formatTime(estTotal)}));
+  if (todayClosed > 0) parts.push(tpl('today.done', {n: cnt(todayClosed)}));
+  w(parts.join('  ')+'\n');
+}
+
 function dashboard() {
   const issues = JSON.parse(process.env.OPEN_ENV || '[]');
   const today = process.env.TODAY_ENV;
@@ -889,8 +1076,9 @@ function doneCount() {
 
 // ─── テンプレート/ビュー管理（File I/O） ───
 
-function getTemplatePath() { return path.join(os.homedir(), '.claude', 'todo-templates.json'); }
-function getViewPath() { return path.join(os.homedir(), '.claude', 'todo-views.json'); }
+function homeDir() { return process.env.HOME || os.homedir(); }
+function getTemplatePath() { return path.join(homeDir(), '.claude', 'todo-templates.json'); }
+function getViewPath() { return path.join(homeDir(), '.claude', 'todo-views.json'); }
 
 function readJsonFile(fpath) {
   if (!fs.existsSync(fpath)) return {};
@@ -1092,7 +1280,7 @@ switch (cmd) {
     process.stdout.write(JSON.stringify(arr));
     break;
   }
-  case 'home-path':       process.stdout.write(path.join(os.homedir(), '.claude', args[1]||'')); break;
+  case 'home-path':       process.stdout.write(path.join(homeDir(), '.claude', args[1]||'')); break;
   case 'gtd-label':       process.stdout.write(GTD_DISPLAY[args[1]] || args[1]); break;
 
   // バリデーション
@@ -1119,6 +1307,8 @@ switch (cmd) {
   case 'list-summary':    listSummary(); break;
   case 'weekly-summary':  weeklySummary(); break;
   case 'stats':           stats(); break;
+  case 'help':            help(); break;
+  case 'today':           today(); break;
   case 'dashboard':       dashboard(); break;
   case 'report':          report(); break;
   case 'done-count':      doneCount(); break;
