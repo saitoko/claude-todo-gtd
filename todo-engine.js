@@ -2524,6 +2524,10 @@ async function runBulk(octokit, owner, repo, tokens) {
 
 // runMain: コマンドディスパッチャー
 async function runMain(args) {
+  if (!REPO_OWNER || !REPO_NAME) {
+    process.stderr.write('Error: TODO_REPO_OWNER and TODO_REPO_NAME must be set in .env or environment variables.\n');
+    process.exit(1);
+  }
   const octokit = await initOctokit();
   const owner = REPO_OWNER, repo = REPO_NAME;
 
