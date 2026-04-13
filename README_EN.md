@@ -27,9 +27,11 @@ Just type `/todo` to add, manage, and review tasks entirely from the terminal.
 
 ### Setup
 
-1. Copy the skill file:
+1. Copy the files:
 ```bash
 cp todo.md ~/.claude/commands/todo.md
+cp todo-engine.js ~/.claude/todo-engine.js
+cp todo.sh ~/.claude/todo.sh
 ```
 
 2. Initialize the template database:
@@ -42,10 +44,16 @@ echo '{}' > ~/.claude/todo-templates.json
 gh repo create my-tasks --private
 ```
 
-4. Update the repository name at the top of `todo.md`:
+4. Configure environment variables (create `.env` in the project root):
+```bash
+cp .env.example .env
+# Edit .env and set the following:
+# GH_TOKEN=your_github_token_here  (get with: gh auth token)
+# TODO_REPO_OWNER=your-github-username
+# TODO_REPO_NAME=my-tasks
 ```
-repository `<your-username>/<your-repo>`
-```
+
+> **Note:** `@octokit/rest` (GitHub API client) is automatically installed on first run.
 
 5. Set the language to English:
 ```bash

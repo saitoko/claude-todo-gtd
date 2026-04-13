@@ -28,9 +28,11 @@ GitHub Issues をバックエンドに使った、Claude Code 用の GTD（Getti
 
 ### 手順
 
-1. スキルファイルをコピー:
+1. ファイルをコピー:
 ```bash
 cp todo.md ~/.claude/commands/todo.md
+cp todo-engine.js ~/.claude/todo-engine.js
+cp todo.sh ~/.claude/todo.sh
 ```
 
 2. テンプレートDBを初期化:
@@ -43,10 +45,16 @@ echo '{}' > ~/.claude/todo-templates.json
 gh repo create my-tasks --private
 ```
 
-4. `todo.md` 冒頭のリポジトリ名を自分のものに変更:
+4. 環境変数を設定（`.env` をプロジェクトルートに作成）:
+```bash
+cp .env.example .env
+# .env を編集して以下を設定:
+# GH_TOKEN=your_github_token_here  （gh auth token で取得可能）
+# TODO_REPO_OWNER=your-github-username
+# TODO_REPO_NAME=my-tasks
 ```
-repository `<your-username>/<your-repo>`
-```
+
+> **Note:** `@octokit/rest`（GitHub API クライアント）は初回実行時に自動インストールされます。
 
 5. Claude Code で `/todo` と入力して動作確認。
 
