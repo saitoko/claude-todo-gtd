@@ -1,8 +1,8 @@
 #!/bin/bash
-# GitHub接続テスト — saitoko/000-partner
+# GitHub接続テスト — ${TODO_REPO_OWNER}/${TODO_REPO_NAME}
 set -uo pipefail
 
-REPO="saitoko/000-partner"
+REPO="${TODO_REPO_OWNER}/${TODO_REPO_NAME}"
 PASS=0; FAIL=0
 CREATED_ISSUES=""
 
@@ -1027,6 +1027,200 @@ if echo "$BODY_WD_NEW" | grep -q "recur: weekdays"; then
   ok "weekdays recur: 再作成タスクに recur: weekdays が引き継がれる"
 else
   fail "weekdays recur: recur行が引き継がれていない" "body: $BODY_WD_NEW"
+fi
+
+# ─────────────────────────────────────────────
+echo ""
+echo "§AA  Dashboard 統合テスト（Pro機能）"
+# ─────────────────────────────────────────────
+
+TODAY_GH=$(date +%Y-%m-%d)
+YESTERDAY_GH=$(node -e "const d=new Date('$TODAY_GH'); d.setDate(d.getDate()-1); process.stdout.write(d.toISOString().slice(0,10));")
+
+NUM_DASH1=$(create_issue "[test] dashboard overdue" --label "next" --label "p1" --body "due: $YESTERDAY_GH")
+track "$NUM_DASH1"
+NUM_DASH2=$(create_issue "[test] dashboard today" --label "next" --label "p2" --body "due: $TODAY_GH")
+track "$NUM_DASH2"
+NUM_DASH3=$(create_issue "[test] dashboard inbox" --label "inbox" --body "test")
+track "$NUM_DASH3"
+
+sleep 2
+DASH_GH_OPEN=$(gh issue list --repo "$REPO" --state open --json number,title,body,labels --limit 200)
+DASH_GH_CLOSED=$(gh issue list --repo "$REPO" --state closed --limit 30 --json number,closedAt)
+
+DASH_GH_OUT=$(OPEN_ENV="$DASH_GH_OPEN" TODAY_ENV="$TODAY_GH" CLOSED_ENV="$DASH_GH_CLOSED" node -e "
+  const issues=JSON.parse(process.env.OPEN_ENV);
+  const today=process.env.TODAY_ENV;
+  const closed=JSON.parse(process.env.CLOSED_ENV||'[]');
+  const w=s=>process.stdout.write(s);
+  const getLnames=i=>i.labels.map(l=>l.name);
+  const getDue=i=>{const m=(i.body||'').match(/^due: (\d{4}-\d{2}-\d{2})/m); return m?m[1]:null;};
+  const getPri=lnames=>lnames.find(l=>/^p[123]$/.test(l))||'p9';
+  const d7=new Date(today); d7.setDate(d7.getDate()+7);
+  const d7str=d7.toISOString().slice(0,10);
+  const overdue=[], dueToday=[];
+  const gtdCounts={next:0,inbox:0,waiting:0,someday:0,project:0,reference:0};
+  for(const issue of issues){
+    const lnames=getLnames(issue);
+    for(const gl of Object.keys(gtdCounts)){ if(lnames.includes(gl)) gtdCounts[gl]++; }
+    const due=getDue(issue);
+    if(lnames.includes('next')){
+      if(due && due<today) overdue.push(issue);
+      else if(due && due===today) dueToday.push(issue);
+    } else if(due && due<today){
+      overdue.push(issue);
+    }
+  }
+  w('OVERDUE='+overdue.length+'\n');
+  w('TODAY='+dueToday.length+'\n');
+  w('INBOX='+gtdCounts.inbox+'\n');
+")
+
+DASH_OVERDUE=$(echo "$DASH_GH_OUT" | grep '^OVERDUE=' | cut -d= -f2)
+DASH_TODAY_CNT=$(echo "$DASH_GH_OUT" | grep '^TODAY=' | cut -d= -f2)
+DASH_INBOX_CNT=$(echo "$DASH_GH_OUT" | grep '^INBOX=' | cut -d= -f2)
+
+if [ "$DASH_OVERDUE" -ge 1 ]; then
+  ok "Dashboard統合: overdue >= 1 (実際: $DASH_OVERDUE)"
+else
+  fail "Dashboard統合: overdue >= 1" "実際: $DASH_OVERDUE"
+fi
+if [ "$DASH_TODAY_CNT" -ge 1 ]; then
+  ok "Dashboard統合: dueToday >= 1 (実際: $DASH_TODAY_CNT)"
+else
+  fail "Dashboard統合: dueToday >= 1" "実際: $DASH_TODAY_CNT"
+fi
+if [ "$DASH_INBOX_CNT" -ge 1 ]; then
+  ok "Dashboard統合: inbox >= 1 (実際: $DASH_INBOX_CNT)"
+else
+  fail "Dashboard統合: inbox >= 1" "実際: $DASH_INBOX_CNT"
+fi
+
+# ─────────────────────────────────────────────
+echo ""
+echo "§AB  Custom Views 統合テスト（Pro機能）"
+# ─────────────────────────────────────────────
+
+TEST_VFILE=$(mktemp /tmp/todo-test-views-gh-XXXXXX.json)
+printf '{}' > "$TEST_VFILE"
+
+# save
+VIEW_SAVE_OUT=$(VNAME_ENV="ghテスト" GTD_ENV="next" CTX_ENV="@PC" PRI_ENV="p1" VFILE_ENV="$TEST_VFILE" node -e "
+  const fs=require('fs');
+  const vfile=process.env.VFILE_ENV;
+  let data=JSON.parse(fs.readFileSync(vfile,'utf8'));
+  const name=process.env.VNAME_ENV;
+  const v={};
+  const gtd=process.env.GTD_ENV||''; if(gtd) v.gtd=gtd;
+  const ctx=process.env.CTX_ENV||''; if(ctx) v.context=ctx.trim().split(/\s+/);
+  const pri=process.env.PRI_ENV||''; if(pri) v.priority=pri;
+  data[name]=v;
+  fs.writeFileSync(vfile, JSON.stringify(data,null,2));
+  process.stdout.write('SAVED');
+")
+if [ "$VIEW_SAVE_OUT" = "SAVED" ]; then
+  ok "View統合: save 成功"
+else
+  fail "View統合: save 失敗" "$VIEW_SAVE_OUT"
+fi
+
+# load
+VIEW_LOAD_OUT=$(VNAME_ENV="ghテスト" VFILE_ENV="$TEST_VFILE" node -e "
+  const fs=require('fs');
+  const data=JSON.parse(fs.readFileSync(process.env.VFILE_ENV,'utf8'));
+  const name=process.env.VNAME_ENV;
+  if(!data[name]){ process.stdout.write('NOT_FOUND'); process.exit(0); }
+  const v=data[name];
+  const parts=[];
+  if(v.gtd) parts.push('GTD='+v.gtd);
+  if(v.context) parts.push('CTX='+v.context.join(' '));
+  if(v.priority) parts.push('PRI='+v.priority);
+  process.stdout.write(parts.join(' '));
+")
+if echo "$VIEW_LOAD_OUT" | grep -q "GTD=next"; then
+  ok "View統合: load GTD=next"
+else
+  fail "View統合: load GTD不一致" "$VIEW_LOAD_OUT"
+fi
+if echo "$VIEW_LOAD_OUT" | grep -q "PRI=p1"; then
+  ok "View統合: load PRI=p1"
+else
+  fail "View統合: load PRI不一致" "$VIEW_LOAD_OUT"
+fi
+
+# list
+VIEW_LIST_OUT=$(VFILE_ENV="$TEST_VFILE" node -e "
+  const fs=require('fs');
+  const data=JSON.parse(fs.readFileSync(process.env.VFILE_ENV,'utf8'));
+  process.stdout.write(Object.keys(data).join(','));
+")
+if echo "$VIEW_LIST_OUT" | grep -q "ghテスト"; then
+  ok "View統合: list にビュー表示"
+else
+  fail "View統合: list にビューなし" "$VIEW_LIST_OUT"
+fi
+
+# delete
+VIEW_DEL_OUT=$(VNAME_ENV="ghテスト" VFILE_ENV="$TEST_VFILE" node -e "
+  const fs=require('fs');
+  const vfile=process.env.VFILE_ENV;
+  let data=JSON.parse(fs.readFileSync(vfile,'utf8'));
+  const name=process.env.VNAME_ENV;
+  if(!data[name]){ process.stdout.write('NOT_FOUND'); process.exit(0); }
+  delete data[name];
+  fs.writeFileSync(vfile, JSON.stringify(data,null,2));
+  process.stdout.write('DELETED');
+")
+if [ "$VIEW_DEL_OUT" = "DELETED" ]; then
+  ok "View統合: delete 成功"
+else
+  fail "View統合: delete 失敗" "$VIEW_DEL_OUT"
+fi
+
+rm -f "$TEST_VFILE"
+
+# ─────────────────────────────────────────────
+echo ""
+echo "§AC  Report 統合テスト（Pro機能）"
+# ─────────────────────────────────────────────
+
+# テスト Issue を1つクローズしてレポートに反映させる
+NUM_RPT=$(create_issue "[test] report テスト" --label "next" --label "p3" --body "test")
+track "$NUM_RPT"
+gh issue close "$NUM_RPT" --repo "$REPO" 2>/dev/null
+sleep 2
+
+RPT_OPEN_GH=$(gh issue list --repo "$REPO" --state open --json number,title,body,labels --limit 200)
+RPT_CLOSED_GH=$(gh issue list --repo "$REPO" --state closed --limit 200 --json number,title,labels,closedAt,body)
+
+RPT_GH_OUT=$(OPEN_ENV="$RPT_OPEN_GH" TODAY_ENV="$TODAY_GH" DAYS_ENV="7" CLOSED_ENV="$RPT_CLOSED_GH" node -e "
+  const today=process.env.TODAY_ENV;
+  const days=parseInt(process.env.DAYS_ENV);
+  const closed=JSON.parse(process.env.CLOSED_ENV||'[]');
+  const startDate=new Date(today);
+  startDate.setDate(startDate.getDate()-days);
+  const startStr=startDate.toISOString().slice(0,10);
+  const periodClosed=closed.filter(i=>{
+    if(!i.closedAt) return false;
+    const d=i.closedAt.slice(0,10);
+    return d>=startStr && d<=today;
+  });
+  process.stdout.write('CLOSED_COUNT='+periodClosed.length+'\n');
+  process.stdout.write('HAS_TODAY='+(periodClosed.some(i=>i.closedAt.slice(0,10)===today)?'YES':'NO')+'\n');
+")
+
+RPT_CLOSED_COUNT=$(echo "$RPT_GH_OUT" | grep '^CLOSED_COUNT=' | cut -d= -f2)
+RPT_HAS_TODAY=$(echo "$RPT_GH_OUT" | grep '^HAS_TODAY=' | cut -d= -f2)
+
+if [ "$RPT_CLOSED_COUNT" -ge 1 ]; then
+  ok "Report統合: 期間内完了 >= 1 (実際: $RPT_CLOSED_COUNT)"
+else
+  fail "Report統合: 期間内完了 >= 1" "実際: $RPT_CLOSED_COUNT"
+fi
+if [ "$RPT_HAS_TODAY" = "YES" ]; then
+  ok "Report統合: 今日のクローズが含まれる"
+else
+  fail "Report統合: 今日のクローズが含まれない" "$RPT_GH_OUT"
 fi
 
 # ─────────────────────────────────────────────

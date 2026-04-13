@@ -1653,10 +1653,13 @@ assert_contains "en: report Current Status"        "Current Task Status" "$RPT_E
 TEMP_TFILE_EN=$(mktemp /tmp/todo-test-templates-en-XXXXXX.json)
 printf '{}' > "$TEMP_TFILE_EN"
 REAL_HOME="$HOME"
-REAL_USERPROFILE="${USERPROFILE:-}"
 FAKE_HOME=$(mktemp -d /tmp/todo-test-home-en-XXXXXX)
 export HOME="$FAKE_HOME"
-export USERPROFILE="$FAKE_HOME"
+# Windows (Git Bash) では USERPROFILE も差し替えないと os.homedir() が古い値を返す
+if [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* ]]; then
+  REAL_USERPROFILE="${USERPROFILE:-}"
+  export USERPROFILE="$FAKE_HOME"
+fi
 mkdir -p "$HOME/.claude"
 printf '{}' > "$HOME/.claude/todo-templates.json"
 printf '{}' > "$HOME/.claude/todo-views.json"
@@ -1672,13 +1675,85 @@ VIEW_LIST_EN=$(LANG_ENV=en node "$ENGINE" view list)
 assert_contains "en: view list empty"              "No views"            "$VIEW_LIST_EN"
 
 export HOME="$REAL_HOME"
-if [ -n "$REAL_USERPROFILE" ]; then export USERPROFILE="$REAL_USERPROFILE"; else unset USERPROFILE; fi
+if [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* ]]; then
+  if [ -n "$REAL_USERPROFILE" ]; then export USERPROFILE="$REAL_USERPROFILE"; else unset USERPROFILE; fi
+fi
 rm -rf "$FAKE_HOME" 2>/dev/null || true
 
 # Verify default (ja) still works
 LIST_JA_OUT=$(OPEN_ENV="$LIST_MOCK" TODAY_ENV="$TEST_TODAY" node "$ENGINE" list-all)
 assert_contains "ja default: list 件 suffix"       "2件"                 "$LIST_JA_OUT"
 assert_contains "ja default: section header"        "次のアクション"     "$LIST_JA_OUT"
+
+# ──────────────────────────────────────────
+# help コマンドテスト
+# ──────────────────────────────────────────
+echo ""
+echo "▶ help コマンド"
+
+HELP_JA=$(LANG_ENV=ja node "$ENGINE" help)
+assert_contains "ja: help header"         "コマンド一覧"       "$HELP_JA"
+assert_contains "ja: help タスク管理"     "タスク管理"         "$HELP_JA"
+assert_contains "ja: help コンテキスト"   "コンテキスト"       "$HELP_JA"
+assert_contains "ja: help 一括操作"       "一括操作"           "$HELP_JA"
+assert_contains "ja: help レビュー"       "レビュー"           "$HELP_JA"
+assert_contains "ja: help テンプレート"   "テンプレート"       "$HELP_JA"
+assert_contains "ja: help その他"         "その他"             "$HELP_JA"
+assert_contains "ja: help /todo list"     "/todo list"         "$HELP_JA"
+assert_contains "ja: help /todo done"     "/todo done"         "$HELP_JA"
+assert_contains "ja: help /todo today"    "/todo today"        "$HELP_JA"
+assert_contains "ja: help /todo help"     "/todo help"         "$HELP_JA"
+
+HELP_EN=$(LANG_ENV=en node "$ENGINE" help)
+assert_contains "en: help header"         "Command Reference"  "$HELP_EN"
+assert_contains "en: help Task Mgmt"      "Task Management"    "$HELP_EN"
+assert_contains "en: help Context"        "Context"            "$HELP_EN"
+assert_contains "en: help Bulk"           "Bulk Operations"    "$HELP_EN"
+assert_contains "en: help Reviews"        "Reviews"            "$HELP_EN"
+assert_contains "en: help Templates"      "Templates"          "$HELP_EN"
+assert_contains "en: help Other"          "Other"              "$HELP_EN"
+
+# ──────────────────────────────────────────
+# today コマンドテスト
+# ──────────────────────────────────────────
+echo ""
+echo "▶ today コマンド"
+
+# タスクなし
+TODAY_EMPTY=$(LANG_ENV=ja OPEN_ENV='[]' CLOSED_ENV='[]' TODAY_ENV="$TEST_TODAY" node "$ENGINE" today)
+assert_contains "ja: today 空の場合"       "今日のタスクはありません" "$TODAY_EMPTY"
+
+TODAY_EMPTY_EN=$(LANG_ENV=en OPEN_ENV='[]' CLOSED_ENV='[]' TODAY_ENV="$TEST_TODAY" node "$ENGINE" today)
+assert_contains "en: today empty"          "No tasks for today"      "$TODAY_EMPTY_EN"
+
+# 期限超過 + 今日期限のタスクあり
+TODAY_DATA='[
+  {"number":10,"title":"期限超過","body":"due: 2026-04-03\nestimate: 60","labels":[{"name":"🎯 next"},{"name":"p1"}]},
+  {"number":11,"title":"今日のタスク","body":"due: 2026-04-05\nestimate: 30","labels":[{"name":"🎯 next"},{"name":"p2"}]},
+  {"number":12,"title":"明日のタスク","body":"due: 2026-04-06","labels":[{"name":"🎯 next"},{"name":"p3"}]},
+  {"number":13,"title":"期限なし","body":"","labels":[{"name":"🎯 next"}]}
+]'
+CLOSED_DATA='[{"number":20,"closedAt":"2026-04-05T10:00:00Z"},{"number":21,"closedAt":"2026-04-04T10:00:00Z"}]'
+TODAY_OUT=$(LANG_ENV=ja OPEN_ENV="$TODAY_DATA" CLOSED_ENV="$CLOSED_DATA" TODAY_ENV="$TEST_TODAY" node "$ENGINE" today)
+
+assert_contains "ja: today ヘッダー"       "今日のタスク"            "$TODAY_OUT"
+assert_contains "ja: today 日付"           "$TEST_TODAY"             "$TODAY_OUT"
+assert_contains "ja: today 期限超過あり"   "期限超過"                "$TODAY_OUT"
+assert_contains "ja: today #10 表示"       "#10"                     "$TODAY_OUT"
+assert_contains "ja: today 今日が期限"     "今日が期限"              "$TODAY_OUT"
+assert_contains "ja: today #11 表示"       "#11"                     "$TODAY_OUT"
+assert_not_contains "ja: today #12 非表示" "#12"                     "$TODAY_OUT"
+assert_not_contains "ja: today #13 非表示" "#13"                     "$TODAY_OUT"
+assert_contains "ja: today 合計"           "合計"                    "$TODAY_OUT"
+assert_contains "ja: today 見積"           "見積"                    "$TODAY_OUT"
+assert_contains "ja: today 完了数"         "1件完了"                 "$TODAY_OUT"
+
+# en
+TODAY_OUT_EN=$(LANG_ENV=en OPEN_ENV="$TODAY_DATA" CLOSED_ENV="$CLOSED_DATA" TODAY_ENV="$TEST_TODAY" node "$ENGINE" today)
+assert_contains "en: today header"         "Today"                   "$TODAY_OUT_EN"
+assert_contains "en: today Overdue"        "Overdue"                 "$TODAY_OUT_EN"
+assert_contains "en: today Due Today"      "Due Today"               "$TODAY_OUT_EN"
+assert_contains "en: today Total"          "Total"                   "$TODAY_OUT_EN"
 
 # ──────────────────────────────────────────
 # 結果サマリー
