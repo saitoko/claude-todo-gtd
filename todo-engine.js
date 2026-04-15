@@ -341,10 +341,12 @@ function addMonths(dt, n) {
 function normalizeDue(raw, today) {
   const d = () => new Date(today+'T00:00:00');
   const add = (dt, days) => { dt.setDate(dt.getDate()+days); return dt; };
+  const DOW_NAMES = ['日','月','火','水','木','金','土'];
   let result = null;
-  if      (raw === '今日')   { result = today; }
-  else if (raw === '明日')   { result = fmt(add(d(), 1)); }
-  else if (raw === '明後日') { result = fmt(add(d(), 2)); }
+  if      (raw === '今日' || raw === 'きょう')             { result = today; }
+  else if (raw === '明日' || raw === 'あした' || raw === 'あす')  { result = fmt(add(d(), 1)); }
+  else if (raw === '明後日' || raw === 'あさって')         { result = fmt(add(d(), 2)); }
+  else if (raw === '昨日' || raw === 'きのう')             { result = fmt(add(d(), -1)); }
   else if (raw === '来週')   { result = fmt(add(d(), 7)); }
   else if (raw === '来月')   { result = fmt(addMonths(d(), 1)); }
   else if (raw === '今週末') { const dt=d(); const dow=dt.getDay(); result=fmt(add(dt, dow===6?0:6-dow)); }
@@ -355,15 +357,32 @@ function normalizeDue(raw, today) {
     if      ((m=raw.match(/^(\d+)日後$/)))             { result=fmt(add(d(),+m[1])); }
     else if ((m=raw.match(/^(\d+)週(?:間)?後$/)))      { result=fmt(add(d(),+m[1]*7)); }
     else if ((m=raw.match(/^(\d+)[ヶか]月後$/)))       { result=fmt(addMonths(d(),+m[1])); }
+    // 来週X曜: 来週月曜日 を起点に指定曜日へ
     else if ((m=raw.match(/^来週([月火水木金土日])曜(?:日)?$/))) {
-      const names=['日','月','火','水','木','金','土'];
-      const target=names.indexOf(m[1]);
+      const target=DOW_NAMES.indexOf(m[1]);
       const dt=d();
       const toNextMon=((1-dt.getDay()+7)%7)||7;
       dt.setDate(dt.getDate()+toNextMon);
       const offset=target===0?6:target-1;
       dt.setDate(dt.getDate()+offset);
       result=fmt(dt);
+    }
+    // 今週X曜: 今週のその曜日（今日より前なら今日）
+    else if ((m=raw.match(/^今週([月火水木金土日])曜(?:日)?$/))) {
+      const target=DOW_NAMES.indexOf(m[1]);
+      const dt=d();
+      const dow=dt.getDay();
+      const diff=target-dow;
+      const offset=diff<0?0:diff;
+      result=fmt(add(dt,offset));
+    }
+    // X曜 or X曜日: 次に来るその曜日（今日ならば今日）
+    else if ((m=raw.match(/^([月火水木金土日])曜(?:日)?$/))) {
+      const target=DOW_NAMES.indexOf(m[1]);
+      const dt=d();
+      const dow=dt.getDay();
+      const diff=(target-dow+7)%7;
+      result=fmt(add(dt,diff));
     }
     // English patterns (always checked regardless of LANG_ENV)
     else if (raw === 'today')                             { result = today; }
@@ -575,6 +594,68 @@ const GTD_SECTION_HEADERS = {
   reference: t('section.reference')
 };
 
+function listGroupedByDue(issues, today) {
+  const w = s => process.stdout.write(s);
+  const d1 = new Date(today+'T00:00:00');
+  const tomorrow = new Date(d1); tomorrow.setDate(d1.getDate()+1);
+  const tomorrowStr = fmt(tomorrow);
+  const d7 = new Date(d1); d7.setDate(d1.getDate()+7);
+  const d7str = fmt(d7);
+  const d14 = new Date(d1); d14.setDate(d1.getDate()+14);
+
+  // MM/DD 形式ヘッダー用
+  const mmdd = (dateStr) => {
+    const [,m,d] = dateStr.split('-');
+    return parseInt(m)+'/'+parseInt(d);
+  };
+
+  const groups = { overdue:[], today_:[], tomorrow_:[], thisWeek:[], later:[], noDue:[] };
+  for (const issue of issues) {
+    const due = getDue(issue);
+    if (!due) { groups.noDue.push(issue); continue; }
+    if (due < today)          { groups.overdue.push(issue); }
+    else if (due === today)   { groups.today_.push(issue); }
+    else if (due === tomorrowStr) { groups.tomorrow_.push(issue); }
+    else if (due <= d7str)    { groups.thisWeek.push(issue); }
+    else                       { groups.later.push(issue); }
+  }
+
+  for (const key of ['overdue','today_','tomorrow_','thisWeek','later','noDue']) {
+    groups[key].sort(sortByPriDue);
+  }
+
+  if (groups.overdue.length) {
+    w('── ⚠️ 期限超過 ──\n');
+    for (const i of groups.overdue) w(renderIssueList(i)+'\n');
+    w('\n');
+  }
+  if (groups.today_.length) {
+    w('── 📅 今日（'+mmdd(today)+'）──\n');
+    for (const i of groups.today_) w(renderIssueList(i)+'\n');
+    w('\n');
+  }
+  if (groups.tomorrow_.length) {
+    w('── 📅 明日（'+mmdd(tomorrowStr)+'）──\n');
+    for (const i of groups.tomorrow_) w(renderIssueList(i)+'\n');
+    w('\n');
+  }
+  if (groups.thisWeek.length) {
+    w('── 📅 今週（〜'+mmdd(d7str)+'）──\n');
+    for (const i of groups.thisWeek) w(renderIssueList(i)+'\n');
+    w('\n');
+  }
+  if (groups.later.length) {
+    w('── 📅 来週以降 ──\n');
+    for (const i of groups.later) w(renderIssueList(i)+'\n');
+    w('\n');
+  }
+  if (groups.noDue.length) {
+    w('── 📅 期限なし ──\n');
+    for (const i of groups.noDue) w(renderIssueList(i)+'\n');
+    w('\n');
+  }
+}
+
 function listAll() {
   const issues = JSON.parse(process.env.OPEN_ENV || '[]');
   const today = process.env.TODAY_ENV;
@@ -582,6 +663,7 @@ function listAll() {
   const filterCtx = process.env.FILTER_CTX_ENV || '';
   const filterPri = process.env.FILTER_PRI_ENV || '';
   const filterProj = process.env.FILTER_PROJ_ENV || '';
+  const groupByDue = process.env.FILTER_GROUP_ENV === '1';
   const w = s => process.stdout.write(s);
 
   // フィルタリング
@@ -594,11 +676,25 @@ function listAll() {
     filtered = filtered.filter(i => (i.body||'').includes(projTag));
   }
 
+  // フィルタ指定あり かつ --group → 期限別グルーピング
+  if ((filterGtd || filterCtx || filterPri || filterProj) && groupByDue) {
+    if (!filtered.length) { w(t('list.no_match')+'\n'); return; }
+    listGroupedByDue(filtered, today);
+    return;
+  }
+
   // フィルタ指定あり → フラットリスト
   if (filterGtd || filterCtx || filterPri || filterProj) {
     filtered.sort(sortByPriDue);
     if (!filtered.length) { w(t('list.no_match')+'\n'); return; }
     for (const issue of filtered) { w(renderIssueList(issue)+'\n'); }
+    return;
+  }
+
+  // フィルタなし かつ --group → 全タスクを期限別グルーピング
+  if (groupByDue) {
+    if (!issues.length) { w(t('list.no_match')+'\n'); return; }
+    listGroupedByDue(issues, today);
     return;
   }
 
@@ -1847,7 +1943,9 @@ async function runList(octokit, owner, repo, tokens) {
 
   // フィルタ判定
   let filterGtd = '', filterCtx = '', filterPri = '', filterProj = '';
+  let groupByDue = false;
   for (const tok of extra) {
+    if (tok === '--group') { groupByDue = true; continue; }
     if (GTD_LABELS.includes(tok)) filterGtd = tok;
     else if (/^p[123]$/.test(tok)) filterPri = tok;
     else if (tok.startsWith('@')) { validateCtx(tok.slice(1)); filterCtx = tok; }
@@ -1864,6 +1962,7 @@ async function runList(octokit, owner, repo, tokens) {
   if (filterCtx) env.FILTER_CTX_ENV = filterCtx;
   if (filterPri) env.FILTER_PRI_ENV = filterPri;
   if (filterProj) env.FILTER_PROJ_ENV = filterProj;
+  if (groupByDue) env.FILTER_GROUP_ENV = '1';
   Object.assign(process.env, env);
   listAll();
 }
@@ -2524,10 +2623,6 @@ async function runBulk(octokit, owner, repo, tokens) {
 
 // runMain: コマンドディスパッチャー
 async function runMain(args) {
-  if (!REPO_OWNER || !REPO_NAME) {
-    process.stderr.write('Error: TODO_REPO_OWNER and TODO_REPO_NAME must be set in .env or environment variables.\n');
-    process.exit(1);
-  }
   const octokit = await initOctokit();
   const owner = REPO_OWNER, repo = REPO_NAME;
 

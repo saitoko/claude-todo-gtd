@@ -41,7 +41,7 @@ All commands use: `bash ~/.claude/todo.sh <command> [args]`
 | コマンド | 引数 | 説明 |
 |---------|------|------|
 | `add` / GTDキーワード | `[GTD] <タイトル> [@ctx...] [--due 日付] [--desc テキスト] [--recur パターン] [--project 番号] [--priority p1\|p2\|p3] [--estimate 時間]` | タスク追加（GTD省略時: inbox）|
-| `list` | `[GTD] [@ctx] [p1\|p2\|p3] [project <番号>]` | タスク一覧（フィルタ組み合わせ可） |
+| `list` | `[GTD] [@ctx] [p1\|p2\|p3] [project <番号>] [--group]` | タスク一覧（フィルタ組み合わせ可）。`--group` で期限別グルーピング表示 |
 | `done` | `<#> [--actual 時間]` | タスク完了（recurあれば次のIssue自動作成） |
 | `move` | `<#> <GTD>` | GTDカテゴリ変更 |
 | `edit` | `<#> [--due 日付] [--desc テキスト] [--recur パターン\|clear] [--priority p1\|p2\|p3\|clear] [--project 番号] [--estimate 時間]` | 複数フィールド一括編集 |
@@ -96,6 +96,10 @@ bash ~/.claude/todo.sh done 42 --actual 1h30m                              # 完
 bash ~/.claude/todo.sh dashboard                                           # ダッシュボード
 bash ~/.claude/todo.sh template use 朝会 今日の朝会                          # テンプレート使用
 ```
+
+`--due` の日本語表現（`今日`/`きょう`、`明日`/`あした`/`あす`、`明後日`/`あさって`、
+`昨日`/`きのう`、`月曜`〜`日曜`（次の該当曜日）、`今週金曜`（今週のその曜日）、
+`来週`（来週月曜）、`来月`（来月1日））も使用可能。
 
 ---
 
