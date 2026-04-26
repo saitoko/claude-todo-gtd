@@ -7,7 +7,7 @@ GitHub Issues をバックエンドに使った、Claude Code 用の GTD（Getti
 ## 特徴
 
 - **GTD メソッド準拠** — inbox / next / waiting / someday / project / reference の6カテゴリで仕分け
-- **30+ コマンド** — タスクCRUD、一括操作、週次レビュー、テンプレート、統計まで網羅
+- **40+ コマンド** — タスクCRUD、一括操作、週次レビュー、テンプレート、統計まで網羅
 - **多言語対応** — 日本語（デフォルト）と英語に対応。`LANG_ENV=en` で英語モード
 - **日本語ネイティブ** — `--due 明日`、`--due 来週金曜`、`--due 3日後` など日本語で日付指定可能
 - **英語日付対応** — `--due tomorrow`、`--due "next week"`、`--due "in 3 days"` など英語でも指定可能（言語設定に関係なく常に使用可）
@@ -15,7 +15,7 @@ GitHub Issues をバックエンドに使った、Claude Code 用の GTD（Getti
 - **優先度** — p1（緊急）/ p2（重要）/ p3（通常）の3段階
 - **繰り返しタスク** — daily / weekly / monthly / weekdays の4パターン
 - **セキュリティ対策** — シェルインジェクション・プロンプトインジェクション対策を8ルールで実装
-- **145+ テスト** — ローカルユニットテスト + GitHub統合テストで品質を担保
+- **425+ テスト** — ローカルユニットテスト + GitHub統合テストで品質を担保
 - **サーバー不要** — GitHub Issues API + ローカルファイルのみで動作
 
 ## インストール
@@ -121,8 +121,12 @@ export LANG_ENV=en
 | `--due` | 期限（日本語対応） | `--due 明日`, `--due 4/10`, `--due 2026-04-10` |
 | `--desc` | 説明文 | `--desc "3章まで読む"` |
 | `--recur` | 繰り返し | `--recur weekly` |
-| `--project` | プロジェクト紐付け | `--project 7` |
+| `--project` | プロジェクト紐付け（GitHub sub-issue にも自動登録） | `--project 7` |
 | `--priority` | 優先度 | `--priority p1` |
+| `--estimate` | 見積時間 | `--estimate 2h`, `--estimate 30m` |
+| `--activate` | 昇格予定日（その日に next へ自動浮上） | `--activate 2026-05-01` |
+| `--before` | due の N 日前を activate として自動計算 | `--before 14d` |
+| `--depends-on` | 依存タスク完了時に next へ自動昇格 | `--depends-on 42` |
 
 **日本語日付の対応パターン:** 今日 / 明日 / 明後日 / 来週 / 来月 / 今週末 / 今月末 / 来月末 / N日後 / N週間後 / Nヶ月後 / 来週月曜〜来週日曜
 
@@ -146,19 +150,19 @@ export LANG_ENV=en
 | コマンド | 説明 |
 |---------|------|
 | `/todo move <#> <GTD>` | GTDカテゴリを変更 |
-| `/todo done <#>` | タスクを完了（繰り返しは自動で次回分を作成） |
+| `/todo done <#>` | タスクを完了（繰り返しは自動で次回分を作成。プロジェクトの次タスク昇格候補も提示） |
 
 ### 編集
 
 | コマンド | 説明 |
 |---------|------|
-| `/todo edit <#> [options]` | 複数フィールドを一括更新 |
+| `/todo edit <#> [options]` | 複数フィールドを一括更新（`--due` / `--priority` / `--estimate` / `--activate` / `--before` 等） |
 | `/todo rename <#> <新タイトル>` | タイトル変更 |
 | `/todo due <#> <date>` | 期限変更 |
 | `/todo desc <#> <text>` | 説明変更 |
 | `/todo recur <#> <pattern\|clear>` | 繰り返し設定・解除 |
 | `/todo priority <#> <p1\|p2\|p3\|clear>` | 優先度設定・解除 |
-| `/todo link <#> <project#>` | プロジェクトに紐付け |
+| `/todo link <#> <project#>` | プロジェクトに紐付け（GitHub sub-issue にも登録） |
 
 ### コンテキスト・ラベル
 
@@ -170,6 +174,22 @@ export LANG_ENV=en
 | `/todo label list` | 全コンテキストラベル一覧 |
 | `/todo label add @name [--color hex]` | コンテキストラベル作成 |
 | `/todo label delete @name` | コンテキストラベル削除 |
+
+### プロジェクト管理
+
+| コマンド | 説明 |
+|---------|------|
+| `/todo promote-project <#>` | 既存 Issue をプロジェクトに昇格 |
+| `/todo unlink <#>` | 子 Issue のプロジェクト紐付けを解除 |
+| `/todo migrate sub-issue [--dry-run]` | body `project: #N` の一括 sub-issue 登録（冪等） |
+| `/todo weekly-project-audit` | 全プロジェクト棚卸し（next 欠落・停滞を自動検出） |
+
+### チクラーファイル・Someday 管理
+
+| コマンド | 説明 |
+|---------|------|
+| `/todo promote` | activate 日到来タスクを next に一括昇格 |
+| `/todo review-someday <#>` | someday タスクの見直し日を記録（30日超で ⚠️ 表示） |
 
 ### 一括操作
 
@@ -209,11 +229,11 @@ export LANG_ENV=en
 
 GTD の週次レビューを6ステップの対話形式で実施:
 
-1. **Inbox 仕分け** — 未処理タスクを1件ずつ分類
+1. **Inbox 仕分け** — 未処理タスクを1件ずつ分類（2分以内かの判定あり）
 2. **Next Actions 確認** — まだ有効か、移動すべきものはないか
 3. **Waiting For 確認** — フォローアップや完了確認
-4. **Projects 確認** — 各プロジェクトに Next Action があるか
-5. **Someday/Maybe 見直し** — 今週始めるものはないか
+4. **Projects 棚卸し** — `weekly-project-audit` を実行。next 欠落・停滞プロジェクトを自動検出
+5. **Someday 見直し** — 30日以上未見直しを ⚠️ 優先で表示。`review-someday` で記録
 6. **サマリー表示** — 期限超過・今週期限のタスクを一覧
 
 ## セキュリティ
@@ -234,16 +254,17 @@ GitHub Issues の本文にはユーザーが任意のテキストを書けるた
 ### ファイル構成
 
 ```
-todo-dev/
-├── todo.md                 # スキル本体
-├── README.md               # このファイル
-├── DEVELOPMENT.md          # 開発ガイド
-├── CHANGELOG-DIARY.md      # 開発日記
+claude-todo-gtd/
+├── todo.md                 # スキル本体（~/.claude/commands/ にコピー）
+├── todo-engine.js          # コアエンジン（~/.claude/ にコピー）
+├── todo.sh                 # ランチャースクリプト（~/.claude/ にコピー）
+├── todo-manual.md          # 詳細ユーザーマニュアル
 ├── todo-templates.json     # テンプレートDBサンプル
+├── README.md               # このファイル
 └── tests/
-    ├── scenarios.md        # テストシナリオ一覧
-    ├── run-tests.sh        # ローカルユニットテスト（145+）
-    ├── gh-tests.sh         # GitHub統合テスト（41+）
+    ├── scenarios.md        # テストシナリオ一覧（40+シナリオ）
+    ├── run-tests.sh        # ローカルユニットテスト（423+ アサーション）
+    ├── gh-tests.sh         # GitHub統合テスト
     ├── helpers/
     │   └── date-fmt.js     # 日付フォーマット共通処理
     └── fixtures/
@@ -252,13 +273,23 @@ todo-dev/
 
 ### 開発フロー
 
-1. `todo-dev/todo.md` を編集
+1. `todo.md` / `todo-engine.js` を編集
 2. `tests/run-tests.sh` でローカルテスト実行
 3. `tests/gh-tests.sh` でGitHub統合テスト実行
 4. 本番反映:
 ```bash
-cp todo-dev/todo.md ~/.claude/commands/todo.md
+cp todo.md ~/.claude/commands/todo.md
+cp todo-engine.js ~/.claude/todo-engine.js
+cp todo.sh ~/.claude/todo.sh
 ```
+
+### モバイル対応（SH_MODE / MCP_MODE）
+
+`todo.sh` は実行環境を自動判定します:
+- **SH_MODE**（デフォルト）: ローカルの `todo-engine.js` を Node.js で実行
+- **MCP_MODE**: `~/.claude/todo.sh` が存在しない環境（iOS Claude Code 等）では GitHub MCP に直接マッピング
+
+iOS Shortcuts から GitHub REST API を直接呼び出す場合は `tests/scenarios.md` のシナリオ 40 を参照してください。
 
 ### テスト実行
 

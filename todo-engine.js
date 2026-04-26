@@ -8,7 +8,8 @@ const path = require('path');
 const os = require('os');
 
 // ─── 定数 ───
-const GTD_LABELS = ['next','routine','inbox','waiting','someday','project','reference'];
+const GTD_LABELS = ['next','routine','inbox','waiting','someday','reference'];
+const PROJECT_LABEL = 'project';
 const GTD_DISPLAY = {
   next: '🎯 next', routine: '🔁 routine', inbox: '📥 inbox', waiting: '⏳ waiting',
   someday: '🌈 someday', project: '📁 project', reference: '📎 reference'
@@ -47,6 +48,7 @@ const MESSAGES = {
     'list.no_tasks': '（タスクなし）',
     'list.has_next': '✅ Next Action あり',
     'list.no_next': '⚠️ Next Actionなし',
+    'list.stale': '30日更新なし（停滞）',
     'list.overdue': '期限超過',
     'list.this_week': '今週期限',
     // weeklySummary
@@ -128,7 +130,7 @@ const MESSAGES = {
     'help.rename': '/todo rename <#> <新タイトル>    タイトル変更',
     'help.due': '/todo due <#> <日付>            期日設定',
     'help.desc': '/todo desc <#> <テキスト>       説明追加',
-    'help.recur': '/todo recur <#> <パターン>      繰り返し設定（daily/weekly/monthly/weekdays）',
+    'help.recur': '/todo recur <#> <パターン|clear>  繰り返し設定（daily/weekly/monthly/weekdays）/ clear で解除',
     'help.priority': '/todo priority <#> <p1-p3>      優先度設定',
     'help.search': '/todo search <キーワード>       キーワード検索',
     'help.tag': '/todo tag <#> @ctx ...          コンテキスト追加',
@@ -161,6 +163,22 @@ const MESSAGES = {
     'dash.routine': '## 🔁 今日のルーティン（{n}）',
     // help
     'help.routine_hint': '🔁 routine ラベルは繰り返しタスク専用です。--recur オプションと組み合わせて使用してください。',
+    // promote / activate
+    'error.before_needs_due': 'エラー: --before を使うには --due が必要です',
+    'error.before_format': 'エラー: --before は 14d / 2w 形式で指定してください（例: 14d, 2w）',
+    'error.activate_after_due': '⚠️ 警告: activate日（{activate}）が due日（{due}）より後です',
+    'promote.header': '## チクラーファイル昇格',
+    'promote.promoted': '✅ #{num} 「{title}」を next に昇格しました（activate: {activate}）',
+    'promote.no_targets': '昇格対象なし（activate日到来タスク: 0件）',
+    'promote.summary': '✅ {n}件を next に昇格しました',
+    'help.promote': '/todo promote                   activate日到来タスクをNEXTに昇格',
+    'help.activate': '  --activate <日付>             指定日にNEXTへ自動昇格（例: 2026-05-01）',
+    'help.before': '  --before <期間>               dueのN日前にNEXTへ自動昇格（例: 14d, 2w）',
+    'help.depends_on': '  --depends-on <#N>            指定タスク完了時にNEXTへ自動昇格',
+    'promote.promoted_depends': '✅ #{num} 「{title}」を next に昇格しました（#{dep} 完了トリガー）',
+    'done.promote_hint_header': '💡 プロジェクト #{proj}「{title}」に昇格候補があります:',
+    'done.promote_hint_item':   '  {i}. #{num}「{title}」({gtd})',
+    'done.promote_hint_footer': '番号を入力するか /todo move <#> next で昇格できます。',
   },
   en: {
     'error.ctx_invalid': 'Error: Context name contains invalid characters',
@@ -186,6 +204,7 @@ const MESSAGES = {
     'list.no_tasks': '(No tasks)',
     'list.has_next': '✅ Has Next Action',
     'list.no_next': '⚠️ No Next Action',
+    'list.stale': '30 days no update (stale)',
     'list.overdue': 'Overdue',
     'list.this_week': 'Due this week',
     'weekly.header': '## 📋 Weekly Review Summary',
@@ -261,7 +280,7 @@ const MESSAGES = {
     'help.rename': '/todo rename <#> <new-title>    Rename',
     'help.due': '/todo due <#> <date>            Set due date',
     'help.desc': '/todo desc <#> <text>           Set description',
-    'help.recur': '/todo recur <#> <pattern>       Set recurrence (daily/weekly/monthly/weekdays)',
+    'help.recur': '/todo recur <#> <pattern|clear>  Set recurrence (daily/weekly/monthly/weekdays) / clear to remove',
     'help.priority': '/todo priority <#> <p1-p3>      Set priority',
     'help.search': '/todo search <keyword>          Search tasks',
     'help.tag': '/todo tag <#> @ctx ...          Add context',
@@ -294,6 +313,22 @@ const MESSAGES = {
     'dash.routine': '## 🔁 Today\'s Routines ({n})',
     // help
     'help.routine_hint': '🔁 routine label is for recurring tasks. Recommended to use with --recur option.',
+    // promote / activate
+    'error.before_needs_due': 'Error: --before requires --due',
+    'error.before_format': 'Error: --before must be in 14d / 2w format (e.g. 14d, 2w)',
+    'error.activate_after_due': '⚠️ Warning: activate date ({activate}) is after due date ({due})',
+    'promote.header': '## Tickler File Promotion',
+    'promote.promoted': '✅ #{num} "{title}" promoted to next (activate: {activate})',
+    'promote.no_targets': 'No targets to promote (activate date arrived: 0)',
+    'promote.summary': '✅ {n} tasks promoted to next',
+    'help.promote': '/todo promote                   Promote tasks whose activate date has arrived',
+    'help.activate': '  --activate <date>             Auto-promote to NEXT on specified date',
+    'help.before': '  --before <duration>           Auto-promote N days before due (e.g. 14d, 2w)',
+    'help.depends_on': '  --depends-on <#N>            Auto-promote to NEXT when specified task is completed',
+    'promote.promoted_depends': '✅ #{num} "{title}" promoted to next (#{dep} completion trigger)',
+    'done.promote_hint_header': '💡 Project #{proj} "{title}" has promotion candidates:',
+    'done.promote_hint_item':   '  {i}. #{num} "{title}" ({gtd})',
+    'done.promote_hint_footer': 'Enter a number or use /todo move <#> next to promote.',
   }
 };
 function t(key) { return (MESSAGES[LANG] || MESSAGES.ja)[key] || MESSAGES.ja[key] || key; }
@@ -327,6 +362,15 @@ function addMonth(base) {
     process.stderr.write(tpl('warn.month_rollover', {day: origDay, date: fmt(dt)})+'\n');
   }
   return fmt(dt);
+}
+
+// before指定（"14d", "2w"）を日数に変換。不正形式または0以下はnullを返す
+function parseBeforeDuration(raw) {
+  if (!raw) return null;
+  let m;
+  if ((m = raw.match(/^(\d+)d$/i))) { const n = parseInt(m[1]); if (n <= 0) return null; return n; }
+  if ((m = raw.match(/^(\d+)w$/i))) { const n = parseInt(m[1]); if (n <= 0) return null; return n * 7; }
+  return null;
 }
 
 function addMonths(dt, n) {
@@ -412,19 +456,22 @@ function normalizeDue(raw, today) {
 
 function parseBody(body) {
   const lines = (body || '').split('\n');
-  let due = '', recur = '', project = '', estimate = '', actual = '', descLines = [];
+  let due = '', recur = '', project = '', estimate = '', actual = '', activate = '', before = '', reviewedAt = '', descLines = [];
   for (const line of lines) {
     if (line.startsWith('due: ')) due = line.slice(5);
     else if (line.startsWith('recur: ')) recur = line.slice(7);
     else if (line.startsWith('project: #')) project = line.slice(10);
     else if (line.startsWith('estimate: ')) estimate = line.slice(10);
     else if (line.startsWith('actual: ')) actual = line.slice(8);
+    else if (line.startsWith('activate: ')) activate = line.slice(10);
+    else if (line.startsWith('before: ')) before = line.slice(8);
+    else if (line.startsWith('reviewed_at: ')) reviewedAt = line.slice(13);
     else descLines.push(line);
   }
   while (descLines.length && descLines[0].trim() === '') descLines.shift();
   const desc = descLines.join('\n');
   const descB64 = Buffer.from(desc, 'utf8').toString('base64');
-  return 'DUE='+due+'\nRECUR='+recur+'\nPROJECT='+project+'\nESTIMATE='+estimate+'\nACTUAL='+actual+'\nDESC_B64='+descB64;
+  return 'DUE='+due+'\nRECUR='+recur+'\nPROJECT='+project+'\nESTIMATE='+estimate+'\nACTUAL='+actual+'\nACTIVATE='+activate+'\nBEFORE='+before+'\nREVIEWED_AT='+reviewedAt+'\nDESC_B64='+descB64;
 }
 
 // 1回の gh issue view --json title,labels,body で取得した JSON から
@@ -440,14 +487,18 @@ function extractIssueFields() {
   process.stdout.write('TITLE='+title+'\nLABELS='+labels+'\n'+parsed);
 }
 
-function buildBody(due, recur, project, estimate, actual, desc) {
+function buildBody(due, recur, project, estimate, actual, desc, activate, before, reviewedAt, dependsOn) {
   let body = '';
   const NL = '\n';
   if (due) body += 'due: '+due+NL;
+  if (activate) body += 'activate: '+activate+NL;
+  if (before) body += 'before: '+before+NL;
+  if (dependsOn) body += 'depends_on: #'+dependsOn+NL;
   if (recur) body += 'recur: '+recur+NL;
   if (project) body += 'project: #'+project+NL;
   if (estimate) body += 'estimate: '+estimate+NL;
   if (actual) body += 'actual: '+actual+NL;
+  if (reviewedAt) body += 'reviewed_at: '+reviewedAt+NL;
   if (desc) {
     if (body) body += NL;
     body += desc;
@@ -552,6 +603,8 @@ function validateName(value) {
 
 // ラベル名から絵文字プレフィックスを剥がして短縮名に正規化
 function normLabel(name) {
+  // project ラベルを先に確認
+  if (name === GTD_DISPLAY[PROJECT_LABEL]) return PROJECT_LABEL;
   for (const key of GTD_LABELS) { if (name === GTD_DISPLAY[key]) return key; }
   return name;
 }
@@ -561,6 +614,13 @@ function getPri(lnames) { return lnames.find(l => /^p[123]$/.test(l)) || 'p9'; }
 function priIcon(p) { return p==='p1' ? '🔴 ' : p==='p2' ? '🟡 ' : ''; }
 function getCtx(lnames) { return lnames.filter(l => l.startsWith('@')); }
 
+// 戻り値は負になりうる（dateAがdateBより未来の場合）。呼び出し元で >= 30 判定を使うこと。
+function daysBetween(dateA, dateB) {
+  const a = new Date(dateA + 'T00:00:00');
+  const b = new Date(dateB + 'T00:00:00');
+  return Math.floor((b - a) / 86400000);
+}
+
 function sortByPriDue(a, b) {
   const pa = getPri(getLnames(a)), pb = getPri(getLnames(b));
   if (pa !== pb) return pa < pb ? -1 : 1;
@@ -568,7 +628,22 @@ function sortByPriDue(a, b) {
   return da < db ? -1 : da > db ? 1 : 0;
 }
 
-function renderIssueList(issue) {
+function sortByReviewedAtThenPri(a, b, today) {
+  const STALE_DAYS = 30;
+  const getReviewedAt = (issue) => {
+    return (issue.body||'').match(/^reviewed_at: (\d{4}-\d{2}-\d{2})/m)?.[1] || '';
+  };
+  const isStale = (issue) => {
+    const r = getReviewedAt(issue);
+    return !r || daysBetween(r, today) >= STALE_DAYS;
+  };
+  const staleA = isStale(a), staleB = isStale(b);
+  if (staleA && !staleB) return -1;
+  if (!staleA && staleB) return 1;
+  return sortByPriDue(a, b);
+}
+
+function renderIssueList(issue, today) {
   const lnames = getLnames(issue);
   const ctx = getCtx(lnames);
   const due = getDue(issue);
@@ -581,6 +656,13 @@ function renderIssueList(issue) {
   if (estMatch) line += '  ⏱'+formatTime(parseInt(estMatch[1]));
   if (proj) line += '  [project:#'+proj[1]+']';
   if (recur) line += '  🔄'+recur[1];
+  // someday かつ長期未見直しの場合にマーカーを付ける
+  if (today && (lnames.includes('someday') || lnames.includes('🌈 someday'))) {
+    const reviewedAt = (issue.body||'').match(/^reviewed_at: (\d{4}-\d{2}-\d{2})/m)?.[1] || '';
+    if (!reviewedAt || daysBetween(reviewedAt, today) >= 30) {
+      line = '  ⚠️' + line.slice(2);
+    }
+  }
   return line;
 }
 
@@ -626,32 +708,32 @@ function listGroupedByDue(issues, today) {
 
   if (groups.overdue.length) {
     w('── ⚠️ 期限超過 ──\n');
-    for (const i of groups.overdue) w(renderIssueList(i)+'\n');
+    for (const i of groups.overdue) w(renderIssueList(i, today)+'\n');
     w('\n');
   }
   if (groups.today_.length) {
     w('── 📅 今日（'+mmdd(today)+'）──\n');
-    for (const i of groups.today_) w(renderIssueList(i)+'\n');
+    for (const i of groups.today_) w(renderIssueList(i, today)+'\n');
     w('\n');
   }
   if (groups.tomorrow_.length) {
     w('── 📅 明日（'+mmdd(tomorrowStr)+'）──\n');
-    for (const i of groups.tomorrow_) w(renderIssueList(i)+'\n');
+    for (const i of groups.tomorrow_) w(renderIssueList(i, today)+'\n');
     w('\n');
   }
   if (groups.thisWeek.length) {
     w('── 📅 今週（〜'+mmdd(d7str)+'）──\n');
-    for (const i of groups.thisWeek) w(renderIssueList(i)+'\n');
+    for (const i of groups.thisWeek) w(renderIssueList(i, today)+'\n');
     w('\n');
   }
   if (groups.later.length) {
     w('── 📅 来週以降 ──\n');
-    for (const i of groups.later) w(renderIssueList(i)+'\n');
+    for (const i of groups.later) w(renderIssueList(i, today)+'\n');
     w('\n');
   }
   if (groups.noDue.length) {
     w('── 📅 期限なし ──\n');
-    for (const i of groups.noDue) w(renderIssueList(i)+'\n');
+    for (const i of groups.noDue) w(renderIssueList(i, today)+'\n');
     w('\n');
   }
 }
@@ -664,6 +746,8 @@ function listAll() {
   const filterPri = process.env.FILTER_PRI_ENV || '';
   const filterProj = process.env.FILTER_PROJ_ENV || '';
   const groupByDue = process.env.FILTER_GROUP_ENV === '1';
+  const noDue = process.env.FILTER_NO_DUE_ENV === '1';
+  const noEstimate = process.env.FILTER_NO_ESTIMATE_ENV === '1';
   const w = s => process.stdout.write(s);
 
   // フィルタリング
@@ -676,6 +760,24 @@ function listAll() {
     filtered = filtered.filter(i => (i.body||'').includes(projTag));
   }
 
+  // --no-due → 期限未設定のタスクだけフラットリストで返す（--group より優先）
+  if (noDue) {
+    filtered = filtered.filter(i => !/(^|\n)due: \d{4}-\d{2}-\d{2}/.test(i.body||''));
+    filtered.sort(sortByPriDue);
+    if (!filtered.length) { w(t('list.no_match')+'\n'); return; }
+    for (const issue of filtered) { w(renderIssueList(issue, today)+'\n'); }
+    return;
+  }
+
+  // --no-estimate → 見積もり未設定のタスクだけフラットリストで返す（--no-due と同パターン）
+  if (noEstimate) {
+    filtered = filtered.filter(i => !/(^|\n)estimate: \S+/.test(i.body||''));
+    filtered.sort(sortByPriDue);
+    if (!filtered.length) { w(t('list.no_match')+'\n'); return; }
+    for (const issue of filtered) { w(renderIssueList(issue, today)+'\n'); }
+    return;
+  }
+
   // フィルタ指定あり かつ --group → 期限別グルーピング
   if ((filterGtd || filterCtx || filterPri || filterProj) && groupByDue) {
     if (!filtered.length) { w(t('list.no_match')+'\n'); return; }
@@ -685,9 +787,13 @@ function listAll() {
 
   // フィルタ指定あり → フラットリスト
   if (filterGtd || filterCtx || filterPri || filterProj) {
-    filtered.sort(sortByPriDue);
+    if (filterGtd === 'someday') {
+      filtered.sort((a, b) => sortByReviewedAtThenPri(a, b, today));
+    } else {
+      filtered.sort(sortByPriDue);
+    }
     if (!filtered.length) { w(t('list.no_match')+'\n'); return; }
-    for (const issue of filtered) { w(renderIssueList(issue)+'\n'); }
+    for (const issue of filtered) { w(renderIssueList(issue, today)+'\n'); }
     return;
   }
 
@@ -701,36 +807,86 @@ function listAll() {
   // フィルタなし → GTDカテゴリ別グルーピング
   const grouped = {};
   GTD_LABELS.forEach(l => grouped[l] = []);
+  grouped[PROJECT_LABEL] = [];
   for (const issue of issues) {
     const lnames = getLnames(issue);
     for (const gl of GTD_LABELS) { if (lnames.includes(gl)) grouped[gl].push(issue); }
+    if (lnames.includes(PROJECT_LABEL)) grouped[PROJECT_LABEL].push(issue);
   }
 
-  // 各カテゴリをソートして出力
-  const labelsToShow = ['next','routine','inbox','waiting','someday','project','reference'];
+  // GTDカテゴリ（project 除く）をソートして出力
+  const labelsToShow = ['next','routine','inbox','waiting','someday','reference'];
   for (const label of labelsToShow) {
     w(GTD_SECTION_HEADERS[label]+'\n');
     const items = grouped[label];
     if (!items.length) { w('  '+t('list.none')+'\n'); }
     else {
-      // Projects は特殊表示
-      if (label === 'project') {
-        for (const issue of items) {
-          const projTag = 'project: #'+issue.number;
-          const hasNext = issues.some(i => getLnames(i).includes('next') && (i.body||'').includes(projTag));
-          w('  #'+issue.number+'  '+issue.title+'  '+(hasNext ? t('list.has_next') : t('list.no_next'))+'\n');
-        }
+      if (label === 'someday') {
+        items.sort((a, b) => sortByReviewedAtThenPri(a, b, today));
       } else {
         items.sort(sortByPriDue);
-        for (const issue of items) { w(renderIssueList(issue)+'\n'); }
       }
+      for (const issue of items) { w(renderIssueList(issue, today)+'\n'); }
     }
     w('\n');
   }
 
+  // プロジェクトセクション（独立表示）
+  const projItems = grouped[PROJECT_LABEL];
+  let noNextCount = 0, staleCount = 0;
+  const projStats = projItems.map(issue => {
+    const projTag = 'project: #'+issue.number;
+    // body メタ検索と sub-issue の両方は非同期不可のため body メタのみでカウント
+    const childIssues = issues.filter(i => (i.body||'').includes(projTag));
+    const nextCount = childIssues.filter(i => getLnames(i).includes('next')).length;
+    const waitingCount = childIssues.filter(i => getLnames(i).includes('waiting')).length;
+    const hasNext = nextCount > 0;
+    const updatedAt = issue.updated_at || '';
+    const isStale = updatedAt ? daysBetween(updatedAt.slice(0,10), today) >= 30 : false;
+    if (!hasNext) noNextCount++;
+    if (isStale) staleCount++;
+    return { issue, nextCount, waitingCount, hasNext, isStale };
+  });
+
+  // ヘッダ行
+  let projHeader = t('section.project');
+  if (projItems.length > 0) {
+    const badges = [];
+    if (noNextCount > 0) badges.push(`⚠️ next欠落: ${noNextCount}件`);
+    if (staleCount > 0) badges.push(`停滞30日以上: ${staleCount}件`);
+    projHeader = `## 📁 Projects（${projItems.length}件${badges.length ? '  ' + badges.join(' / ') : ''}）`;
+  }
+  w(projHeader+'\n');
+  if (!projItems.length) {
+    w('  '+t('list.none')+'\n');
+  } else {
+    for (const { issue, nextCount, waitingCount, hasNext, isStale } of projStats) {
+      const childSummary = [];
+      if (nextCount > 0) childSummary.push(`next:${nextCount}件`);
+      if (waitingCount > 0) childSummary.push(`waiting:${waitingCount}件`);
+      const childStr = childSummary.length ? `  ✅ ${childSummary.join(' ')}` : '';
+      let statusStr = '';
+      if (!hasNext && isStale) {
+        statusStr = `  ${t('list.no_next')} / ${t('list.stale')}`;
+      } else if (!hasNext) {
+        statusStr = `  ${t('list.no_next')}`;
+      } else {
+        statusStr = childStr;
+      }
+      // reviewed_at があれば「最終レビュー: N日前」を付加
+      const reviewedAt = parseBodyObj(issue.body || '').reviewedAt;
+      const reviewStr = reviewedAt ? `  （最終レビュー: ${daysBetween(reviewedAt, today)}日前）` : '';
+      // 停滞+next欠落の行頭に ⚠️ マーカー
+      const linePrefix = (!hasNext && isStale) ? '  ⚠️ ' : '  ';
+      w(`${linePrefix}#${issue.number}  ${issue.title}${statusStr}${reviewStr}\n`);
+    }
+  }
+  w('\n');
+
   // サマリー
   const counts = {};
   GTD_LABELS.forEach(l => counts[l] = grouped[l].length);
+  counts[PROJECT_LABEL] = grouped[PROJECT_LABEL].length;
   let overdue = 0, thisWeek = 0;
   const d7 = new Date(today); d7.setDate(d7.getDate()+7);
   const d7str = d7.toISOString().slice(0,10);
@@ -742,7 +898,8 @@ function listAll() {
     }
   }
   w('---\n');
-  const parts = GTD_LABELS.filter(l => counts[l] > 0).map(l => l+': '+cnt(counts[l]));
+  const allLabels = [...GTD_LABELS, PROJECT_LABEL];
+  const parts = allLabels.filter(l => counts[l] > 0).map(l => l+': '+cnt(counts[l]));
   w('📊 '+(parts.length ? parts.join(' / ') : t('list.no_tasks')));
   if (overdue > 0) w('  ⚠️ '+t('list.overdue')+': '+cnt(overdue));
   if (thisWeek > 0) w('  📅 '+t('list.this_week')+': '+cnt(thisWeek));
@@ -753,20 +910,21 @@ function listSummary() {
   const issues = JSON.parse(process.env.OPEN_ENV || '[]');
   const today = process.env.TODAY_ENV;
   const counts = {};
-  GTD_LABELS.forEach(l => counts[l] = 0);
+  [...GTD_LABELS, PROJECT_LABEL].forEach(l => counts[l] = 0);
   let overdue = 0, thisWeek = 0;
   const d7 = new Date(today); d7.setDate(d7.getDate()+7);
   const d7str = d7.toISOString().slice(0,10);
   for (const issue of issues) {
     const lnames = getLnames(issue);
     for (const gl of GTD_LABELS) { if (lnames.includes(gl)) counts[gl]++; }
+    if (lnames.includes(PROJECT_LABEL)) counts[PROJECT_LABEL]++;
     const dueMatch = (issue.body||'').match(/^due: (\d{4}-\d{2}-\d{2})/m);
     if (dueMatch) {
       if (dueMatch[1] < today) overdue++;
       else if (dueMatch[1] <= d7str) thisWeek++;
     }
   }
-  const parts = GTD_LABELS.filter(l => counts[l] > 0).map(l => l+': '+cnt(counts[l]));
+  const parts = [...GTD_LABELS, PROJECT_LABEL].filter(l => counts[l] > 0).map(l => l+': '+cnt(counts[l]));
   const w = s => process.stdout.write(s);
   w('\n---\n');
   w('📊 '+(parts.length ? parts.join(' / ') : t('list.no_tasks')));
@@ -779,7 +937,7 @@ function weeklySummary() {
   const issues = JSON.parse(process.env.OPEN_ENV || '[]');
   const today = process.env.TODAY_ENV;
   const counts = {};
-  GTD_LABELS.forEach(l => counts[l] = 0);
+  [...GTD_LABELS, PROJECT_LABEL].forEach(l => counts[l] = 0);
   let overdue = 0, thisWeek = 0;
   const overdueList = [], thisWeekList = [];
   const d7 = new Date(today); d7.setDate(d7.getDate()+7);
@@ -787,6 +945,7 @@ function weeklySummary() {
   for (const issue of issues) {
     const lnames = getLnames(issue);
     for (const gl of GTD_LABELS) { if (lnames.includes(gl)) counts[gl]++; }
+    if (lnames.includes(PROJECT_LABEL)) counts[PROJECT_LABEL]++;
     const dueMatch = (issue.body||'').match(/^due: (\d{4}-\d{2}-\d{2})/m);
     if (dueMatch) {
       const due = dueMatch[1];
@@ -798,7 +957,7 @@ function weeklySummary() {
   const w = s => process.stdout.write(s);
   w(t('weekly.header')+'\n\n');
   w(t('weekly.current_status')+'\n');
-  const parts = GTD_LABELS.filter(l => counts[l] > 0).map(l => '  '+l+': '+cnt(counts[l]));
+  const parts = [...GTD_LABELS, PROJECT_LABEL].filter(l => counts[l] > 0).map(l => '  '+l+': '+cnt(counts[l]));
   w(parts.join('\n')+'\n\n');
   if (overdue > 0) { w('⚠️ **'+t('list.overdue')+': '+cnt(overdue)+'**\n'); w(overdueList.join('\n')+'\n\n'); }
   else { w(t('weekly.no_overdue')+'\n\n'); }
@@ -812,7 +971,7 @@ function stats() {
   const closed = JSON.parse(process.env.CLOSED_ENV || '[]');
   const today = process.env.TODAY_ENV;
   const gtdCounts = {};
-  GTD_LABELS.forEach(l => gtdCounts[l] = 0);
+  [...GTD_LABELS, PROJECT_LABEL].forEach(l => gtdCounts[l] = 0);
   const priCounts = {p1:0, p2:0, p3:0, none:0};
   let overdue = 0, thisWeek = 0, total = issues.length;
   const d7 = new Date(today); d7.setDate(d7.getDate()+7);
@@ -820,6 +979,7 @@ function stats() {
   for (const issue of issues) {
     const lnames = getLnames(issue);
     for (const gl of GTD_LABELS) { if (lnames.includes(gl)) gtdCounts[gl]++; }
+    if (lnames.includes(PROJECT_LABEL)) gtdCounts[PROJECT_LABEL]++;
     const pri = lnames.find(l => /^p[123]$/.test(l));
     if (pri) priCounts[pri]++; else priCounts.none++;
     const dueMatch = (issue.body||'').match(/^due: (\d{4}-\d{2}-\d{2})/m);
@@ -836,7 +996,7 @@ function stats() {
   w(t('stats.header')+'\n\n');
   w(tpl('stats.total', {n: cnt(total)})+'\n\n');
   w(t('stats.by_category')+'\n');
-  GTD_LABELS.filter(l => gtdCounts[l] > 0).forEach(l => { w('  '+l+': '+cnt(gtdCounts[l])+'\n'); });
+  [...GTD_LABELS, PROJECT_LABEL].filter(l => gtdCounts[l] > 0).forEach(l => { w('  '+l+': '+cnt(gtdCounts[l])+'\n'); });
   w('\n'+t('stats.by_priority')+'\n');
   if (priCounts.p1) w('  🔴 p1: '+cnt(priCounts.p1)+'\n');
   if (priCounts.p2) w('  🟡 p2: '+cnt(priCounts.p2)+'\n');
@@ -898,7 +1058,13 @@ function help() {
 
   w(t('help.section_other')+'\n');
   w('```\n');
-  for (const k of ['review','archive','link','help']) { w(t('help.'+k)+'\n'); }
+  for (const k of ['review','archive','link','promote','help']) { w(t('help.'+k)+'\n'); }
+  w('```\n\n');
+
+  w('### activate / before オプション\n');
+  w('```\n');
+  w(t('help.activate')+'\n');
+  w(t('help.before')+'\n');
   w('```\n');
 }
 
@@ -991,11 +1157,12 @@ function dashboard() {
 
   const overdue = [], dueToday = [], dueThisWeek = [], nextActions = [], routineToday = [];
   const gtdCounts = {};
-  GTD_LABELS.forEach(l => gtdCounts[l] = 0);
+  [...GTD_LABELS, PROJECT_LABEL].forEach(l => gtdCounts[l] = 0);
 
   for (const issue of issues) {
     const lnames = getLnames(issue);
     for (const gl of GTD_LABELS) { if (lnames.includes(gl)) gtdCounts[gl]++; }
+    if (lnames.includes(PROJECT_LABEL)) gtdCounts[PROJECT_LABEL]++;
     const due = getDue(issue);
     if (lnames.includes('routine')) {
       if (due && due <= today) routineToday.push(issue);
@@ -1105,10 +1272,11 @@ function report() {
   }
 
   const closedByGtd = {};
-  GTD_LABELS.forEach(l => closedByGtd[l] = 0);
+  [...GTD_LABELS, PROJECT_LABEL].forEach(l => closedByGtd[l] = 0);
   for (const issue of periodClosed) {
     const lnames = getLnames(issue);
     for (const gl of GTD_LABELS) { if (lnames.includes(gl)) closedByGtd[gl]++; }
+    if (lnames.includes(PROJECT_LABEL)) closedByGtd[PROJECT_LABEL]++;
   }
 
   const closedByPri = {p1:0, p2:0, p3:0, none:0};
@@ -1119,11 +1287,12 @@ function report() {
   }
 
   const openByGtd = {};
-  GTD_LABELS.forEach(l => openByGtd[l] = 0);
+  [...GTD_LABELS, PROJECT_LABEL].forEach(l => openByGtd[l] = 0);
   let overdueCount = 0;
   for (const issue of open) {
     const lnames = getLnames(issue);
     for (const gl of GTD_LABELS) { if (lnames.includes(gl)) openByGtd[gl]++; }
+    if (lnames.includes(PROJECT_LABEL)) openByGtd[PROJECT_LABEL]++;
     const dueMatch = (issue.body||'').match(/^due: (\d{4}-\d{2}-\d{2})/m);
     if (dueMatch && dueMatch[1] < today) overdueCount++;
   }
@@ -1156,7 +1325,7 @@ function report() {
   w('```\n\n');
 
   w(t('report.by_category')+'\n\n');
-  const closedGtdParts = GTD_LABELS.filter(l => closedByGtd[l] > 0);
+  const closedGtdParts = [...GTD_LABELS, PROJECT_LABEL].filter(l => closedByGtd[l] > 0);
   if (closedGtdParts.length) {
     for (const l of closedGtdParts) { w('  '+l+': '+cnt(closedByGtd[l])+'\n'); }
   } else { w('  '+t('report.no_completed')+'\n'); }
@@ -1170,7 +1339,7 @@ function report() {
   w('\n');
 
   w(t('report.current_status')+'\n\n');
-  const openParts = GTD_LABELS.filter(l => openByGtd[l] > 0);
+  const openParts = [...GTD_LABELS, PROJECT_LABEL].filter(l => openByGtd[l] > 0);
   if (openParts.length) {
     for (const l of openParts) { w('  '+l+': '+cnt(openByGtd[l])+'\n'); }
   } else { w('  '+t('report.no_open')+'\n'); }
@@ -1667,7 +1836,7 @@ switch (cmd) {
   case 'add-month':       process.stdout.write(addMonth(args[1])); break;
   case 'parse-body':           process.stdout.write(parseBody(args[1])); break;
   case 'extract-issue-fields': extractIssueFields(); break;
-  case 'build-body':      process.stdout.write(buildBody(args[1]||'', args[2]||'', args[3]||'', args[4]||'', args[5]||'', args[6]||'')); break;
+  case 'build-body':      process.stdout.write(buildBody(args[1]||'', args[2]||'', args[3]||'', args[4]||'', args[5]||'', args[6]||'', args[7]||'', args[8]||'', args[9]||'', args[10]||'')); break;
   case 'parse-time': {
     const v = parseTime(args[1]);
     process.stdout.write(v !== null ? String(v) : 'null');
@@ -1787,12 +1956,12 @@ async function initOctokit() {
 
 // 汎用引数パーサー
 // tokens: string[]
-// 戻り値: { gtd, title, contexts, due, desc, recur, project, priority, estimate, actual, dueOffset, color, extra }
+// 戻り値: { gtd, title, contexts, due, desc, recur, project, priority, estimate, actual, dueOffset, color, activate, before, dependsOn, extra }
 function parseArgs(tokens) {
   const result = {
     gtd: null, title: null, contexts: [], due: null, desc: null,
     recur: null, project: null, priority: null, estimate: null, actual: null,
-    dueOffset: null, color: null, extra: []
+    dueOffset: null, color: null, activate: null, before: null, dependsOn: null, extra: []
   };
   const remaining = [...tokens];
   const consume = (i) => remaining.splice(i, 1);
@@ -1819,6 +1988,12 @@ function parseArgs(tokens) {
       result.dueOffset = remaining[i+1].replace(/^\+/, ''); remaining.splice(i, 2); continue;
     } else if (tok === '--color' && i+1 < remaining.length) {
       result.color = remaining[i+1]; remaining.splice(i, 2); continue;
+    } else if (tok === '--activate' && i+1 < remaining.length) {
+      result.activate = remaining[i+1]; remaining.splice(i, 2); continue;
+    } else if (tok === '--before' && i+1 < remaining.length) {
+      result.before = remaining[i+1]; remaining.splice(i, 2); continue;
+    } else if (tok === '--depends-on' && i+1 < remaining.length) {
+      result.dependsOn = remaining[i+1].replace(/^#/, ''); remaining.splice(i, 2); continue;
     } else if (tok.startsWith('@')) {
       result.contexts.push(tok); remaining.splice(i, 1); continue;
     }
@@ -1850,25 +2025,81 @@ async function fetchAndParseIssue(octokit, owner, repo, num) {
   const lnames = i.labels.map(l => l.name);
   const parsed = parseBodyObj(i.body || '');
   return {
-    number: i.number, title: i.title, body: i.body || '',
+    number: i.number, id: i.id, title: i.title, body: i.body || '',
     labels: lnames, ...parsed
   };
+}
+
+// ─── sub-issue ヘルパ（Phase 1 互換レイヤ） ───
+
+// 親 Issue に子を sub-issue として登録（冪等: 422 は既登録としてスキップ）
+async function addSubIssue(octokit, owner, repo, parentNumber, childInternalId) {
+  try {
+    await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues', {
+      owner, repo,
+      issue_number: parentNumber,
+      sub_issue_id: childInternalId,
+      headers: { 'X-GitHub-Api-Version': '2022-11-28' },
+    });
+    return 'registered';
+  } catch (e) {
+    if (e.status === 422) {
+      process.stderr.write(`⚠️ sub-issue 登録スキップ: #${parentNumber} に既に登録済み（冪等）\n`);
+      return 'skipped';
+    }
+    process.stderr.write(`⚠️ sub-issue 登録失敗（Issue は作成済み）: ${e.message}\n`);
+    return 'error';
+  }
+}
+
+// 親 Issue の sub-issue 一覧取得（per_page:100）
+async function listSubIssues(octokit, owner, repo, parentNumber) {
+  try {
+    const { data } = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues', {
+      owner, repo,
+      issue_number: parentNumber,
+      per_page: 100,
+      headers: { 'X-GitHub-Api-Version': '2022-11-28' },
+    });
+    return data;
+  } catch (e) {
+    process.stderr.write(`⚠️ sub-issue 一覧取得失敗: ${e.message}\n`);
+    return [];
+  }
+}
+
+// sub-issue の関連を解除（Phase 2 の /todo unlink で使用予定）
+async function removeSubIssue(octokit, owner, repo, parentNumber, childInternalId) {
+  try {
+    await octokit.request('DELETE /repos/{owner}/{repo}/issues/{issue_number}/sub_issue', {
+      owner, repo,
+      issue_number: parentNumber,
+      data: { sub_issue_id: childInternalId },
+      headers: { 'X-GitHub-Api-Version': '2022-11-28' },
+    });
+  } catch (e) {
+    process.stderr.write(`⚠️ sub-issue 解除失敗: ${e.message}\n`);
+  }
 }
 
 // body を解析してオブジェクトで返す
 function parseBodyObj(body) {
   const lines = (body || '').split('\n');
-  let due = '', recur = '', project = '', estimate = '', actual = '', descLines = [];
+  let due = '', recur = '', project = '', estimate = '', actual = '', activate = '', before = '', reviewedAt = '', dependsOn = '', descLines = [];
   for (const line of lines) {
     if (line.startsWith('due: ')) due = line.slice(5);
     else if (line.startsWith('recur: ')) recur = line.slice(7);
     else if (line.startsWith('project: #')) project = line.slice(10);
     else if (line.startsWith('estimate: ')) estimate = line.slice(10);
     else if (line.startsWith('actual: ')) actual = line.slice(8);
+    else if (line.startsWith('activate: ')) activate = line.slice(10);
+    else if (line.startsWith('before: ')) before = line.slice(8);
+    else if (line.startsWith('reviewed_at: ')) reviewedAt = line.slice(13);
+    else if (line.startsWith('depends_on: #')) dependsOn = line.slice(13);
     else descLines.push(line);
   }
   while (descLines.length && descLines[0].trim() === '') descLines.shift();
-  return { due, recur, project, estimate, actual, desc: descLines.join('\n') };
+  return { due, recur, project, estimate, actual, activate, before, reviewedAt, dependsOn, desc: descLines.join('\n') };
 }
 
 // Issue body を更新する
@@ -1883,9 +2114,11 @@ function runOut(msg) { process.stdout.write(msg+'\n'); }
 
 async function runAdd(octokit, owner, repo, tokens) {
   const today = getToday();
-  // GTDキーワードが先頭なら抽出
+  // GTDキーワードが先頭なら抽出（project は別分岐）
   let gtd = 'inbox';
-  if (GTD_LABELS.includes(tokens[0])) {
+  if (tokens[0] === PROJECT_LABEL) {
+    gtd = tokens.shift();
+  } else if (GTD_LABELS.includes(tokens[0])) {
     gtd = tokens.shift();
   }
   const parsed = parseArgs(tokens);
@@ -1897,6 +2130,14 @@ async function runAdd(octokit, owner, repo, tokens) {
   }
   const title = titleTokens.join(' ');
   validateName(title);
+
+  // Outcome 警告（project タスクの場合）
+  if (gtd === PROJECT_LABEL) {
+    const outcomePattern = /（している|できている|完了|終了|リリース|公開|決まった|した状態）$|している$|できている$|完了$|終了$|リリース$|公開$|決まった$|した状態$/;
+    if (!outcomePattern.test(title)) {
+      process.stderr.write('💡 ヒント: プロジェクト名は「〜している状態」「〜が完了している」のような\n   成果物（outcome）の形で書くと Next Action を導出しやすくなります。\n');
+    }
+  }
 
   // due 正規化
   let due = parsed.due ? normalizeDue(parsed.due, today) : '';
@@ -1929,11 +2170,67 @@ async function runAdd(octokit, owner, repo, tokens) {
   await ensureLabel(octokit, owner, repo, priority, pcolor, '優先度');
   labels.push(priority);
 
-  const body = buildBody(due, parsed.recur||'', parsed.project||'', estimateMin !== null ? String(estimateMin) : '', '', parsed.desc||'');
+  // activate / before 処理
+  let activate = '';
+  let beforeStr = '';
+  if (parsed.before) {
+    if (!due) { process.stderr.write(t('error.before_needs_due')+'\n'); process.exit(1); }
+    const days = parseBeforeDuration(parsed.before);
+    if (days === null) { process.stderr.write(t('error.before_format')+'\n'); process.exit(1); }
+    beforeStr = parsed.before;
+    activate = addDays(due, -days);
+  }
+  if (parsed.activate) {
+    let activateRaw = parsed.activate;
+    if (activateRaw !== 'clear') {
+      activateRaw = normalizeDue(activateRaw, today);
+      if (!activateRaw) {
+        process.stderr.write(t('error.date_format') + ': ' + parsed.activate + '\n');
+        process.exit(1);
+      }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(activateRaw) && !/^\d{1,2}\/\d{1,2}$/.test(activateRaw)) {
+        process.stderr.write(t('error.date_format') + ': ' + parsed.activate + '\n');
+        process.exit(1);
+      }
+      if (/^\d{1,2}\/\d{1,2}$/.test(activateRaw)) {
+        const [m2, d2] = activateRaw.split('/');
+        activateRaw = today.slice(0,4)+'-'+String(m2).padStart(2,'0')+'-'+String(d2).padStart(2,'0');
+      }
+      // activateとbefore同時指定 → より早い方を採用
+      if (activate && activateRaw < activate) {
+        activate = activateRaw;
+      } else if (!activate) {
+        activate = activateRaw;
+      }
+      if (due && activate > due) {
+        process.stderr.write(tpl('error.activate_after_due', { activate, due })+'\n');
+      }
+    }
+  }
+
+  const body = buildBody(due, parsed.recur||'', parsed.project||'', estimateMin !== null ? String(estimateMin) : '', '', parsed.desc||'', activate, beforeStr, '', parsed.dependsOn||'');
 
   const { data } = await octokit.issues.create({ owner, repo, title, body, labels });
   const labelStr = labels.join(', ');
-  runOut(`✅ #${data.number} を作成しました。\n  タイトル: ${title}\n  ラベル: ${labelStr}${due ? '\n  期日: '+due : ''}\n  URL: ${data.html_url}`);
+  runOut(`✅ #${data.number} を作成しました。\n  タイトル: ${title}\n  ラベル: ${labelStr}${due ? '\n  期日: '+due : ''}${activate ? '\n  昇格予定: '+activate : ''}\n  URL: ${data.html_url}`);
+
+  // sub-issue 登録（--project N 指定時）
+  if (parsed.project) {
+    const parentNum = parseInt(parsed.project);
+    let parentIssue;
+    try {
+      parentIssue = await fetchAndParseIssue(octokit, owner, repo, parentNum);
+    } catch (e) {
+      process.stderr.write(`⚠️ プロジェクト #${parentNum} の取得に失敗しました: ${e.message}\n`);
+      return;
+    }
+    const isProject = parentIssue.labels.some(l => normLabel(l) === PROJECT_LABEL);
+    if (!isProject) {
+      process.stderr.write(`エラー: #${parentNum} はプロジェクトではありません。先に /todo project <タイトル> で作成してください\n`);
+      process.exit(1);
+    }
+    await addSubIssue(octokit, owner, repo, parentNum, data.id);
+  }
 }
 
 async function runList(octokit, owner, repo, tokens) {
@@ -1944,16 +2241,51 @@ async function runList(octokit, owner, repo, tokens) {
   // フィルタ判定
   let filterGtd = '', filterCtx = '', filterPri = '', filterProj = '';
   let groupByDue = false;
-  for (const tok of extra) {
+  let noDue = false;
+  let noEstimate = false;
+  let listProjectNum = '';  // /todo list project N の N
+  for (let i = 0; i < extra.length; i++) {
+    const tok = extra[i];
     if (tok === '--group') { groupByDue = true; continue; }
+    if (tok === '--no-due') { noDue = true; continue; }
+    if (tok === '--no-estimate') { noEstimate = true; continue; }
     if (GTD_LABELS.includes(tok)) filterGtd = tok;
     else if (/^p[123]$/.test(tok)) filterPri = tok;
     else if (tok.startsWith('@')) { validateCtx(tok.slice(1)); filterCtx = tok; }
-    else if (tok === 'project' && extra[extra.indexOf(tok)+1]) {
-      const n = extra[extra.indexOf(tok)+1]; validateNumber(n); filterProj = n;
+    else if (tok === PROJECT_LABEL) {
+      // /todo list project N → sub-issue API 経由で子一覧表示
+      const n = extra[i+1];
+      if (n && /^\d+$/.test(n)) { validateNumber(n); listProjectNum = n; i++; }
+      else { filterGtd = PROJECT_LABEL; }
     }
   }
   for (const ctx of parsed.contexts) { validateCtx(ctx.slice(1)); filterCtx = ctx; }
+
+  // /todo list project N → sub-issue API + body メタ OR で子一覧表示
+  if (listProjectNum) {
+    const allIssues = await fetchAllOpen(octokit, owner, repo);
+    const parentNum = parseInt(listProjectNum);
+
+    // sub-issue API から子番号を取得
+    const subIssues = await listSubIssues(octokit, owner, repo, parentNum);
+    const subNums = new Set(subIssues.map(s => s.number));
+
+    // body メタ検索（後方互換）
+    const projTag = 'project: #'+listProjectNum;
+    const bodyChildren = allIssues.filter(i => (i.body||'').includes(projTag));
+    for (const bc of bodyChildren) subNums.add(bc.number);
+
+    const children = allIssues.filter(i => subNums.has(i.number));
+    children.sort(sortByPriDue);
+    const w = s => process.stdout.write(s);
+    w(`## 📁 プロジェクト #${parentNum} の子タスク（${children.length}件）\n`);
+    if (!children.length) {
+      w('  （子タスクなし）\n');
+    } else {
+      for (const issue of children) { w(renderIssueList(issue, today)+'\n'); }
+    }
+    return;
+  }
 
   // API取得
   const allIssues = await fetchAllOpen(octokit, owner, repo);
@@ -1962,7 +2294,9 @@ async function runList(octokit, owner, repo, tokens) {
   if (filterCtx) env.FILTER_CTX_ENV = filterCtx;
   if (filterPri) env.FILTER_PRI_ENV = filterPri;
   if (filterProj) env.FILTER_PROJ_ENV = filterProj;
-  if (groupByDue) env.FILTER_GROUP_ENV = '1';
+  if (groupByDue && !noDue) env.FILTER_GROUP_ENV = '1';
+  if (noDue) env.FILTER_NO_DUE_ENV = '1';
+  if (noEstimate) env.FILTER_NO_ESTIMATE_ENV = '1';
   Object.assign(process.env, env);
   listAll();
 }
@@ -1974,7 +2308,7 @@ async function fetchAllOpen(octokit, owner, repo) {
     const { data } = await octokit.issues.listForRepo({ owner, repo, state: 'open', per_page: 100, page });
     const issues = data.filter(i => !i.pull_request);
     if (!issues.length) break;
-    allIssues.push(...issues.map(i => ({ number: i.number, title: i.title, body: i.body||'', labels: i.labels.map(l => ({name:l.name})), closedAt: null })));
+    allIssues.push(...issues.map(i => ({ number: i.number, title: i.title, body: i.body||'', labels: i.labels.map(l => ({name:l.name})), closedAt: null, updated_at: i.updated_at || '' })));
     if (data.length < 100) break;
     page++;
   }
@@ -2016,7 +2350,7 @@ async function runDone(octokit, owner, repo, tokens) {
     actual = String(a);
   }
   if (actual !== issue.actual) {
-    const body = buildBody(issue.due, issue.recur, issue.project, issue.estimate, actual, issue.desc);
+    const body = buildBody(issue.due, issue.recur, issue.project, issue.estimate, actual, issue.desc, issue.activate, issue.before, issue.reviewedAt || '', issue.dependsOn || '');
     await octokit.issues.update({ owner, repo, issue_number: num, body });
   }
   await octokit.issues.update({ owner, repo, issue_number: num, state: 'closed' });
@@ -2025,14 +2359,82 @@ async function runDone(octokit, owner, repo, tokens) {
     validateRecur(issue.recur);
     const base = issue.due || today;
     const nextDate = nextDue(issue.recur, base);
-    const body = buildBody(nextDate, issue.recur, issue.project, issue.estimate, '', issue.desc);
+    // beforeがあればactivateを再計算
+    let nextActivate = '';
+    const nextBefore = issue.before || '';
+    if (nextBefore) {
+      const days = parseBeforeDuration(nextBefore);
+      if (days !== null) nextActivate = addDays(nextDate, -days);
+    }
+    // 繰り返しタスク再作成時はreviewed_atを空に（新サイクル開始）
+    const body = buildBody(nextDate, issue.recur, issue.project, issue.estimate, '', issue.desc, nextActivate, nextBefore, '', '');
     const { data: newIssue } = await octokit.issues.create({
       owner, repo, title: issue.title,
       body, labels: issue.labels
     });
-    runOut(`✅ #${num} を完了しました。繰り返しタスク #${newIssue.number} を ${nextDate} で作成しました。`);
+    runOut(`✅ #${num} を完了しました。繰り返しタスク #${newIssue.number} を ${nextDate} で作成しました。${nextActivate ? '（activate: '+nextActivate+'）' : ''}`);
   } else {
     runOut(`✅ #${num} を完了しました。`);
+  }
+
+  // depends_on: #N 昇格トリガー — 完了した Issue を依存先とするオープン Issue を next に昇格
+  const allOpenIssues = await fetchAllOpen(octokit, owner, repo);
+  {
+    const nextLabel = GTD_DISPLAY['next'];
+    let promoted = 0;
+    for (const raw of allOpenIssues) {
+      const parsedRaw = parseBodyObj(raw.body || '');
+      if (!parsedRaw.dependsOn) continue;
+      if (String(parsedRaw.dependsOn) !== String(num)) continue;
+      const lnames = (raw.labels || []).map(l => l.name);
+      // project ラベルを持つ Issue は昇格対象外
+      if (lnames.some(l => normLabel(l) === PROJECT_LABEL)) continue;
+      const gtdLabel = lnames.find(l => GTD_LABELS.includes(normLabel(l)));
+      // すでに next ならスキップ
+      if (gtdLabel && normLabel(gtdLabel) === 'next') continue;
+      // GTDラベルを next に切り替え
+      if (gtdLabel) {
+        try { await octokit.issues.removeLabel({ owner, repo, issue_number: raw.number, name: gtdLabel }); } catch(e) { if (e.status !== 404) throw e; }
+      }
+      await octokit.issues.addLabels({ owner, repo, issue_number: raw.number, labels: [nextLabel] });
+      runOut(tpl('promote.promoted_depends', { num: raw.number, title: raw.title, dep: num }));
+      promoted++;
+    }
+    if (promoted > 0) runOut(tpl('promote.summary', { n: promoted }));
+  }
+
+  // プロジェクト次タスク昇格候補ヒント — 完了タスクのプロジェクトに紐づくオープンタスクのうち昇格候補を表示
+  if (issue.project) {
+    const projNum = String(issue.project).trim();
+    // プロジェクト Issue 本体のタイトルを取得
+    let projTitle = '#' + projNum;
+    try {
+      const { data: projIssue } = await octokit.issues.get({ owner, repo, issue_number: parseInt(projNum) });
+      projTitle = projIssue.title || projTitle;
+    } catch(e) { /* タイトル取得失敗時はデフォルト値を使用 */ }
+
+    // 昇格候補: project フィールドが #projNum と一致し、next でも project でもない Issue
+    const candidates = [];
+    for (const raw of allOpenIssues) {
+      const parsedRaw = parseBodyObj(raw.body || '');
+      if (String(parsedRaw.project).trim() !== projNum) continue;
+      const lnames = (raw.labels || []).map(l => normLabel(l.name));
+      // project ラベルを持つ Issue（プロジェクト本体）は除外
+      if (lnames.some(l => l === PROJECT_LABEL)) continue;
+      // すでに next の Issue は除外
+      const gtdLabel = lnames.find(l => GTD_LABELS.includes(l));
+      if (gtdLabel === 'next') continue;
+      candidates.push({ num: raw.number, title: raw.title, gtd: gtdLabel || 'inbox' });
+    }
+
+    if (candidates.length > 0) {
+      runOut(tpl('done.promote_hint_header', { proj: projNum, title: projTitle }));
+      candidates.forEach((c, idx) => {
+        const gtdDisplay = GTD_DISPLAY[c.gtd] || c.gtd;
+        runOut(tpl('done.promote_hint_item', { i: idx + 1, num: c.num, title: c.title, gtd: gtdDisplay }));
+      });
+      runOut(t('done.promote_hint_footer'));
+    }
   }
 }
 
@@ -2041,9 +2443,17 @@ async function runMove(octokit, owner, repo, tokens) {
   const target = tokens[1];
   if (!num || !target) { process.stderr.write('Usage: run move <number> <GTD>\n'); process.exit(1); }
   validateNumber(String(num));
+
+  // project への移動を禁止
+  if (target === PROJECT_LABEL) {
+    process.stderr.write('エラー: project への移動はできません。\nプロジェクト昇格には /todo promote-project <N> を使ってください。\n');
+    process.exit(1);
+  }
+
   if (!GTD_LABELS.includes(target)) { process.stderr.write('エラー: GTDラベルは '+GTD_LABELS.join('/')+' のいずれかです。\n'); process.exit(1); }
 
   const issue = await fetchAndParseIssue(octokit, owner, repo, num);
+  // project ラベルは保持するため GTD_LABELS のみから oldGtd を検出
   const oldGtd = issue.labels.find(l => GTD_LABELS.includes(normLabel(l)));
   const newLabel = GTD_DISPLAY[target];
 
@@ -2065,6 +2475,8 @@ async function runEdit(octokit, owner, repo, tokens) {
   let changed = [];
 
   let due = issue.due, recur = issue.recur, project = issue.project, desc = issue.desc, estimate = issue.estimate;
+  let activate = issue.activate || '', beforeStr = issue.before || '', dependsOn = issue.dependsOn || '';
+  let dueChanged = false;
 
   if (parsed.due !== null) {
     due = normalizeDue(parsed.due, today);
@@ -2072,7 +2484,7 @@ async function runEdit(octokit, owner, repo, tokens) {
       const [m, d] = due.split('/');
       due = today.slice(0,4)+'-'+String(m).padStart(2,'0')+'-'+String(d).padStart(2,'0');
     }
-    validateDue(due); changed.push('due → '+due);
+    validateDue(due); changed.push('due → '+due); dueChanged = true;
   }
   if (parsed.recur !== null) {
     if (parsed.recur === 'clear') { recur = ''; changed.push('recur → クリア'); }
@@ -2086,7 +2498,69 @@ async function runEdit(octokit, owner, repo, tokens) {
     estimate = String(em); changed.push('estimate → '+formatTime(em));
   }
 
-  const body = buildBody(due, recur, project, estimate, issue.actual, desc);
+  // activate / before 編集
+  if (parsed.before !== null) {
+    if (parsed.before === 'clear') {
+      beforeStr = ''; activate = ''; changed.push('before → クリア');
+    } else {
+      if (!due) { process.stderr.write(t('error.before_needs_due')+'\n'); process.exit(1); }
+      const days = parseBeforeDuration(parsed.before);
+      if (days === null) { process.stderr.write(t('error.before_format')+'\n'); process.exit(1); }
+      beforeStr = parsed.before;
+      activate = addDays(due, -days);
+      changed.push('before → '+beforeStr+' (activate: '+activate+')');
+    }
+  }
+  if (parsed.activate !== null) {
+    if (parsed.activate === 'clear') {
+      activate = ''; beforeStr = ''; changed.push('activate → クリア');
+    } else {
+      let activateRaw = normalizeDue(parsed.activate, today);
+      if (!activateRaw) {
+        process.stderr.write(t('error.date_format') + ': ' + parsed.activate + '\n');
+        process.exit(1);
+      }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(activateRaw) && !/^\d{1,2}\/\d{1,2}$/.test(activateRaw)) {
+        process.stderr.write(t('error.date_format') + ': ' + parsed.activate + '\n');
+        process.exit(1);
+      }
+      if (/^\d{1,2}\/\d{1,2}$/.test(activateRaw)) {
+        const [m2, d2] = activateRaw.split('/');
+        activateRaw = today.slice(0,4)+'-'+String(m2).padStart(2,'0')+'-'+String(d2).padStart(2,'0');
+      }
+      // activateとbefore同時指定 → より早い方を採用
+      if (beforeStr && activate && activateRaw > activate) {
+        // beforeで計算済みのactivateの方が早い → 何もしない
+      } else {
+        activate = activateRaw;
+      }
+      if (due && activate > due) {
+        process.stderr.write(tpl('error.activate_after_due', { activate, due })+'\n');
+      }
+      changed.push('activate → '+activate);
+    }
+  }
+
+  // due変更 かつ beforeあり → activate再計算
+  if (dueChanged && beforeStr && parsed.activate === null) {
+    const days = parseBeforeDuration(beforeStr);
+    if (days !== null) {
+      activate = addDays(due, -days);
+      changed.push('activate 再計算 → '+activate);
+    }
+  }
+
+  // depends_on 編集
+  if (parsed.dependsOn !== null) {
+    if (parsed.dependsOn === 'clear') {
+      dependsOn = ''; changed.push('depends_on → クリア');
+    } else {
+      validateNumber(parsed.dependsOn);
+      dependsOn = parsed.dependsOn; changed.push('depends_on → #'+dependsOn);
+    }
+  }
+
+  const body = buildBody(due, recur, project, estimate, issue.actual, desc, activate, beforeStr, issue.reviewedAt || '', dependsOn);
   const updateParams = { owner, repo, issue_number: num, body };
 
   // priority 変更
@@ -2124,7 +2598,7 @@ async function runDue(octokit, owner, repo, tokens) {
   validateDue(due);
 
   const issue = await fetchAndParseIssue(octokit, owner, repo, num);
-  const body = buildBody(due, issue.recur, issue.project, issue.estimate, issue.actual, issue.desc);
+  const body = buildBody(due, issue.recur, issue.project, issue.estimate, issue.actual, issue.desc, issue.activate || '', issue.before || '', issue.reviewedAt || '', issue.dependsOn || '');
   await octokit.issues.update({ owner, repo, issue_number: num, body });
   runOut(`✅ #${num} の期日を ${due} に設定しました。`);
 }
@@ -2136,7 +2610,7 @@ async function runDesc(octokit, owner, repo, tokens) {
   validateNumber(String(num));
 
   const issue = await fetchAndParseIssue(octokit, owner, repo, num);
-  const body = buildBody(issue.due, issue.recur, issue.project, issue.estimate, issue.actual, desc);
+  const body = buildBody(issue.due, issue.recur, issue.project, issue.estimate, issue.actual, desc, issue.activate || '', issue.before || '', issue.reviewedAt || '', issue.dependsOn || '');
   await octokit.issues.update({ owner, repo, issue_number: num, body });
   runOut(`✅ #${num} の説明を更新しました。`);
 }
@@ -2150,7 +2624,7 @@ async function runRecur(octokit, owner, repo, tokens) {
   if (pattern !== 'clear') { validateRecur(pattern); recur = pattern; }
 
   const issue = await fetchAndParseIssue(octokit, owner, repo, num);
-  const body = buildBody(issue.due, recur, issue.project, issue.estimate, issue.actual, issue.desc);
+  const body = buildBody(issue.due, recur, issue.project, issue.estimate, issue.actual, issue.desc, issue.activate || '', issue.before || '', issue.reviewedAt || '', issue.dependsOn || '');
   await octokit.issues.update({ owner, repo, issue_number: num, body });
   runOut(recur ? `✅ #${num} の繰り返しを ${recur} に設定しました。` : `✅ #${num} の繰り返しをクリアしました。`);
 }
@@ -2162,8 +2636,28 @@ async function runLink(octokit, owner, repo, tokens) {
   validateNumber(String(num)); validateNumber(String(proj));
 
   const issue = await fetchAndParseIssue(octokit, owner, repo, num);
-  const body = buildBody(issue.due, issue.recur, String(proj), issue.estimate, issue.actual, issue.desc);
+
+  // 親プロジェクトの存在・ラベル確認
+  let parentIssue;
+  try {
+    parentIssue = await fetchAndParseIssue(octokit, owner, repo, proj);
+  } catch (e) {
+    process.stderr.write(`エラー: プロジェクト #${proj} の取得に失敗しました: ${e.message}\n`);
+    process.exit(1);
+  }
+  const isProject = parentIssue.labels.some(l => normLabel(l) === PROJECT_LABEL);
+  if (!isProject) {
+    process.stderr.write(`エラー: #${proj} はプロジェクトではありません。先に /todo project <タイトル> で作成してください\n`);
+    process.exit(1);
+  }
+
+  // body の project: #N メタ行を更新（従来処理）
+  const body = buildBody(issue.due, issue.recur, String(proj), issue.estimate, issue.actual, issue.desc, issue.activate || '', issue.before || '', issue.reviewedAt || '', issue.dependsOn || '');
   await octokit.issues.update({ owner, repo, issue_number: num, body });
+
+  // sub-issue も登録（Phase 1 互換レイヤ）
+  await addSubIssue(octokit, owner, repo, proj, issue.id);
+
   runOut(`✅ #${num} をプロジェクト #${proj} に紐付けました。`);
 }
 
@@ -2278,7 +2772,7 @@ async function runArchive(octokit, owner, repo, tokens) {
     const filter = tokens[1] || '';
     const closed = await fetchRecentClosed(octokit, owner, repo, 30, null);
     let items = closed;
-    if (filter && GTD_LABELS.includes(filter)) {
+    if (filter && (GTD_LABELS.includes(filter) || filter === PROJECT_LABEL)) {
       items = closed.filter(i => i.labels && i.labels.some(l => normLabel(l.name) === filter));
     } else if (filter && filter.startsWith('@')) {
       validateCtx(filter.slice(1));
@@ -2409,7 +2903,7 @@ async function runTemplate(octokit, owner, repo, tokens) {
     } else {
       // インライン引数形式
       let gtd = 'inbox';
-      if (rest.length && GTD_LABELS.includes(rest[0])) gtd = rest.shift();
+      if (rest.length && (GTD_LABELS.includes(rest[0]) || rest[0] === PROJECT_LABEL)) gtd = rest.shift();
       const parsed = parseArgs(rest);
       const contexts = parsed.contexts;
       const priority = parsed.priority || 'p3';
@@ -2469,9 +2963,27 @@ async function runTemplate(octokit, owner, repo, tokens) {
     labels.push(priority);
 
     const estMin = tmpl.estimate ? parseTime(String(tmpl.estimate)) : null;
-    const body = buildBody(due, recur, proj, estMin !== null ? String(estMin) : '', '', desc);
+    const body = buildBody(due, recur, proj, estMin !== null ? String(estMin) : '', '', desc, '', '', '');
     const { data: newIssue } = await octokit.issues.create({ owner, repo, title, body, labels });
     runOut(`✅ テンプレート「${name}」から Issue #${newIssue.number} を作成しました。\n  タイトル: ${title}\n  ラベル: ${labels.join(', ')}${due ? '\n  期日: '+due : ''}`);
+
+    // sub-issue 登録（テンプレートに project が含まれる場合）
+    if (proj) {
+      const parentNum = parseInt(proj);
+      let parentIssue;
+      try {
+        parentIssue = await fetchAndParseIssue(octokit, owner, repo, parentNum);
+      } catch (e) {
+        process.stderr.write(`⚠️ プロジェクト #${parentNum} の取得に失敗しました: ${e.message}\n`);
+        return;
+      }
+      const isProject = parentIssue.labels.some(l => normLabel(l) === PROJECT_LABEL);
+      if (!isProject) {
+        process.stderr.write(`⚠️ #${parentNum} はプロジェクトではありません。先に /todo project <タイトル> で作成してください\n`);
+        return;
+      }
+      await addSubIssue(octokit, owner, repo, parentNum, newIssue.id);
+    }
   } else if (sub === 'delete') {
     const name = tokens[1];
     if (!name) { process.stderr.write('Usage: run template delete <name>\n'); process.exit(1); }
@@ -2481,6 +2993,78 @@ async function runTemplate(octokit, owner, repo, tokens) {
   } else {
     process.stderr.write('Usage: run template list|show|save|use|delete\n'); process.exit(1);
   }
+}
+
+async function runShow(octokit, owner, repo, tokens) {
+  const numStr = (tokens[0] || '').replace(/^#/, '');
+  if (!numStr || !/^\d+$/.test(numStr)) {
+    process.stderr.write('Usage: /todo show <Issue番号>\n');
+    process.exit(1);
+  }
+  const num = parseInt(numStr, 10);
+
+  let issue;
+  try {
+    issue = await fetchAndParseIssue(octokit, owner, repo, num);
+  } catch (e) {
+    if (e.status === 404) {
+      process.stderr.write(`エラー: Issue #${num} が見つかりません。\n`);
+    } else {
+      process.stderr.write(`エラー: Issue の取得に失敗しました（${e.message}）\n`);
+    }
+    process.exit(1);
+  }
+
+  // GTDカテゴリを判定
+  const gtdLabel = GTD_LABELS.find(l => issue.labels.includes(GTD_DISPLAY[l]))
+    || (issue.labels.includes(GTD_DISPLAY[PROJECT_LABEL]) ? 'project' : '');
+  const gtdDisplay = gtdLabel ? (GTD_DISPLAY[gtdLabel] || gtdLabel) : '（未分類）';
+
+  // コンテキストを抽出（@で始まるラベル）
+  const ctxLabels = issue.labels.filter(l => l.startsWith('@'));
+  const ctxDisplay = ctxLabels.length ? ctxLabels.join(', ') : '（なし）';
+
+  // 優先度を抽出
+  const priLabel = issue.labels.find(l => /^p[123]$/.test(l)) || '';
+  const priDisplay = priLabel || '（なし）';
+
+  // タグ（GTD・コンテキスト・優先度以外のラベル）
+  const systemLabels = new Set([
+    ...GTD_LABELS.map(l => GTD_DISPLAY[l]),
+    GTD_DISPLAY[PROJECT_LABEL],
+    ...ctxLabels,
+    ...(priLabel ? [priLabel] : []),
+  ]);
+  const tags = issue.labels.filter(l => !systemLabels.has(l));
+  const tagsDisplay = tags.length ? tags.join(', ') : '（なし）';
+
+  // 見積もりを分 → 表示形式に変換
+  const estDisplay = issue.estimate ? formatTime(parseInt(issue.estimate)) : '（なし）';
+
+  // 1行サマリー（値がある項目だけ | 区切りで並べる）
+  const summaryParts = [];
+  if (gtdLabel) summaryParts.push(gtdDisplay);
+  if (ctxLabels.length) summaryParts.push(ctxLabels.join(', '));
+  if (priLabel) summaryParts.push(priLabel);
+  if (issue.due) summaryParts.push(`期限:${issue.due}`);
+  if (issue.estimate) summaryParts.push(`見積:${estDisplay}`);
+  if (issue.recur) summaryParts.push(`繰り返し:${issue.recur}`);
+  if (issue.project) summaryParts.push(`📁#${issue.project}`);
+  if (tags.length) summaryParts.push(`タグ:${tags.join(',')}`);
+  if (issue.activate) summaryParts.push(`activate:${issue.activate}`);
+  if (issue.dependsOn) summaryParts.push(`depends_on:#${issue.dependsOn}`);
+
+  const lines = [
+    `## #${issue.number} ${issue.title}`,
+    summaryParts.join(' | '),
+  ];
+
+  if (issue.desc && issue.desc.trim()) {
+    lines.push('');
+    lines.push(`詳細: ${issue.desc.trim()}`);
+  }
+
+  runOut(lines.join('\n'));
 }
 
 async function runView(octokit, owner, repo, tokens) {
@@ -2494,7 +3078,7 @@ async function runView(octokit, owner, repo, tokens) {
     const rest = tokens.slice(2);
     let gtd = '', ctx = '', pri = '';
     for (const tok of rest) {
-      if (GTD_LABELS.includes(tok)) gtd = tok;
+      if (GTD_LABELS.includes(tok) || tok === PROJECT_LABEL) gtd = tok;
       else if (/^p[123]$/.test(tok)) pri = tok;
       else if (tok.startsWith('@')) { validateCtx(tok.slice(1)); ctx = tok; }
     }
@@ -2557,7 +3141,7 @@ async function runBulk(octokit, owner, repo, tokens) {
         let actual = issue.actual;
         if (parsed.actual) { const a = parseTime(parsed.actual); if (a !== null) actual = String(a); }
         if (actual !== issue.actual) {
-          const body = buildBody(issue.due, issue.recur, issue.project, issue.estimate, actual, issue.desc);
+          const body = buildBody(issue.due, issue.recur, issue.project, issue.estimate, actual, issue.desc, issue.activate || '', issue.before || '', issue.reviewedAt || '', issue.dependsOn || '');
           await octokit.issues.update({ owner, repo, issue_number: num, body });
         }
         await octokit.issues.update({ owner, repo, issue_number: num, state: 'closed' });
@@ -2567,7 +3151,14 @@ async function runBulk(octokit, owner, repo, tokens) {
     runOut(`✅ ${doneCount}件完了${errCount ? '（エラー: '+errCount+'件）' : ''}`);
   } else if (sub === 'move') {
     const target = rest[0];
-    if (!target || !GTD_LABELS.includes(target)) { process.stderr.write('エラー: GTDラベルを指定してください。\n'); process.exit(1); }
+    if (!target || !GTD_LABELS.includes(target)) {
+      if (target === PROJECT_LABEL) {
+        process.stderr.write('エラー: project への移動はできません。\nプロジェクト昇格には /todo promote-project <N> を使ってください。\n');
+      } else {
+        process.stderr.write('エラー: GTDラベルを指定してください。\n');
+      }
+      process.exit(1);
+    }
     const newLabel = GTD_DISPLAY[target];
     for (const num of nums) {
       try {
@@ -2621,6 +3212,279 @@ async function runBulk(octokit, owner, repo, tokens) {
   }
 }
 
+async function runReviewSomeday(octokit, owner, repo, tokens) {
+  const today = getToday();
+  const num = parseInt(tokens[0]);
+  if (!num) { process.stderr.write('Usage: run review-someday <number>\n'); process.exit(1); }
+  validateNumber(String(num));
+
+  const issue = await fetchAndParseIssue(octokit, owner, repo, num);
+
+  // somedayラベルを持つIssueのみ対象
+  const gtdLabel = issue.labels.find(l => GTD_LABELS.includes(normLabel(l)));
+  if (!gtdLabel || normLabel(gtdLabel) !== 'someday') {
+    process.stderr.write(`エラー: #${num} はsomedayタスクではありません。\n`);
+    process.exit(1);
+  }
+
+  const body = buildBody(issue.due, issue.recur, issue.project, issue.estimate, issue.actual, issue.desc, issue.activate || '', issue.before || '', today, issue.dependsOn || '');
+  await updateIssueBody(octokit, owner, repo, num, { body });
+  runOut(`✅ #${num} の reviewed_at を ${today} に更新しました。`);
+}
+
+async function runPromote(octokit, owner, repo) {
+  const today = getToday();
+  const allIssues = await fetchAllOpen(octokit, owner, repo);
+  const nextLabel = GTD_DISPLAY['next'];
+  let promoted = 0;
+
+  for (const raw of allIssues) {
+    const parsed = parseBodyObj(raw.body || '');
+    if (!parsed.activate) continue;
+    if (parsed.activate > today) continue;
+
+    const lnames = (raw.labels || []).map(l => l.name);
+    // project ラベルを持つ Issue は activate 対象外
+    if (lnames.some(l => normLabel(l) === PROJECT_LABEL)) continue;
+    const gtdLabel = lnames.find(l => GTD_LABELS.includes(normLabel(l)));
+    // すでに next ならスキップ
+    if (gtdLabel && normLabel(gtdLabel) === 'next') continue;
+
+    // GTDラベルをnextに切り替え
+    if (gtdLabel) {
+      try { await octokit.issues.removeLabel({ owner, repo, issue_number: raw.number, name: gtdLabel }); } catch(e) { if (e.status !== 404) throw e; }
+    }
+    await octokit.issues.addLabels({ owner, repo, issue_number: raw.number, labels: [nextLabel] });
+    runOut(tpl('promote.promoted', { num: raw.number, title: raw.title, activate: parsed.activate }));
+    promoted++;
+  }
+
+  if (promoted === 0) {
+    runOut(t('promote.no_targets'));
+  } else {
+    runOut(tpl('promote.summary', { n: promoted }));
+  }
+}
+
+// /todo promote-project <N> [--outcome "〜"] — 既存 Issue をプロジェクトに昇格
+async function runPromoteProject(octokit, owner, repo, tokens) {
+  const num = parseInt(tokens[0]);
+  if (!num) { process.stderr.write('Usage: /todo promote-project <N> [--outcome "タイトル"]\n'); process.exit(1); }
+  validateNumber(String(num));
+
+  const issue = await fetchAndParseIssue(octokit, owner, repo, num);
+
+  // 既に project ラベルを持つ場合はエラー
+  if (issue.labels.some(l => normLabel(l) === PROJECT_LABEL)) {
+    process.stderr.write(`エラー: #${num} は既にプロジェクトです。\n`);
+    process.exit(1);
+  }
+
+  // GTD ラベルを外す
+  const oldGtd = issue.labels.find(l => GTD_LABELS.includes(normLabel(l)));
+  if (oldGtd) {
+    try { await octokit.issues.removeLabel({ owner, repo, issue_number: num, name: oldGtd }); } catch(e) { if (e.status !== 404) throw e; }
+  }
+
+  // 📁 project ラベルを付与
+  await ensureLabel(octokit, owner, repo, GTD_DISPLAY[PROJECT_LABEL], '0052CC', 'GTD: project');
+  await octokit.issues.addLabels({ owner, repo, issue_number: num, labels: [GTD_DISPLAY[PROJECT_LABEL]] });
+
+  // --outcome 指定時はタイトルを書き換え
+  let newTitle = issue.title;
+  const outcomeIdx = tokens.indexOf('--outcome');
+  if (outcomeIdx !== -1 && tokens[outcomeIdx+1]) {
+    newTitle = tokens[outcomeIdx+1];
+    validateName(newTitle);
+    await octokit.issues.update({ owner, repo, issue_number: num, title: newTitle });
+  }
+
+  runOut(`✅ #${num} 「${newTitle}」をプロジェクトに昇格しました。`);
+  runOut(`💡 最初の Next Action を追加するには: /todo next <タイトル> --project ${num}`);
+}
+
+// /todo unlink <N> — 子 Issue の sub-issue 関連と body project 行を解除
+async function runUnlink(octokit, owner, repo, tokens) {
+  const num = parseInt(tokens[0]);
+  if (!num) { process.stderr.write('Usage: /todo unlink <N>\n'); process.exit(1); }
+  validateNumber(String(num));
+
+  const issue = await fetchAndParseIssue(octokit, owner, repo, num);
+
+  // body に project: #N がなければエラー
+  const projMatch = (issue.body||'').match(/^project: #(\d+)/m);
+  if (!projMatch) {
+    process.stderr.write(`エラー: #${num} にプロジェクト紐付けがありません。\n`);
+    process.exit(1);
+  }
+  const parentNum = parseInt(projMatch[1]);
+
+  // removeSubIssue を呼ぶ
+  await removeSubIssue(octokit, owner, repo, parentNum, issue.id);
+
+  // body から project: #N 行を削除
+  const newBody = (issue.body||'').replace(/^project: #\d+\r?\n?/m, '');
+  await octokit.issues.update({ owner, repo, issue_number: num, body: newBody });
+
+  runOut(`✅ #${num} のプロジェクト紐付けを解除しました。`);
+}
+
+// /todo weekly-project-audit — 全プロジェクトを走査し棚卸しを促す
+async function runWeeklyProjectAudit(octokit, owner, repo) {
+  const today = getToday();
+  const allIssues = await fetchAllOpen(octokit, owner, repo);
+
+  // 📁 project ラベルを持つ Issue を抽出
+  const projects = allIssues.filter(i => {
+    const lnames = (i.labels || []).map(l => l.name || l);
+    return lnames.some(l => normLabel(l) === PROJECT_LABEL);
+  });
+
+  if (!projects.length) {
+    runOut('## 📁 プロジェクト棚卸し（0件）\n\nプロジェクトがありません。');
+    return;
+  }
+
+  runOut(`## 📁 プロジェクト棚卸し（全${projects.length}件）\n`);
+
+  let reviewedCount = 0;
+  for (let idx = 0; idx < projects.length; idx++) {
+    const proj = projects[idx];
+    const projNum = proj.number;
+
+    // sub-issue API + body メタ OR で子タスクを取得
+    const subIssues = await listSubIssues(octokit, owner, repo, projNum);
+    const subNums = new Set(subIssues.map(s => s.number));
+    const projTag = 'project: #' + projNum;
+    const bodyChildren = allIssues.filter(i => (i.body||'').includes(projTag));
+    for (const bc of bodyChildren) subNums.add(bc.number);
+    const children = allIssues.filter(i => subNums.has(i.number));
+
+    // GTD カテゴリ別集計
+    const nextCount = children.filter(i => {
+      const lnames = (i.labels||[]).map(l => l.name||l);
+      return lnames.some(l => normLabel(l) === 'next');
+    }).length;
+    const waitingCount = children.filter(i => {
+      const lnames = (i.labels||[]).map(l => l.name||l);
+      return lnames.some(l => normLabel(l) === 'waiting');
+    }).length;
+    const somedayCount = children.filter(i => {
+      const lnames = (i.labels||[]).map(l => l.name||l);
+      return lnames.some(l => normLabel(l) === 'someday');
+    }).length;
+
+    // 停滞判定（親 Issue の updated_at から今日まで 30 日以上）
+    const updatedAt = proj.updated_at || '';
+    const daysSinceUpdate = updatedAt ? daysBetween(updatedAt.slice(0, 10), today) : 0;
+    const isStale = daysSinceUpdate >= 30;
+    const hasNext = nextCount > 0;
+
+    // 判定
+    let verdict = '';
+    let suggestions = '';
+    if (!hasNext && isStale) {
+      verdict = '⚠️ nextなし / 30日更新なし（停滞）';
+      suggestions = `  → 対応候補: /todo next <タイトル> --project ${projNum} / /todo move ${projNum} someday / /todo close ${projNum}`;
+    } else if (!hasNext) {
+      verdict = '⚠️ next欠落';
+      suggestions = `  → 対応候補: /todo next <タイトル> --project ${projNum} / /todo move ${projNum} someday / /todo close ${projNum}`;
+    } else {
+      verdict = '✅ 問題なし';
+    }
+
+    // 直近更新の表示
+    const updateStr = updatedAt ? `${daysSinceUpdate}日前` : '不明';
+
+    const w = s => process.stdout.write(s);
+    w(`[${idx+1}/${projects.length}] #${projNum} ${proj.title}\n`);
+    w(`  子タスク: next=${nextCount}件 waiting=${waitingCount}件 someday=${somedayCount}件\n`);
+    w(`  直近更新: ${updateStr}\n`);
+    w(`  判定: ${verdict}\n`);
+    if (suggestions) w(suggestions + '\n');
+    w('\n');
+
+    // next 欠落 or 停滞プロジェクトに reviewed_at を書き込む
+    if (!hasNext || isStale) {
+      const parsed = parseBodyObj(proj.body || '');
+      const newBody = buildBody(
+        parsed.due, parsed.recur, parsed.project,
+        parsed.estimate, parsed.actual, parsed.desc,
+        parsed.activate || '', parsed.before || '', today, parsed.dependsOn || ''
+      );
+      try {
+        await octokit.issues.update({ owner, repo, issue_number: projNum, body: newBody });
+        reviewedCount++;
+      } catch (e) {
+        process.stderr.write(`⚠️ #${projNum} の reviewed_at 書き込み失敗: ${e.message}\n`);
+      }
+    }
+  }
+
+  runOut(`---\n棚卸し完了: ${projects.length}件確認 / reviewed_at 記録: ${reviewedCount}件`);
+}
+
+// /todo migrate sub-issue [--dry-run] — body project: #N メタを持つ Issue を sub-issue に一括登録
+async function runMigrateSubIssue(octokit, owner, repo, tokens) {
+  const dryRun = tokens.includes('--dry-run');
+  const allIssues = await fetchAllOpen(octokit, owner, repo);
+
+  // body に "project: #N" を持つ Issue を抽出
+  const targets = [];
+  for (const issue of allIssues) {
+    const m = (issue.body || '').match(/^project: #(\d+)/m);
+    if (!m) continue;
+    const parentNum = parseInt(m[1]);
+    targets.push({ issue, parentNum });
+  }
+
+  if (!targets.length) {
+    runOut('移行対象の Issue が見つかりませんでした。');
+    return;
+  }
+
+  if (dryRun) {
+    runOut(`## migrate sub-issue --dry-run（${targets.length}件対象）\n`);
+    for (const { issue, parentNum } of targets) {
+      runOut(`  #${issue.number} 「${issue.title}」 → 親 #${parentNum}`);
+    }
+    runOut(`\n--dry-run モード: 実際の登録は行いません。`);
+    return;
+  }
+
+  let registered = 0, skipped = 0, errors = 0;
+
+  for (const { issue, parentNum } of targets) {
+    // 親が 📁 project ラベルを持つか確認
+    let parentIssue;
+    try {
+      parentIssue = await fetchAndParseIssue(octokit, owner, repo, parentNum);
+    } catch (e) {
+      process.stderr.write(`⚠️ 親 #${parentNum} の取得失敗: ${e.message}\n`);
+      errors++;
+      continue;
+    }
+    const isProject = parentIssue.labels.some(l => normLabel(l) === PROJECT_LABEL);
+    if (!isProject) {
+      process.stderr.write(`⚠️ #${parentNum} は 📁 project ラベルなし → スキップ (#${issue.number})\n`);
+      skipped++;
+      continue;
+    }
+
+    // addSubIssue は 422（既登録）をスキップして冪等に動作
+    const result = await addSubIssue(octokit, owner, repo, parentNum, issue.id);
+    if (result === 'skipped') {
+      skipped++;
+    } else if (result === 'error') {
+      errors++;
+    } else {
+      registered++;
+    }
+  }
+
+  runOut(`✅ migrate sub-issue 完了: ${registered}件登録 / ${skipped}件スキップ / ${errors}件エラー`);
+}
+
 // runMain: コマンドディスパッチャー
 async function runMain(args) {
   const octokit = await initOctokit();
@@ -2629,8 +3493,8 @@ async function runMain(args) {
   let cmd = args[0];
   const rest = args.slice(1);
 
-  // GTDキーワードが先頭 → add として扱う
-  if (GTD_LABELS.includes(cmd)) {
+  // GTDキーワードが先頭 → add として扱う（project も同様）
+  if (GTD_LABELS.includes(cmd) || cmd === PROJECT_LABEL) {
     return await runAdd(octokit, owner, repo, args);
   }
 
@@ -2664,10 +3528,40 @@ async function runMain(args) {
     case 'report':    return await runReport(octokit, owner, repo, rest);
     case 'help':      return await runHelp();
     case 'template':  return await runTemplate(octokit, owner, repo, rest);
+    case 'show':      return await runShow(octokit, owner, repo, rest);
     case 'view':      return await runView(octokit, owner, repo, rest);
     case 'bulk':      return await runBulk(octokit, owner, repo, rest);
-    default:
-      // フォールバック: GTDキーワードでなければ add inbox として扱う
+    case 'promote':         return await runPromote(octokit, owner, repo);
+    case 'promote-project': return await runPromoteProject(octokit, owner, repo, rest);
+    case 'unlink':          return await runUnlink(octokit, owner, repo, rest);
+    case 'review-someday':         return await runReviewSomeday(octokit, owner, repo, rest);
+    case 'weekly-project-audit':   return await runWeeklyProjectAudit(octokit, owner, repo);
+    case 'migrate': {
+      // migrate sub-issue [--dry-run]
+      const subCmd = rest[0];
+      if (subCmd === 'sub-issue') return await runMigrateSubIssue(octokit, owner, repo, rest.slice(1));
+      process.stderr.write('Usage: run migrate sub-issue [--dry-run]\n'); process.exit(1);
+      break;
+    }
+    case 'activate': {
+      const [num, date] = rest;
+      if (!num || !date) {
+        process.stderr.write('Usage: /todo activate <#> <日付>\n');
+        process.exit(1);
+      }
+      return await runEdit(octokit, owner, repo, [num, '--activate', date]);
+    }
+    default: {
+      // 第1引数が英字コマンド風で既知コマンドにない → 誤入力として即エラー
+      // （GTD 原則: 仕分け済みをInboxに戻さない。暗黙の inbox 吸い込みは ghost issue を生む）
+      if (/^[a-zA-Z][a-zA-Z0-9_-]*$/.test(cmd)) {
+        process.stderr.write(`エラー: 未知のコマンド「${cmd}」です。\n`);
+        process.stderr.write(`  明示的に inbox へ追加したい場合: /todo add ${args.join(' ')}\n`);
+        process.stderr.write(`  コマンド一覧: /todo help\n`);
+        process.exit(1);
+      }
+      // 非英字（日本語タイトル等）は従来通り inbox 追加（摩擦ゼロ収集の維持）
       return await runAdd(octokit, owner, repo, args);
+    }
   }
 }

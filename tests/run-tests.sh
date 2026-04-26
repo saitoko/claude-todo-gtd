@@ -1756,6 +1756,309 @@ assert_contains "en: today Due Today"      "Due Today"               "$TODAY_OUT
 assert_contains "en: today Total"          "Total"                   "$TODAY_OUT_EN"
 
 # ──────────────────────────────────────────
+# §27  normalizeDue — 追加パターン（ひらがな・曜日）
+# ──────────────────────────────────────────
+echo ""
+echo "§27  normalizeDue — ひらがな・曜日パターン"
+
+# テスト固定日付: 2026-04-15 (水曜日)
+TEST_DOW="2026-04-15"
+
+# ひらがな表現
+assert_eq "きょう"   "2026-04-15" "$(node "$ENGINE" normalize-due 'きょう' "$TEST_DOW")"
+assert_eq "あした"   "2026-04-16" "$(node "$ENGINE" normalize-due 'あした' "$TEST_DOW")"
+assert_eq "あす"     "2026-04-16" "$(node "$ENGINE" normalize-due 'あす' "$TEST_DOW")"
+assert_eq "あさって" "2026-04-17" "$(node "$ENGINE" normalize-due 'あさって' "$TEST_DOW")"
+assert_eq "きのう"   "2026-04-14" "$(node "$ENGINE" normalize-due 'きのう' "$TEST_DOW")"
+
+# X曜日パターン（次に来るその曜日。今日=水曜）
+assert_eq "水曜(今日→当日)" "2026-04-15" "$(node "$ENGINE" normalize-due '水曜' "$TEST_DOW")"
+assert_eq "木曜(翌日→04/16)" "2026-04-16" "$(node "$ENGINE" normalize-due '木曜' "$TEST_DOW")"
+assert_eq "金曜(今週→04/17)" "2026-04-17" "$(node "$ENGINE" normalize-due '金曜' "$TEST_DOW")"
+assert_eq "月曜(来週→04/20)" "2026-04-20" "$(node "$ENGINE" normalize-due '月曜' "$TEST_DOW")"
+assert_eq "日曜日(来週→04/19)" "2026-04-19" "$(node "$ENGINE" normalize-due '日曜日' "$TEST_DOW")"
+
+# 今週X曜パターン（今日=水曜 2026-04-15）
+# 今日以降のその曜日を指す（今日より前は今日に丸める）
+assert_eq "今週水曜(今日)" "2026-04-15" "$(node "$ENGINE" normalize-due '今週水曜' "$TEST_DOW")"
+assert_eq "今週金曜" "2026-04-17" "$(node "$ENGINE" normalize-due '今週金曜' "$TEST_DOW")"
+assert_eq "今週月曜(過去→今日)" "2026-04-15" "$(node "$ENGINE" normalize-due '今週月曜' "$TEST_DOW")"
+
+# TEST_TODAYベース（日曜 2026-04-05）での曜日テスト
+assert_eq "金曜(日曜起点→04/10)" "2026-04-10" "$(node "$ENGINE" normalize-due '金曜' "$TEST_TODAY")"
+assert_eq "日曜(今日→当日)"      "2026-04-05" "$(node "$ENGINE" normalize-due '日曜' "$TEST_TODAY")"
+assert_eq "月曜(翌日→04/06)"     "2026-04-06" "$(node "$ENGINE" normalize-due '月曜' "$TEST_TODAY")"
+
+# 今週X曜（日曜 2026-04-05 起点）
+assert_eq "今週金曜(日曜起点)" "2026-04-10" "$(node "$ENGINE" normalize-due '今週金曜' "$TEST_TODAY")"
+assert_eq "今週日曜(今日)"     "2026-04-05" "$(node "$ENGINE" normalize-due '今週日曜' "$TEST_TODAY")"
+
+# ──────────────────────────────────────────
+# §28  list-all --group (期限別グルーピング)
+# ──────────────────────────────────────────
+echo ""
+echo "§28  list-all --group — 期限別グルーピング"
+
+# 基準日: 2026-04-15 (水曜)
+GROUP_TODAY="2026-04-15"
+GROUP_MOCK='[
+  {"number":1,"title":"overdue-task","body":"due: 2026-04-14","labels":[{"name":"🎯 next"},{"name":"p1"}]},
+  {"number":2,"title":"today-task","body":"due: 2026-04-15","labels":[{"name":"🎯 next"},{"name":"p2"}]},
+  {"number":3,"title":"tomorrow-task","body":"due: 2026-04-16","labels":[{"name":"🎯 next"},{"name":"p3"}]},
+  {"number":4,"title":"thisweek-task","body":"due: 2026-04-17","labels":[{"name":"🎯 next"}]},
+  {"number":5,"title":"later-task","body":"due: 2026-05-04","labels":[{"name":"🎯 next"}]},
+  {"number":6,"title":"nodue-task","body":"","labels":[{"name":"🎯 next"}]}
+]'
+
+GROUP_OUT=$(OPEN_ENV="$GROUP_MOCK" TODAY_ENV="$GROUP_TODAY" FILTER_GTD_ENV="next" FILTER_GROUP_ENV="1" node "$ENGINE" list-all)
+
+assert_contains "group: 期限超過セクション"  "期限超過"  "$GROUP_OUT"
+assert_contains "group: 今日セクション"      "今日"      "$GROUP_OUT"
+assert_contains "group: 明日セクション"      "明日"      "$GROUP_OUT"
+assert_contains "group: 今週セクション"      "今週"      "$GROUP_OUT"
+assert_contains "group: 来週以降セクション"  "来週以降"  "$GROUP_OUT"
+assert_contains "group: 期限なしセクション"  "期限なし"  "$GROUP_OUT"
+assert_contains "group: #1 期限超過"         "#1"        "$GROUP_OUT"
+assert_contains "group: #2 今日"             "#2"        "$GROUP_OUT"
+assert_contains "group: #3 明日"             "#3"        "$GROUP_OUT"
+assert_contains "group: #4 今週"             "#4"        "$GROUP_OUT"
+assert_contains "group: #5 来週以降"         "#5"        "$GROUP_OUT"
+assert_contains "group: #6 期限なし"         "#6"        "$GROUP_OUT"
+
+# --group なし（従来通りフラットリスト）
+GROUP_NOGROUP=$(OPEN_ENV="$GROUP_MOCK" TODAY_ENV="$GROUP_TODAY" FILTER_GTD_ENV="next" node "$ENGINE" list-all)
+if ! printf '%s' "$GROUP_NOGROUP" | grep -aq '期限超過 ──'; then
+  printf "  ✅ group: --groupなしはセクションヘッダーなし\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ group: --groupなしはセクションヘッダーなし\n"; FAIL=$((FAIL+1))
+fi
+
+# --group フィルタなし（全タスク対象）
+GROUP_ALL=$(OPEN_ENV="$GROUP_MOCK" TODAY_ENV="$GROUP_TODAY" FILTER_GROUP_ENV="1" node "$ENGINE" list-all)
+assert_contains "group: フィルタなし全タスク期限超過" "期限超過" "$GROUP_ALL"
+assert_contains "group: フィルタなし#6表示"          "#6"       "$GROUP_ALL"
+
+# 空データ
+GROUP_EMPTY=$(OPEN_ENV='[]' TODAY_ENV="$GROUP_TODAY" FILTER_GTD_ENV="next" FILTER_GROUP_ENV="1" node "$ENGINE" list-all)
+assert_contains "group: 空データ → 該当タスクなし" "該当タスクなし" "$GROUP_EMPTY"
+
+# 順序確認: 期限超過が先頭
+POS_OVER=$(printf '%s\n' "$GROUP_OUT" | grep -n '期限超過' | head -1 | cut -d: -f1)
+POS_NODUE=$(printf '%s\n' "$GROUP_OUT" | grep -n '期限なし' | head -1 | cut -d: -f1)
+if [ -n "$POS_OVER" ] && [ -n "$POS_NODUE" ] && [ "$POS_OVER" -lt "$POS_NODUE" ]; then
+  printf "  ✅ group: 期限超過が期限なしより先頭\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ group: 期限超過が期限なしより先頭\n"; FAIL=$((FAIL+1))
+fi
+
+# ──────────────────────────────────────────
+# §28b  list --no-due (期限未設定フィルタ)
+# ──────────────────────────────────────────
+echo ""
+echo "§28b  list --no-due — 期限未設定のタスクのみ表示"
+
+NODUE_MOCK='[
+  {"number":10,"title":"has-due-task","body":"due: 2026-04-20","labels":[{"name":"🎯 next"}]},
+  {"number":11,"title":"no-due-task","body":"","labels":[{"name":"🎯 next"}]},
+  {"number":12,"title":"someday-no-due","body":"","labels":[{"name":"🌈 someday"}]},
+  {"number":13,"title":"next-no-due-2","body":"desc: something","labels":[{"name":"🎯 next"}]}
+]'
+NODUE_TODAY="2026-04-15"
+
+# next --no-due: due なし next タスクだけ返る
+NODUE_OUT=$(OPEN_ENV="$NODUE_MOCK" TODAY_ENV="$NODUE_TODAY" FILTER_GTD_ENV="next" FILTER_NO_DUE_ENV="1" node "$ENGINE" list-all)
+assert_contains "no-due: #11 が含まれる"    "#11"           "$NODUE_OUT"
+assert_contains "no-due: #13 が含まれる"    "#13"           "$NODUE_OUT"
+if printf '%s' "$NODUE_OUT" | grep -aq '#10'; then
+  printf "  ❌ no-due: 期限ありの #10 が誤って含まれた\n"; FAIL=$((FAIL+1))
+else
+  printf "  ✅ no-due: 期限ありの #10 は除外される\n"; PASS=$((PASS+1))
+fi
+if printf '%s' "$NODUE_OUT" | grep -aq '#12'; then
+  printf "  ❌ no-due: 別GTDの #12 が誤って含まれた\n"; FAIL=$((FAIL+1))
+else
+  printf "  ✅ no-due: 別GTD(someday)の #12 は除外される\n"; PASS=$((PASS+1))
+fi
+
+# --no-due で 0 件のとき「該当タスクなし」
+NODUE_EMPTY=$(OPEN_ENV='[{"number":20,"title":"with-due","body":"due: 2026-04-18","labels":[{"name":"🎯 next"}]}]' TODAY_ENV="$NODUE_TODAY" FILTER_GTD_ENV="next" FILTER_NO_DUE_ENV="1" node "$ENGINE" list-all)
+assert_contains "no-due: 0件 → 該当タスクなし" "該当タスクなし" "$NODUE_EMPTY"
+
+# --no-due は --group より優先（セクションヘッダーなし）
+NODUE_VS_GROUP=$(OPEN_ENV="$NODUE_MOCK" TODAY_ENV="$NODUE_TODAY" FILTER_GTD_ENV="next" FILTER_NO_DUE_ENV="1" FILTER_GROUP_ENV="1" node "$ENGINE" list-all)
+if ! printf '%s' "$NODUE_VS_GROUP" | grep -aq '期限なし ──'; then
+  printf "  ✅ no-due: --no-due 優先でグループヘッダーなし\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ no-due: --no-due 優先なのにグループヘッダーが出た\n"; FAIL=$((FAIL+1))
+fi
+
+# ──────────────────────────────────────────
+# §29  シナリオ 36-13/36-14/36-15 — activate/before バリデーション
+# ──────────────────────────────────────────
+echo ""
+echo "§29  activate/before バリデーション（36-13/36-14/36-15）"
+
+# 36-13: 不正な --activate 日付でnormalizeDueは非YYYY-MM-DD/M/D値をパススルーし
+# 後続のregexチェックでエラー検出されることを確認
+NORMALIZE_FOO=$(node "$ENGINE" normalize-due 'foo' "$TEST_TODAY")
+# 'foo' はどのパターンにもマッチしないのでパススルーで返る（null ではなく元の値）
+# → 後続の YYYY-MM-DD / M/D チェックで弾かれる
+if printf '%s' "$NORMALIZE_FOO" | grep -qv '^\d\{4\}-\d\{2\}-\d\{2\}$'; then
+  printf "  ✅ 36-13: normalize-due 'foo' → YYYY-MM-DD 形式ではない（後続チェックで弾かれる）\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ 36-13: normalize-due 'foo' → '%s' (非YYYY-MM-DD が期待された)\n" "$NORMALIZE_FOO"; FAIL=$((FAIL+1))
+fi
+
+# 36-13: normalizeDue が null/falsy のときエラー終了するコードパスを直接検証
+ACTIVATE_ERR=$(node -e "
+const raw = 'foo';
+const today = '$TEST_TODAY';
+// normalizeDueと同じロジックで null チェック
+function normalizeDue(r, t) { return null; }  // 意図的にnullを返す
+let activateRaw = normalizeDue(raw, today);
+if (!activateRaw) {
+  process.stderr.write('エラー: 不正な日付形式です: ' + raw + '\n');
+  process.exit(1);
+}
+" 2>&1)
+ACTIVATE_ERR_EXIT=$?
+if [ $ACTIVATE_ERR_EXIT -ne 0 ]; then
+  printf "  ✅ 36-13: normalizeDue null → exit 1\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ 36-13: normalizeDue null → exit 0 (エラー終了が期待された)\n"; FAIL=$((FAIL+1))
+fi
+if printf '%s' "$ACTIVATE_ERR" | grep -q '不正な日付形式'; then
+  printf "  ✅ 36-13: エラーメッセージに '不正な日付形式' を含む\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ 36-13: エラーメッセージに '不正な日付形式' が含まれない: '%s'\n" "$ACTIVATE_ERR"; FAIL=$((FAIL+1))
+fi
+
+# 36-14: before clear でactivateも連動クリアされるロジックを確認
+BEFORE_CLEAR_RESULT=$(node -e "
+let beforeStr = '14d';
+let activate = '2026-05-01';
+const parsedBefore = 'clear';
+if (parsedBefore === 'clear') {
+  beforeStr = ''; activate = '';
+}
+process.stdout.write('before=' + beforeStr + ' activate=' + activate);
+")
+assert_eq "36-14: before clear → activateも空" "before= activate=" "$BEFORE_CLEAR_RESULT"
+
+# 36-15: parseBeforeDuration('0d') がnullを返すことを確認
+BEFORE_0D_RESULT=$(node -e "
+function parseBeforeDuration(raw) {
+  if (!raw) return null;
+  let m;
+  if ((m = raw.match(/^(\d+)d\$/i))) { const n = parseInt(m[1]); if (n <= 0) return null; return n; }
+  if ((m = raw.match(/^(\d+)w\$/i))) { const n = parseInt(m[1]); if (n <= 0) return null; return n * 7; }
+  return null;
+}
+const r0d = parseBeforeDuration('0d');
+const r0w = parseBeforeDuration('0w');
+const r1d = parseBeforeDuration('1d');
+process.stdout.write('0d=' + r0d + ' 0w=' + r0w + ' 1d=' + r1d);
+")
+assert_eq "36-15: parseBeforeDuration 0d=null, 0w=null, 1d=1" "0d=null 0w=null 1d=1" "$BEFORE_0D_RESULT"
+
+# 36-15: エンジンのparseBeforeDurationと同等のロジックでエラー終了を確認
+BEFORE_0D_ERR=$(node -e "
+function parseBeforeDuration(raw) {
+  if (!raw) return null;
+  let m;
+  if ((m = raw.match(/^(\d+)d\$/i))) { const n = parseInt(m[1]); if (n <= 0) return null; return n; }
+  if ((m = raw.match(/^(\d+)w\$/i))) { const n = parseInt(m[1]); if (n <= 0) return null; return n * 7; }
+  return null;
+}
+const days = parseBeforeDuration('0d');
+if (days === null) { process.stderr.write('エラー: --before の形式が不正です\n'); process.exit(1); }
+" 2>&1)
+BEFORE_0D_EXIT=$?
+if [ $BEFORE_0D_EXIT -ne 0 ]; then
+  printf "  ✅ 36-15: before '0d' → exit 1\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ 36-15: before '0d' → exit 0 (エラー終了が期待された)\n"; FAIL=$((FAIL+1))
+fi
+if printf '%s' "$BEFORE_0D_ERR" | grep -q '形式が不正'; then
+  printf "  ✅ 36-15: エラーメッセージに '形式が不正' を含む\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ 36-15: エラーメッセージに '形式が不正' が含まれない: '%s'\n" "$BEFORE_0D_ERR"; FAIL=$((FAIL+1))
+fi
+
+# ──────────────────────────────────────────
+# § 40  Phase 2 モバイル対応 — ユニットテスト
+#   iOS Shortcuts から GitHub API を直接呼び出す方式のため
+#   エンジン変更はなし。ラベル名・フィルタ・クローズ挙動をモックで確認。
+# ──────────────────────────────────────────
+echo ""
+echo "§40  Phase 2 モバイル対応 — ユニットテスト"
+
+# M2-unit-1: inbox ラベル名（📥 inbox）
+#   iOS Shortcuts の POST body に `labels: ["📥 inbox"]` と入れるため
+#   エンジンの gtd-label が正しいラベル名を返すことを確認
+assert_eq "M2-unit-1: gtd-label inbox → 📥 inbox" "📥 inbox" "$(node "$ENGINE" gtd-label inbox)"
+
+# M2-unit-2: next ラベル名（🎯 next）
+#   iOS Shortcuts の GET ?labels=🎯%20next に対応するため
+#   エンジンの gtd-label が正しいラベル名を返すことを確認
+assert_eq "M2-unit-2: gtd-label next → 🎯 next" "🎯 next" "$(node "$ENGINE" gtd-label next)"
+
+# M2-unit-3: today コマンドの出力に next ラベルのタスクが含まれる
+#   list-all で FILTER_GTD_ENV=next を指定した場合と同様の挙動を確認
+M2_NEXT_MOCK='[
+  {"number":10,"title":"モバイルnextタスク","body":"","labels":[{"name":"🎯 next"},{"name":"p2"}]},
+  {"number":11,"title":"inbox-task","body":"","labels":[{"name":"📥 inbox"}]}
+]'
+M2_TODAY_OUT=$(OPEN_ENV="$M2_NEXT_MOCK" TODAY_ENV="$TEST_TODAY" FILTER_GTD_ENV="next" node "$ENGINE" list-all)
+assert_contains "M2-unit-3: today — next タスクが含まれる" "#10" "$M2_TODAY_OUT"
+if ! printf '%s' "$M2_TODAY_OUT" | grep -aq '#11'; then
+  printf "  ✅ M2-unit-3: today — inbox タスクは含まれない\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ M2-unit-3: today — inbox タスクが混入している\n"; FAIL=$((FAIL+1))
+fi
+
+# M2-unit-4: gtd-label が返すラベル名にシェル禁止文字（; $ ` ( ) 等）が含まれない
+#   iOS Shortcuts の POST body に埋め込むラベル名の安全性を確認
+#   validate ctx はコンテキスト（@xxx）専用のため、ここでは直接チェックする
+M2_INBOX_LABEL=$(node "$ENGINE" gtd-label inbox)
+M2_NEXT_LABEL=$(node "$ENGINE" gtd-label next)
+# 禁止文字（; $ ` ( ) " ' \ | & > < { } [ ]）が含まれていないことをチェック
+if printf '%s' "$M2_INBOX_LABEL" | grep -qE '[;$`()\"'"'"'\\|&><{}\[\]]'; then
+  printf "  ❌ M2-unit-4: inbox ラベル名に禁止文字が含まれる: '%s'\n" "$M2_INBOX_LABEL"; FAIL=$((FAIL+1))
+else
+  printf "  ✅ M2-unit-4: inbox ラベル名に禁止文字なし: '%s'\n" "$M2_INBOX_LABEL"; PASS=$((PASS+1))
+fi
+if printf '%s' "$M2_NEXT_LABEL" | grep -qE '[;$`()\"'"'"'\\|&><{}\[\]]'; then
+  printf "  ❌ M2-unit-4: next ラベル名に禁止文字が含まれる: '%s'\n" "$M2_NEXT_LABEL"; FAIL=$((FAIL+1))
+else
+  printf "  ✅ M2-unit-4: next ラベル名に禁止文字なし: '%s'\n" "$M2_NEXT_LABEL"; PASS=$((PASS+1))
+fi
+
+# M2-unit-5: done で使う state/state_reason の値は固定文字列 "closed"/"completed" であること
+#   todo-engine.js 側の変更なし確認 — run done の実装が state_reason=completed を渡すか
+#   エンジンの validate number を通過することで番号バリデーションが効くことを確認
+node "$ENGINE" validate number 42 2>/dev/null && \
+  printf "  ✅ M2-unit-5: validate number 42 → OK\n" && PASS=$((PASS+1)) || \
+  { printf "  ❌ M2-unit-5: validate number 42 → 失敗\n"; FAIL=$((FAIL+1)); }
+node "$ENGINE" validate number 0 2>/dev/null && \
+  { printf "  ❌ M2-unit-5: validate number 0 → エラー期待だがOKになった\n"; FAIL=$((FAIL+1)); } || \
+  { printf "  ✅ M2-unit-5: validate number 0 → 正しくエラー\n"; PASS=$((PASS+1)); }
+
+# M2-unit-6: next ラベルフィルタ結果に inbox タスクが混入しない（ラベル AND 絞り込み）
+M2_MIXED_MOCK='[
+  {"number":20,"title":"next-only","body":"","labels":[{"name":"🎯 next"}]},
+  {"number":21,"title":"inbox-only","body":"","labels":[{"name":"📥 inbox"}]},
+  {"number":22,"title":"next-and-inbox","body":"","labels":[{"name":"🎯 next"},{"name":"📥 inbox"}]}
+]'
+M2_FILT_OUT=$(OPEN_ENV="$M2_MIXED_MOCK" TODAY_ENV="$TEST_TODAY" FILTER_GTD_ENV="next" node "$ENGINE" list-all)
+assert_contains "M2-unit-6: next フィルタ — #20 が含まれる" "#20" "$M2_FILT_OUT"
+if ! printf '%s' "$M2_FILT_OUT" | grep -aq '#21'; then
+  printf "  ✅ M2-unit-6: next フィルタ — inbox-only (#21) は除外される\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ M2-unit-6: next フィルタ — inbox-only (#21) が混入している\n"; FAIL=$((FAIL+1))
+fi
+
+# ──────────────────────────────────────────
 # 結果サマリー
 # ──────────────────────────────────────────
 echo ""

@@ -7,14 +7,14 @@ Just type `/todo` to add, manage, and review tasks entirely from the terminal.
 ## Features
 
 - **GTD methodology** — 6 categories: inbox / next / waiting / someday / project / reference
-- **30+ commands** — Task CRUD, bulk operations, weekly review, templates, statistics
+- **40+ commands** — Task CRUD, bulk operations, weekly review, templates, statistics, project audit, tickler file
 - **Multilingual** — Japanese (default) and English supported. Set `LANG_ENV=en` for English
 - **Flexible date input** — `--due tomorrow`, `--due "next friday"`, `--due "in 3 days"` (Japanese dates also work regardless of language setting)
 - **Context management** — `@PC` `@office` `@errands` for location/situation-based filtering
 - **Priority levels** — p1 (urgent) / p2 (important) / p3 (normal)
 - **Recurring tasks** — daily / weekly / monthly / weekdays
 - **Security** — Shell injection and prompt injection protection with 8 rules
-- **360+ tests** — Local unit tests + GitHub integration tests
+- **425+ tests** — Local unit tests + GitHub integration tests
 - **No server required** — GitHub Issues API + local files only
 
 ## Installation
@@ -146,18 +146,34 @@ Environment variable: LANG_ENV=en
 | Command | Description |
 |---------|-------------|
 | `/todo move <#> <GTD>` | Change GTD category |
-| `/todo done <#>` | Complete a task (recurring tasks auto-create next) |
+| `/todo done <#>` | Complete a task (recurring tasks auto-create next; project next-task hints shown) |
 
 ### Edit
 
 | Command | Description |
 |---------|-------------|
-| `/todo edit <#> [options]` | Update multiple fields at once |
+| `/todo edit <#> [options]` | Update multiple fields at once (`--due` / `--priority` / `--estimate` / `--activate` / `--before`) |
 | `/todo rename <#> <new title>` | Change title |
 | `/todo due <#> <date>` | Change due date |
 | `/todo desc <#> <text>` | Change description |
 | `/todo recur <#> <pattern\|clear>` | Set/clear recurrence |
 | `/todo priority <#> <p1\|p2\|p3\|clear>` | Set/clear priority |
+
+### Project Management
+
+| Command | Description |
+|---------|-------------|
+| `/todo promote-project <#>` | Promote an issue to a project |
+| `/todo unlink <#>` | Remove project link from a child issue |
+| `/todo migrate sub-issue [--dry-run]` | Bulk register `project: #N` issues as GitHub sub-issues (idempotent) |
+| `/todo weekly-project-audit` | Audit all projects — detect missing next actions and stale projects |
+
+### Tickler File & Someday Management
+
+| Command | Description |
+|---------|-------------|
+| `/todo promote` | Elevate issues whose activate date has arrived to next |
+| `/todo review-someday <#>` | Record today as reviewed_at for a someday task (⚠️ shown if 30+ days unreviewed) |
 
 ### Context & Labels
 

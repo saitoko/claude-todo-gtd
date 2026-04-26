@@ -40,7 +40,7 @@
 ```
 /todo next サブタスクを実行する --project 7
 ```
-期待: body に `project: #7` が含まれる。
+期待: body に `project: #7` が含まれる。かつ Issue #7 が `📁 project` ラベルを持つ場合、GitHub の sub-issue API に登録される（Phase 1）。
 
 ### 1-7. 説明付き追加
 ```
@@ -848,3 +848,501 @@ recur: weekly が設定された Issue を含む3件に対して:
 ### 30-2. タスクが0件の場合
 全Issueをクローズした状態で実行。
 期待: 「全タスク: 0件」と表示される。エラーにはならない。
+
+### 30-3. 見積もり情報の表示
+見積もり付き next タスクが2件、見積なし next タスクが1件ある状態で実行。
+期待: 「時間」セクションに見積合計（例: 3h）、見積あり件数、見積なし件数が表示される。
+
+---
+
+## 31. list-all フィルタ拡張
+
+### 31-1. 優先度フィルタ
+```
+/todo list --priority p1
+```
+期待: p1 ラベルのタスクのみ表示される。p2/p3 のタスクは除外される。
+
+### 31-2. プロジェクトフィルタ
+```
+/todo list --project 7
+```
+期待: body に `project: #7` を含むタスクのみ表示される。
+
+### 31-3. ソート順序（sortByPriDue）
+フィルタ指定ありの場合、フラットリストが優先度順→期日順でソートされる。
+期待: p1 → p2 → p3 → 優先度なしの順。同優先度内は期日の早い順。
+
+---
+
+## 32. renderIssueList 表示
+
+### 32-1. 見積もり時間の表示
+見積もり付きタスク（estimate: 90）が一覧に表示される場合。
+期待: `⏱1h30m` が行に含まれる。
+
+### 32-2. コンテキスト・期日の表示
+`@PC` ラベル付き、due: 2026-04-10 のタスク。
+期待: `[@PC]` と `📅 2026-04-10` が行に含まれる。
+
+---
+
+## 33. listSummary / weeklySummary
+
+### 33-1. listSummary
+タスクがある状態で実行。
+期待: カテゴリ別件数サマリー（例: `next: 2件 / inbox: 1件`）が表示される。
+
+### 33-2. weeklySummary
+期限超過タスクと inbox タスクがある状態で実行。
+期待: 「週次レビュー サマリー」ヘッダー、期限超過件数、Inbox 件数が表示される。
+
+---
+
+## 34. Dashboard 見積もり合計
+
+### 34-1. 今日のタスク見積もり合計
+期限超過（estimate: 60）と今日期限（estimate: 90）のタスクがある場合。
+期待: Dashboard のサマリー行に `⏱今日の見積: 2h30m` が表示される。
+
+---
+
+## 35. Report 見積 vs 実績
+
+### 35-1. 予実分析セクション
+期間内に見積もり・実績ありの完了タスクがある場合。
+期待: 「見積 vs 実績」セクションに見積合計、実績合計、予実比（%）、見積+実績あり件数が表示される。
+
+### 35-2. 予実比の計算
+estimate: 60 + 120 = 180分、actual: 90 + 100 = 190分の場合。
+期待: 予実比が `106%` と表示される。
+
+---
+
+## 36. activate / before / promote（チクラーファイル）
+
+### 36-1. --activate 付きで add（正常系）
+```
+/todo inbox チクラーテスト --activate 2026-05-01
+```
+期待: Issue が作成され、body に `activate: 2026-05-01` が含まれる。完了メッセージに「昇格予定: 2026-05-01」が表示される。
+
+### 36-2. --due + --before 付きで add（正常系）
+```
+/todo inbox 期日前通知テスト --due 2026-05-15 --before 14d
+```
+期待: Issue が作成され、body に `due: 2026-05-15`、`activate: 2026-05-01`、`before: 14d` が含まれる。
+（2026-05-15 の 14日前 = 2026-05-01 が activate として計算される）
+
+### 36-3. --activate + --due 両方指定で add（正常系）
+```
+/todo inbox 明示activate + due --due 2026-06-01 --activate 2026-05-20
+```
+期待: body に `due: 2026-06-01`、`activate: 2026-05-20` が含まれる。警告なし（activate < due）。
+
+### 36-4. --activate + --before 同時指定（早い方が採用）
+```
+/todo inbox 早い方優先テスト --due 2026-06-01 --before 14d --activate 2026-05-10
+```
+期待: before から計算すると activate = 2026-05-18（6/1 の 14日前）。--activate で指定した 2026-05-10 の方が早いため、body の `activate:` は `2026-05-10` が採用される。
+
+### 36-5. --before のみ（dueなし）→ エラー（異常系）
+```
+/todo inbox dueなしbeforeテスト --before 14d
+```
+期待: エラーメッセージ「--before を使うには --due が必要です」。Issue は作成されない。
+
+### 36-6. activate日 > due日 → 警告（異常系）
+```
+/todo inbox activate後行テスト --due 2026-05-01 --activate 2026-06-01
+```
+期待: 警告メッセージ「activate日（2026-06-01）が due日（2026-05-01）より後です」が stderr に出力される。Issue 自体は作成される（警告のみ、エラーではない）。
+
+### 36-7. edit でactivate後付け
+既存の Issue（before/activate なし）に対して:
+```
+/todo edit <番号> --activate 2026-05-01
+```
+期待: body に `activate: 2026-05-01` が追加される。due/recur/project/desc は変わらない。完了メッセージに「activate → 2026-05-01」が含まれる。
+
+### 36-8. edit でactivate clear
+activate が設定済みの Issue に対して:
+```
+/todo edit <番号> --activate clear
+```
+期待: body から `activate:` 行と `before:` 行が除去される。完了メッセージに「activate → クリア」が含まれる。
+
+### 36-9. edit でdue変更時のactivate再計算（beforeあり）
+`before: 14d` が設定済みの Issue に対して:
+```
+/todo edit <番号> --due 2026-07-01
+```
+期待: before から activate が再計算され、body の `activate:` が `2026-06-17`（7/1 の 14日前）に更新される。完了メッセージに「activate 再計算 → 2026-06-17」が含まれる。
+
+### 36-10. promote で昇格対象ありの場合
+activate 日が本日以前（例: 2026-04-01）に設定済みの inbox Issue がある状態で:
+```
+/todo promote
+```
+期待: 対象 Issue の GTD ラベルが `next` に変更される。完了メッセージ「#<番号> 「<タイトル>」を next に昇格しました（activate: 2026-04-01）」と「N件を next に昇格しました」が表示される。
+
+### 36-11. promote で昇格対象なしの場合
+activate が設定されていない、または activate 日が未来のタスクしか存在しない状態で:
+```
+/todo promote
+```
+期待: 「昇格対象なし（activate日到来タスク: 0件）」が表示される。
+
+### 36-12. 既にnextのタスクはpromoteでスキップされるか
+activate 日が本日以前かつ GTD ラベルが既に `next` の Issue がある状態で:
+```
+/todo promote
+```
+期待: そのIssueに対してラベル付け替え処理が行われない（エラーにもならない）。next に既にいるタスクはスキップまたは無変化で処理される。昇格件数にはカウントされない。
+
+### 36-13. 不正な --activate 日付でエラー終了（異常系）
+```
+/todo inbox テスト --activate foo
+```
+期待: stderr に「エラー: 不正な日付形式です: foo」が出力され、プロセスが終了コード1で終了する。Issue は作成されない。
+
+edit でも同様：
+```
+/todo edit <番号> --activate bar
+```
+期待: 同様のエラーが出力され、Issue は更新されない。
+
+### 36-14. `--before clear` でactivateも連動クリア（正常系）
+before と activate が設定済みの Issue に対して:
+```
+/todo edit <番号> --before clear
+```
+期待: body から `before:` 行と `activate:` 行の両方が除去される。完了メッセージに「before → クリア」が含まれる。
+
+### 36-15. `0d` / `0w` のbeforeでエラー終了（異常系）
+```
+/todo inbox テスト --due 2026-05-01 --before 0d
+```
+期待: stderr に「エラー: --before の形式が不正です」が出力され、プロセスが終了コード1で終了する。Issue は作成されない。
+
+`0w` でも同様に拒否されること。
+
+---
+
+## 37. Someday reviewed_at（Issue #435）
+
+### 37-1. review-someday で reviewed_at が更新される（N-1）
+```
+/todo review-someday 42
+```
+期待: Issue #42 の body に `reviewed_at: <今日の日付>` が追加または更新される。stdout に「✅ #42 の reviewed_at を YYYY-MM-DD に更新しました。」が出力される。
+
+### 37-2. list someday で30日以上未見直しタスクが⚠️マーク付きで先頭に表示される（N-2）
+（somedayタスク #42 の reviewed_at が今日から31日前に設定された状態）
+```
+/todo list someday
+```
+期待: #42 が⚠️マーク付きでリスト先頭に表示される。
+
+### 37-3. list someday で最近見直したタスクは⚠️マークなし（N-3）
+（somedayタスクの reviewed_at が1日前）
+```
+/todo list someday
+```
+期待: ⚠️マークなし、通常表示。
+
+### 37-4. reviewed_at 未設定の someday タスクは⚠️マーク付きで先頭表示（N-4）
+（somedayタスクの body に reviewed_at フィールドなし）
+```
+/todo list someday
+```
+期待: ⚠️マーク付きでリスト先頭に表示される。
+
+### 37-5. 同日に review-someday を2回実行してもエラーにならない（N-5）
+```
+/todo review-someday 42
+/todo review-someday 42
+```
+期待: 2回目もエラーなし。body の reviewed_at は同じ日付（べき等）。
+
+### 37-6. edit --due 後も reviewed_at が維持される（N-6 / R-1）
+（somedayタスク #42 に reviewed_at が設定された状態）
+```
+/todo edit 42 --due 2026-06-01
+```
+期待: body の `reviewed_at` フィールドが変更前と同じ値で残っている。
+
+### 37-7. move someday 直後は reviewed_at が更新されない（N-7）
+```
+/todo move 99 someday
+/todo list someday
+```
+期待: #99 は⚠️マーク付きで表示される（move ではreviewed_atを更新しないため）。
+
+### 37-8. nextタスクに review-someday を実行するとエラー（E-1）
+```
+/todo review-someday <nextタスクの番号>
+```
+期待: stderr に「エラー: #N はsomedayタスクではありません。」が出力され、exit(1)で終了。Issue は変更されない。
+
+### 37-9. 番号なしで review-someday を実行するとUsageメッセージ（E-3）
+
+```
+/todo review-someday
+```
+
+期待: stderr に「Usage: run review-someday NUMBER」が出力され、exit(1)で終了。
+
+### 37-10. reviewed_at に不正フォーマットが含まれていても浮上対象になる（E-4）
+（body に `reviewed_at: invalid-date` が含まれるsomedayタスク）
+```
+/todo list someday
+```
+期待: 正規表現にマッチしないため空扱い → ⚠️マーク付きで先頭に表示される。
+
+### 37-11. list next / waiting で⚠️マークが出ない（R-3）
+```
+/todo list next
+/todo list waiting
+```
+期待: すべてのタスクに⚠️マークが付かない。someday 専用の挙動であること。
+
+### 37-12. someday 以外のソート順が変わらない（R-4）
+（⚠️なしのsomedayタスク群）
+```
+/todo list someday
+```
+期待: ⚠️なし群の順序は sortByPriDue（優先度 → due日付）が維持される。
+
+### 37-13. recur タスク完了後の再作成で reviewed_at が引き継がれない（R-6）
+（weekly recur + reviewed_at ありのタスクを /todo done で完了）
+```
+/todo done <番号>
+```
+期待: 再作成された繰り返しタスクの body に `reviewed_at` フィールドが含まれない。
+
+---
+
+## 38. sub-issue Phase 1 互換レイヤ（P シリーズ）
+
+> Phase 1 では body の `project: #N` メタ行を書き続けながら、GitHub sub-issue API への登録も行う。
+
+### P-02. `--project N` で sub-issue が登録される
+
+前提: Issue #N が `📁 project` ラベルを持つ。
+```
+/todo next サブタスク --project N
+```
+期待:
+- body に `project: #N` が含まれる（従来通り）
+- GitHub の `GET /repos/.../issues/N/sub_issues` で作成した Issue が sub-issue として一覧に含まれる
+- テスト確認コマンド: `gh api repos/OWNER/REPO/issues/N/sub_issues --jq '[.[].number]'`
+
+### P-04. 親 N が存在しないときエラーになること
+
+前提: Issue #9999999 が存在しない。
+```
+/todo next サブタスク --project 9999999
+```
+期待:
+- `fetchAndParseIssue` が 404 エラーを返す
+- stderr に「プロジェクト #9999999 の取得に失敗しました」が出力される
+- Issue は作成されている（Issue 作成後にエラー → 子 Issue は残る）
+
+### P-09. `/todo link X N` で sub-issue + body メタの両方が設定されること
+
+前提: Issue #X（子）と Issue #N（`📁 project` ラベル付き親）が存在する。
+```
+/todo link X N
+```
+期待:
+- Issue #X の body に `project: #N` が書き込まれる（従来通り）
+- `GET /repos/.../issues/N/sub_issues` に Issue #X が含まれる
+- 親が `📁 project` ラベルを持たない場合はエラー「#N はプロジェクトではありません。先に /todo project で作成してください」
+
+### P-19. `--project` なし `/todo next` がリグレッションしないこと
+
+```
+/todo next 普通のタスク
+```
+期待:
+- Issue が通常通り作成される（`next` + `p3` ラベル）
+- body に `project:` 行が存在しない
+- sub-issue API は呼ばれない
+- 既存の `--project` なしタスクへの影響がゼロ
+
+### P-22. テンプレートの `--project N` が引き続き子として登録されること
+
+前提: テンプレートに `project: N` が設定済み。Issue #N が `📁 project` ラベルを持つ。
+```
+/todo template use <テンプレート名> タスクタイトル
+```
+期待:
+- Issue が作成され、body に `project: #N` が含まれる
+- 作成した Issue が `GET /repos/.../issues/N/sub_issues` 一覧に含まれる
+
+### P-23. sub-issue API が失敗（422 以外）しても子 Issue は残り警告が出ること
+
+前提: ネットワーク断絶または不正 `sub_issue_id: 0` で API 失敗を模擬。
+期待:
+- 子 Issue はオープン状態で残る（削除・クローズされない）
+- stderr に「⚠️ sub-issue 登録失敗（Issue は作成済み）: ...」が出力される
+- プロセスは exit(1) にならない（処理継続）
+
+---
+
+## ##39 Phase 3: weekly-project-audit / migrate sub-issue テスト（P-07〜P-18）
+
+### P-07. `/todo list` で next 欠落プロジェクトの ⚠️ マーカー表示
+
+前提:
+- `📁 project` ラベルを持つ Issue が存在
+- その Issue に紐づく `next` 子タスクが 0件
+
+```
+/todo list
+```
+期待:
+- プロジェクトセクションのヘッダに「⚠️ next欠落: N件」バッジが表示される
+- 対象プロジェクト行の行頭（または statusStr）に ⚠️ が表示される
+
+### P-08. `/todo list` で停滞 30 日プロジェクトの停滞バッジ表示
+
+前提:
+- `📁 project` ラベルを持つ Issue の `updated_at` が 30 日以上前
+
+```
+/todo list
+```
+期待:
+- プロジェクトセクションのヘッダに「停滞30日以上: N件」バッジが表示される
+- 停滞かつ next 欠落の行頭に ⚠️ マーカーが付く
+
+### P-13. `/todo migrate sub-issue --dry-run` が対象一覧を表示
+
+前提: body に `project: #N` を持つ Issue が複数存在する
+
+```
+/todo migrate sub-issue --dry-run
+```
+期待:
+- 対象 Issue の一覧（番号・タイトル・親番号）が表示される
+- 実際の sub-issue 登録は行われない（API 呼び出しなし）
+- 末尾に「--dry-run モード: 実際の登録は行いません。」が表示される
+
+### P-14. `/todo migrate sub-issue` 実行後 sub-issue が登録される
+
+前提:
+- `📁 project` ラベルを持つ親 Issue が存在
+- body に `project: #<親番号>` を持つ子 Issue が存在
+
+```
+/todo migrate sub-issue
+```
+期待:
+- 子 Issue が `GET /repos/.../issues/<親番号>/sub_issues` 一覧に含まれる
+- 末尾に「N件登録 / M件スキップ / K件エラー」の集計が表示される
+
+### P-15. マイグレーション冪等性（2回実行で重複なし）
+
+前提: P-14 で既に sub-issue 登録済みの状態
+
+```
+/todo migrate sub-issue
+```
+期待:
+- 2回目の実行では 422（既登録）がスキップされる
+- 集計に「N件登録: 0 / M件スキップ: 1」が反映される（重複登録なし）
+
+### P-16. `/todo weekly-project-audit` が全プロジェクトを列挙
+
+前提: `📁 project` ラベルを持つ Issue が複数存在する
+
+```
+/todo weekly-project-audit
+```
+期待:
+- 「## 📁 プロジェクト棚卸し（全N件）」ヘッダが出力される
+- 各プロジェクトが `[idx/total] #番号 タイトル` 形式で列挙される
+- 子タスクの `next=N件 waiting=N件 someday=N件` が表示される
+
+### P-17. next 欠落プロジェクトの検出
+
+前提:
+- プロジェクト A: next 子タスクあり
+- プロジェクト B: next 子タスクなし
+
+```
+/todo weekly-project-audit
+```
+期待:
+- プロジェクト B に「判定: ⚠️ next欠落」が表示される
+- 対応候補コマンド（`/todo next ... --project N` 等）が提示される
+
+### P-18. `reviewed_at` が親 Issue body に書き込まれる
+
+前提: next 欠落または停滞プロジェクトが存在する
+
+```
+/todo weekly-project-audit
+```
+期待:
+- 該当プロジェクトの親 Issue body に `reviewed_at: YYYY-MM-DD`（今日の日付）が書き込まれる
+- `/todo list` でそのプロジェクトに「最終レビュー: 0日前」が表示される
+
+---
+
+## 40. Phase 2 モバイル対応（iOS Shortcuts）
+
+### 40-1. inbox への追加（M2-1）
+
+前提: iOS Shortcuts から GitHub REST API を直接呼び出す。
+
+```
+POST /repos/{owner}/{repo}/issues
+{ "title": "買い物リストを更新する", "labels": ["📥 inbox"] }
+```
+期待:
+- `📥 inbox` ラベルの Issue が作成される
+- タイトルが入力テキストと一致する
+- 作成した Issue の URL が通知される
+
+### 40-2. 今日のタスク確認（M2-2）
+
+```
+GET /repos/{owner}/{repo}/issues?labels=%F0%9F%8E%AF%20next&state=open&per_page=20
+```
+期待:
+- `🎯 next` ラベルを持つオープン Issue のみ返る（`inbox` / `waiting` 等は含まれない）
+- 0件のときは「今日の next タスクはありません」と通知される
+- HTTP 401 時は「認証エラー。PATを確認してください」と通知される
+
+### 40-3. タスク完了（M2-3）
+
+前提: 完了対象は `🎯 next` ラベルのタスクのみ。
+
+```
+PATCH /repos/{owner}/{repo}/issues/{number}
+{ "state": "closed", "state_reason": "completed" }
+```
+期待:
+- `state: "closed"` / `state_reason: "completed"` でクローズされる
+- `completed` ラベルは付与されない（state_reason のみ）
+- クローズ後は next 一覧から除外される
+- 既にクローズ済みの Issue への再 PATCH は冪等（state: closed を返すだけ）
+
+### 40-4. 空タイトルのバリデーション（M2-4、異常系）
+
+```
+POST /repos/{owner}/{repo}/issues
+{ "title": "", "labels": ["📥 inbox"] }
+```
+期待:
+- GitHub API が 422 を返す（クライアント側でも空チェックを行い、APIを呼ばない）
+
+### 40-5. inbox 以外のタスクはモバイルから完了できない（意図的制約）
+
+完了操作の前に `GET ?labels=next&state=open` で選択リストを取得する仕様のため、
+`inbox` / `waiting` 等のタスクはそもそもリストに表示されない。
+期待:
+- 選択リストに `🎯 next` 以外のラベルのタスクが出現しない

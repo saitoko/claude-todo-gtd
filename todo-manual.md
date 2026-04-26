@@ -32,7 +32,7 @@
 
 ### 引き出しの種類
 
-`/todo` スキルは6つの引き出し（カテゴリ）を使います：
+`/todo` スキルは5つの引き出し（カテゴリ）を使います：
 
 | ラベル | 日常語 | こんなときに使う |
 |--------|--------|----------------|
@@ -40,8 +40,9 @@
 | `next` | **次にやること** | 「これが次の作業だ」と決めたもの。具体的なアクション |
 | `waiting` | **返事待ちボックス** | 誰かに依頼した、または外部の完了を待っているもの |
 | `someday` | **夢リスト** | 急がないけど忘れたくないこと。いつかやるかもしれないもの |
-| `project` | **大きな案件フォルダ** | 複数の作業ステップが必要な案件・目標 |
 | `reference` | **資料棚** | やることではなく、後で見返したい情報・メモ |
+
+**プロジェクトは横断的な親**です。`project` は上記の引き出しとは別に、複数の作業ステップからなる目標・案件を管理するための親 Issue として機能します。タイトルは「〜している状態」「〜が完了した状態」のように **完了したゴール（Outcome）** を記述します。子タスクは `next` / `waiting` / `someday` のいずれかに属し、`--project N` または GitHub sub-issue で親に紐づけます。
 
 ### コンテキスト（`@`ラベル）とは
 
@@ -148,7 +149,7 @@ inbox に入ったタスクが一覧表示されます。
 | `--due` *日付* | 締め切りを設定（形式は下表参照） | `/todo next` *報告書を書く* `--due` *4/10* |
 | `--desc` *"テキスト"* | 詳しいメモを追加 | `--desc` *"3章まで読んでから記載"* |
 | `--recur` *パターン* | 完了後に自動で再作成（下表参照） | `--recur weekly`（毎週） |
-| `--project` *番号* | Issue #番号 のサブタスクとして登録 | `--project` *10* |
+| `--project` *番号* | Issue #番号 の sub-issue として親に登録（body に `project: #N` も記録） | `--project` *10* |
 | `--priority` *p1\|p2\|p3* | 優先度を設定（省略時はデフォルト `p3`） | `--priority p1`（最優先） |
 | `--estimate` *時間* | 見積時間を設定（例：`2h`、`1h30m`、`30m`） | `--estimate 2h` |
 
@@ -314,9 +315,11 @@ Step 3：waiting を確認する
   → 「実は完了しているのでは？」
   → 0件の場合は自動スキップ
 
-Step 4：project を確認する
-  → 各プロジェクトに next のタスクが存在するか確認
-  → next がないプロジェクトは「次の作業」を決める
+Step 4：Projects を強制棚卸し（/todo weekly-project-audit）
+  → 全プロジェクトを自動走査し next 欠落・停滞（30日更新なし）を検出
+  → ⚠️ next 欠落は必須対応（next 追加 / someday 降格 / close のいずれか）
+  → ⚠️ 停滞 30 日以上は someday 降格の判断を促す
+  → 確認済み項目に reviewed_at が自動記録される
 
 Step 5：someday を確認する
   → 「今週始められるものはないか？」
@@ -346,7 +349,7 @@ Step 6：完了
 | `/todo project` *タイトル* | Projects に追加 |
 | `/todo reference` *タイトル* | Reference に追加 |
 
-オプション：`--due` *日付*、`--desc` *"説明"*、`--recur` `パターン`、`--project` *番号*、`--priority` *p1|p2|p3*、`--estimate` *時間*
+オプション：`--due` *日付*、`--desc` *"説明"*、`--recur` `パターン`、`--project` *番号*、`--priority` *p1|p2|p3*、`--estimate` *時間*、`--activate` *日付*、`--before` *Nd*、`--depends-on` *番号*
 
 ### タスクを表示する
 
@@ -380,6 +383,8 @@ p1 の行頭に 🔴、p2 の行頭に 🟡 が付きます。
 | `/todo done` *番号* `--actual` *時間* | 実績時間を記録して完了（例：`--actual 1h30m`） |
 | `/todo close` *番号* | クローズ（繰り返しがあれば次を自動作成） |
 
+> **注意:** `/todo move` *番号* `project` は**使用不可**です。既存 Issue をプロジェクトに昇格するには `/todo promote-project` *番号* を使ってください。
+
 ### 優先度を変更する
 
 | コマンド | 説明 |
@@ -404,6 +409,10 @@ p1 の行頭に 🔴、p2 の行頭に 🟡 が付きます。
 | `/todo link` *アクション番号 プロジェクト番号* | プロジェクトに紐づける |
 | `/todo edit` *番号* `--due` *日付* `--priority` *p1* `--desc` *テキスト* | 複数フィールドを同時更新（指定したもののみ変更） |
 | `/todo edit` *番号* `--estimate` *時間* | 見積時間を更新（他オプションと組み合わせ可） |
+| `/todo edit` *番号* `--activate` *日付* | 昇格予定日を設定（その日に inbox → next へ自動昇格） |
+| `/todo edit` *番号* `--activate clear` | 昇格予定日をクリア |
+| `/todo edit` *番号* `--before` *Nd* | `--due` から N 日前を昇格予定日として自動計算（例：`14d` = 14日前） |
+| `/todo edit` *番号* `--before clear` | `before` と `activate` を両方クリア |
 
 ### 検索・統計
 
@@ -438,6 +447,43 @@ p1 の行頭に 🔴、p2 の行頭に 🟡 が付きます。
 | `/todo daily-review morning` | Morning モードで開始（ダッシュボード確認→当日計画） |
 | `/todo daily-review evening` | Evening モードで開始（完了実績確認→翌日準備） |
 | `/todo weekly-review` | 週次レビューを開始（6ステップ） |
+
+### プロジェクトコマンド
+
+プロジェクトは `project` ラベルを持つ親 Issue として管理されます。通常の GTD 引き出し（next/waiting/someday 等）とは独立したセクションに表示されます。
+
+| コマンド | 説明 |
+|----------|------|
+| `/todo project` *Outcome* | プロジェクトを新規作成（タイトルは「〜している状態」のゴール記述を推奨） |
+| `/todo promote-project` *番号* | 既存 Issue をプロジェクトに昇格（GTD ラベルを外し 📁 project を付与） |
+| `/todo promote-project` *番号* `--outcome` *"タイトル"* | 昇格時にタイトルも Outcome 形式に書き換える |
+| `/todo unlink` *番号* | 子 Issue のプロジェクト紐付けを解除（sub-issue 解除 + body `project: #N` 行削除） |
+| `/todo migrate sub-issue` | body `project: #N` を持つ既存 Issue を GitHub sub-issue に一括登録（冪等） |
+| `/todo migrate sub-issue --dry-run` | 対象一覧のみ表示（実際の登録は行わない） |
+| `/todo weekly-project-audit` | 全プロジェクトを走査して棚卸し。next 欠落・停滞（30日更新なし）を検出し `reviewed_at` を自動記録 |
+
+### チクラーファイル（将来の昇格管理）
+
+「今は着手しないが、ある日付が来たら next に浮上させたい」タスクを管理します。
+
+| コマンド | 説明 |
+|----------|------|
+| `/todo inbox` *タイトル* `--activate` *日付* | 指定日に自動で next に昇格するタスクを作成 |
+| `/todo inbox` *タイトル* `--due` *日付* `--before` *Nd* | due の N 日前を activate として自動計算 |
+| `/todo promote` | activate 日が到来したタスクを一括昇格 |
+| `/todo review-someday` *番号* | someday タスクの `reviewed_at` を今日の日付で更新 |
+
+`--activate` を設定したタスクは `/todo promote` コマンドで一括昇格できます。`daily-review` 実行時に自動で呼び出されます。
+
+`review-someday` は someday の定期的な見直し記録に使います。30日以上見直していないタスクには `/todo list someday` 実行時に ⚠️ マークが付きます。
+
+### タスク依存関係
+
+| コマンド | 説明 |
+|----------|------|
+| `/todo next` *タイトル* `--depends-on` *番号* | 指定タスクが完了したら next に自動昇格するタスクを作成 |
+
+`--depends-on` を指定すると、依存先タスクが `/todo done` で完了した時点で自動的に next に昇格します。「AをやってからBをやる」という順序を管理するときに使います。
 
 ### ビュー
 
