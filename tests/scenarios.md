@@ -124,11 +124,116 @@
 ```
 期待: body の `due:` 行が `<今年>-05-01` に更新される。既存の `recur:`, `project:`, description は保持される。
 
-### 5-2. 説明更新
+### 5-2. 説明追記（既存 desc あり）
 ```
 /todo desc <番号> 新しい説明テキスト
 ```
-期待: body の説明部分が更新される。`due:`, `recur:`, `project:` 行は保持される。
+期待: body の説明部分が「既存テキスト\n新しい説明テキスト」になる（追記）。`due:`, `recur:`, `project:` 行は保持される。
+
+### 5-3. 説明追記（desc なし・新規）（T-2 相当）
+```
+/todo desc <descなし番号> はじめての説明
+```
+期待: body の説明部分が「はじめての説明」のみになる（新規追加と同等）。
+
+### 5-4. 説明テキスト省略エラー（T-10）
+```
+/todo desc <番号>
+```
+期待: 「エラー: 説明テキストが必要です」がstderrに出力され、終了コード1で終了する。GitHub API は呼び出されない。
+
+### 5-4b. 説明テキストが空白のみのエラー（T-10b）
+```
+/todo desc <番号>   （スペースのみ渡した場合）
+```
+期待: 「エラー: 説明テキストが必要です」がstderrに出力され、終了コード1で終了する。`newText.trim()` が空判定のため。
+
+### 5-5. desc テキストに due: を含めた場合（T-11）
+```
+/todo desc <番号> due: 2026-06-01 の調査メモ
+```
+期待: body に `due:` が2行表示される（既知の動作 Issue #1323）。エラーにはならない。
+
+### 5-1b. 期日削除（due clear）
+```
+/todo due <番号> clear
+```
+期待: body の `due:` 行が削除される。`recur:`, `project:`, description は保持される。`show` コマンドで「期日: （なし）」が表示される。
+
+### 5-1c. 期日削除（edit --due clear）
+```
+/todo edit <番号> --due clear
+```
+期待: due のみ削除。他のフィールドは保持。
+
+### 5-1d. 期日削除（edit --due 空文字）
+```
+/todo edit <番号> --due ""
+```
+期待: `--due clear` と同じ動作で期日削除。
+
+### 5-6. 既存 desc 末尾に改行がある場合の追記（T-12）
+
+前提: Issue の desc が末尾に空行（`\n` または `\n\n`）を含む状態（例: GitHub UI での手動編集や edit --desc 後に改行が残るケース）。
+
+```
+/todo desc <番号> "追記テキスト"
+```
+
+期待:
+- 追記後 desc が「既存テキスト\n\n追記テキスト」のように二重改行を含む場合がある
+- GitHub マークダウンでは二重改行は段落区切りとして表示される（自然な表示）
+- エラーにはならない。`✅ #N の説明を追記しました。` が出力される
+- 判定: **仕様として許容**（設計v2 §3-2「既存desc末尾の余分な改行は保持し、追記セパレータ `\n` を1つ挿入する」）
+
+実装上の動作（参考）:
+- `runDesc` は `issue.desc ? \`${issue.desc}\n${newText}\` : newText` で結合する
+- 既存 desc 末尾に `\n` が1つあれば → 結合後 `"...既存\n\n追記"` となり二重改行
+- 既存 desc 末尾に `\n\n` があれば → 結合後 `"...既存\n\n\n追記"` となり三重改行
+- いずれも GitHub マークダウンでは段落区切りとして表示されるため実用上の問題はない
+
+### 5-7. ensureLabel — 既存ラベルへの tag で 422 ノイズが出ないこと（T-13）
+
+Issue #1326 対応。`@octokit/plugin-request-log` が createLabel の 422 を `console.error` に出力する問題への修正。
+
+前提: `@claude` ラベルが既にリポジトリに存在する状態で tag 操作を実行する。
+
+```
+/todo tag <番号> @claude
+```
+
+期待:
+- `POST /labels - 422 with id ... in ...ms` がstderrに出力されない
+- ラベル付与は成功する（`✅ #N に @claude を追加しました。` が出力される）
+- `ensureLabel` 内部で `GET /repos/.../labels/@claude` を呼び、200 が返ったら createLabel を呼ばない
+
+実装ポイント:
+- `ensureLabel` は `GET /repos/{owner}/{repo}/labels/{name}` で existence check する
+- GET → 200（既存）: createLabel を呼ばない → `plugin-request-log` の error ログが出ない
+- GET → 404（新規）: createLabel を呼ぶ → ラベル作成後にラベル付与
+- GET → 401/403/500 等: エラーを re-throw（サイレント化しない）
+
+### 5-8. ensureLabel — 新規ラベルの tag 操作で正常作成・付与されること（T-14）
+
+前提: `@newtag` ラベルがリポジトリに存在しない状態で tag 操作を実行する。
+
+```
+/todo tag <番号> @newtag
+```
+
+期待:
+- `@newtag` ラベルが新規作成される（color: FBCA04）
+- Issue に `@newtag` ラベルが付与される
+- `✅ #N に @newtag を追加しました。` が出力される
+
+### 5-9. ensureLabel — 真のエラー（401/403/500等）がサイレント化されないこと（T-15）
+
+前提: 認証エラーやサーバーエラーが発生する状況。
+
+期待:
+- 401/403/500 等の真のエラーは re-throw される
+- エラーが呼び出し元に伝播し、適切なエラーメッセージが表示される
+- サイレント化（隠蔽）されない
 
 ---
 
@@ -1346,3 +1451,405 @@ POST /repos/{owner}/{repo}/issues
 `inbox` / `waiting` 等のタスクはそもそもリストに表示されない。
 期待:
 - 選択リストに `🎯 next` 以外のラベルのタスクが出現しない
+
+---
+
+## 41. runDone fetchAllOpen 最適化（B-1: project 非紐付けissueの done）
+
+> B-1実装（段階1）: issue.project がない場合は fetchAllOpen をスキップする最適化の動作確認
+
+### 41-1. プロジェクト非紐付け issue の done（fetchAllOpen スキップ確認）
+
+前提: プロジェクト紐付けなし（body に `project:` 行がない）の next Issue が存在する。
+
+```
+/todo done <番号>
+```
+期待:
+- Issue がクローズされる（`✅ #N を完了しました。` が出力される）
+- depends_on 昇格チェックおよびプロジェクト昇格候補ヒントは表示されない
+- （API観点）fetchAllOpen が呼ばれないため、GitHub API 呼び出しは 2〜3回以内で完了する
+
+### 41-2. プロジェクト紐付きあり issue の done（従来通り昇格候補ヒント表示）
+
+前提:
+- Issue #A（next）の body に `project: #P` が含まれる
+- Issue #P は `📁 project` ラベルを持つ
+- Issue #B（inbox）の body に `project: #P` が含まれ、`next` ではない
+
+```
+/todo done A
+```
+期待:
+- Issue #A がクローズされる
+- fetchAllOpen が呼ばれ、昇格候補ヒント（Issue #B）が表示される
+- 昇格候補ヒントのヘッダー・アイテム・フッターが正常に出力される
+- （API観点）fetchAllOpen が呼ばれるため、GitHub API 呼び出しは 4回以上になる（fetchAllOpen 2ページ分含む）
+
+### 41-3. recur あり / プロジェクト非紐付け issue の done（fetchAllOpen スキップ確認）
+
+前提: `recur: weekly` + プロジェクト非紐付けの next Issue が存在する。
+
+```
+/todo done <番号>
+```
+期待:
+- Issue がクローズされ、次回分 Issue（7日後 due）が自動作成される
+- depends_on 昇格チェックおよびプロジェクト昇格候補ヒントは表示されない
+
+### 41-4. `--note` 付き done / プロジェクト非紐付け（fetchAllOpen スキップ確認）
+
+前提: プロジェクト非紐付けの next Issue。
+
+```
+/todo done <番号> --note "作業完了メモ"
+```
+期待:
+- Issue がクローズされる
+- close 後に「作業完了メモ」というコメントが追加される
+- depends_on 昇格チェックは行われない（fetchAllOpen スキップ）
+
+### 41-5. depends_on を持つ issue の依存先完了（段階1リグレッション確認）
+
+> 段階1実装では issue.project がない場合に fetchAllOpen をスキップする。
+> depends_on を持つ issue は issue.project も持つ前提（本段階での制約）。
+
+前提:
+- Issue #X（waiting）の body に `depends_on: #Y`、`project: #P` が含まれる（プロジェクト紐付けあり）
+- Issue #Y（next）を完了する
+
+```
+/todo done Y
+```
+期待:
+- Issue #Y がクローズされる
+- Issue #X のGTDラベルが `waiting` から `next` に変更される（depends_on 昇格が動作する）
+- プロジェクト #P の昇格候補ヒントも表示される
+
+注記: Issue #X に `project:` がない場合（段階1の範囲外）は昇格しない。これは既知の制約であり、段階2で対応予定。
+
+### 41-6. depends_on あり / project なし issue の依存先完了（段階1既知制約確認）
+
+前提:
+- Issue #X（waiting）の body に `depends_on: #Y` が含まれ、`project:` 行がない
+- Issue #Y（next）を完了する
+
+```
+/todo done Y
+```
+期待:
+- Issue #Y がクローズされる
+- Issue #X は昇格しない（段階1の既知制約: project なしの depends_on はスキップされる）
+- ✅ #Y を完了しました。のみ出力される（昇格メッセージなし）
+
+注記: 段階2実装後はこのテストの期待値が変わる（昇格するようになる）。
+
+### 41-7. 完了 issue が dependsOn を持ち（project なし）、別 issue がその issue に依存している場合の昇格
+
+> L2626 バグ修正（`if (issue.project || issue.dependsOn)`）の効果確認テスト。
+> 完了する Issue 自体が `depends_on` を持つ（何かに依存していた）場合、fetchAllOpen を実行して
+> その Issue に依存している別 Issue を昇格できるようになった。
+
+前提:
+- Issue #A（next）の body に `depends_on: #B` が含まれ、`project:` 行がない（完了する側）
+- Issue #C（waiting）の body に `depends_on: #A` が含まれる（#A 完了時に昇格されるべき）
+- Issue #A を完了する
+
+```
+/todo done A
+```
+
+期待:
+- Issue #A がクローズされる
+- Issue #C の GTD ラベルが `waiting` から `next` に変更される（depends_on 昇格が動作する）
+- `✅ #C 「...」を next に昇格しました（#A 完了トリガー）` が出力される
+- `✅ 1件を next に昇格しました` が出力される
+- プロジェクト昇格候補ヒント（`💡 プロジェクト #...`）は表示されない（issue.project がないため）
+
+### 41-8. 完了 issue が dependsOn のみ（project なし）のとき、プロジェクトヒントが誤表示されないこと
+
+> L2654 副作用バグ修正の確認テスト。
+> `if (issue.project || issue.dependsOn)` でブロックに入った際、
+> `issue.project` が空のままプロジェクト昇格候補ヒントロジックが走ると
+> 全 Issue が候補として誤リストアップされる問題の修正確認。
+
+前提: 41-7 と同条件（Issue #A が dependsOn のみ、project なし）
+
+```
+/todo done A
+```
+
+期待:
+- 昇格対象がいれば昇格メッセージのみ出力される
+- `💡 プロジェクト #...に昇格候補があります` の行が出力されない
+- `if (issue.project)` ガードにより、project が空の場合はヒントブロック自体がスキップされる
+
+---
+
+## 42. show コマンド（個別タスク詳細表示）
+
+### 42-1. 基本フィールドの表示（正常系）
+
+前提: `🎯 next` + `p2` + `@PC` ラベルを持ち、due と説明がある Issue #N が存在する。
+
+```
+/todo show <N>
+```
+
+期待:
+- `## #N タイトル` がヘッダーとして表示される
+- `- GTDカテゴリ: 🎯 next` が表示される
+- `- 優先度: p2` が表示される
+- `- 期日: YYYY-MM-DD` が表示される
+- `- コンテキスト: @PC` が表示される
+- `- @claude: なし` または `- @claude: あり` が表示される
+- `### 説明` セクションに body の説明テキストが表示される
+
+### 42-2. @claude ラベルあり（正常系）
+
+前提: `@claude` ラベルが付いた Issue #N が存在する。
+
+```
+/todo show <N>
+```
+
+期待:
+- `- @claude: あり` が表示される
+- `- コンテキスト:` に `@claude` は含まれない（コンテキスト欄から除外し、専用フィールドに表示）
+
+### 42-3. @claude ラベルなし（正常系）
+
+前提: `@claude` ラベルがない Issue #N が存在する。
+
+```
+/todo show <N>
+```
+
+期待: `- @claude: なし` が表示される。
+
+### 42-4. 説明なし・オプショナルフィールドなし（正常系）
+
+前提: ラベルが `📥 inbox` のみで、due/estimate/recur/project/desc が未設定の Issue が存在する。
+
+```
+/todo show <N>
+```
+
+期待:
+- `- GTDカテゴリ: 📥 inbox` が表示される
+- `- 期日: （なし）` が表示される
+- `- 見積もり: （なし）` が表示される
+- `- コンテキスト: （なし）` が表示される
+- `### 説明` セクションは表示されない
+
+### 42-5. `#` プレフィックス付き番号（正常系）
+
+```
+/todo show #<N>
+```
+
+期待: `#` を取り除いて正常に処理される（`/todo show N` と同じ結果）。
+
+### 42-6. 存在しない Issue 番号（異常系）
+
+```
+/todo show 9999999
+```
+
+期待: `エラー: Issue #9999999 が見つかりません。` が stderr に出力され、終了コード1で終了する。
+
+### 42-7. 番号未指定（異常系）
+
+```
+/todo show
+```
+
+期待: `Usage: /todo show <Issue番号>` が stderr に出力され、終了コード1で終了する。
+
+### 42-8. 文字列を番号として指定（異常系）
+
+```
+/todo show abc
+```
+
+期待: `Usage: /todo show <Issue番号>` が stderr に出力され、終了コード1で終了する。
+
+### 42-9. ゼロ指定（異常系）
+
+```
+/todo show 0
+```
+
+期待: `Usage: /todo show <Issue番号>` が stderr に出力され、終了コード1で終了する（`/^\d+$/.test('0')` は通るが、`parseInt('0')` = 0 で GitHub API が 404 または 422 を返す）。
+
+### 42-10. help に show コマンドが含まれること
+
+```
+/todo help
+```
+
+期待: `その他` セクションに `/todo show <#>` の説明が表示される。
+
+### 42-11. recur・project・activate・depends_on がある Issue（正常系）
+
+前提: `recur: weekly`、`project: #7`、`activate: 2026-05-01`、`depends_on: #10` が body に設定された Issue。
+
+```
+/todo show <N>
+```
+
+期待:
+- `- 繰り返し: weekly` が表示される
+- `- プロジェクト: #7` が表示される
+- `- activate: 2026-05-01` が表示される
+- `- depends_on: #10` が表示される
+
+---
+
+## 43. 普通のタグ `#tag` 機能
+
+### 43-1. タスク追加時にインライン `#tag` 指定
+
+```
+/todo next ブログ記事を書く @PC #ブログ #副業
+```
+
+期待:
+- `next` + `@PC` + `#ブログ` + `#副業` + `p3` ラベルが付与される
+- `#ブログ` ラベルは色 `0075CA`、description `タグ` で作成される
+- `@PC` ラベルは色 `FBCA04`、description `コンテキスト` で作成される
+- タイトルは「ブログ記事を書く」（`#ブログ` `#副業` がタイトルに混入しない）
+
+### 43-2. `#tag` 単体フィルタ
+
+```
+/todo list #ブログ
+```
+
+期待: `#ブログ` ラベルを持つ Issue のみ全カテゴリ横断で表示。
+
+### 43-3. `tag` コマンドで `#tag` を追加
+
+```
+/todo tag <番号> #副業
+```
+
+期待: Issue に `#副業` ラベルが追加される（存在しなければ色 `0075CA` で自動作成）。
+`✅ #N に #副業 を追加しました。` が出力される。
+
+### 43-4. `tag` コマンドで `@ctx` と `#tag` を混在指定
+
+```
+/todo tag <番号> @上司 #ブログ
+```
+
+期待:
+- `@上司`（FBCA04）と `#ブログ`（0075CA）が両方 Issue に追加される
+- `✅ #N に @上司 #ブログ を追加しました。` が出力される
+
+### 43-5. `untag` コマンドで `#tag` を削除
+
+```
+/todo untag <番号> #副業
+```
+
+期待: Issue から `#副業` ラベルが削除される。
+
+### 43-6. `#tag` バリデーション — 数字のみはエラー（T-16）
+
+```
+/todo tag <番号> #42
+```
+
+期待: `エラー: タグ名が数字のみです（Issue番号と混同されます）` が stderr に出力され、終了コード1で終了する。
+
+### 43-7. `#tag` バリデーション — 不正文字はエラー（T-17）
+
+```
+/todo tag <番号> #"bad
+```
+
+期待: `エラー: タグ名に不正文字が含まれています` が stderr に出力され、終了コード1で終了する。
+
+### 43-8. `#42` はタイトルトークンのまま扱われる（T-18）
+
+```
+/todo next 作業メモ #42
+```
+
+期待:
+- タイトルは「作業メモ #42」（`#42` は Issue番号参照として `extra` に残る）
+- `#42` というラベルは作成・付与されない
+
+### 43-9. `renderIssueList` でタグが独立ブラケット表示（T-19）
+
+前提: `@PC`・`#ブログ`・`#副業` ラベルを持つ Issue。
+
+```
+/todo list next
+```
+
+期待: タスク行が `#N  タイトル  [@PC]  [#ブログ #副業]` のようにコンテキストとタグが独立したブラケットで表示される。
+
+### 43-10. `bulk tag` で `#tag` 一括追加（T-20）
+
+```
+/todo bulk tag <番号1> <番号2> #ブログ
+```
+
+期待:
+- 指定した複数 Issue に `#ブログ` ラベルが付与される
+- `✅ 2件に #ブログ を追加（エラーなし）` が出力される
+
+### 43-11. `help` に `#tag` が記載されること（T-21）
+
+```
+/todo help
+```
+
+期待: コンテキスト・ラベルセクションの `tag` / `untag` 説明に `#tag` が含まれる。
+
+## 44. Phase 2 リファクタリング: `buildBody` オブジェクト引数化
+
+10 引数 positional API をオブジェクト引数に書き換えたリファクタリングの品質保証。`run-tests.sh` の「Phase 2 リファクタリングテスト」セクションで実行される。
+
+### 44-1. 空オブジェクト・引数なしでエラーにならず空文字を返すこと
+
+`buildBody({})` および `buildBody()` が `''` を返す。デフォルト値分割代入 + `fields || {}` フォールバックの確認。
+
+### 44-2. 差分更新パターン: 1 フィールドだけ変更して他は保持
+
+```js
+const body = buildBody({ ...issue, desc: 'new desc' });
+```
+
+期待: `due` / `recur` / `project` / `estimate` / `actual` / `activate` / `before` / `reviewed_at` / `depends_on` の各行が `issue` の値で保持され、`desc` のみ新値に置き換わる。
+
+### 44-3. due クリアパターン: 空文字を渡すと該当行が消える
+
+```js
+const body = buildBody({ ...issue, due: '' });
+```
+
+期待: `due:` 行が出力されない。他のフィールド（特に `depends_on`）は保持。
+
+### 44-4. parseBodyObj ↔ buildBody の対称性（round-trip）
+
+`parseBodyObj(body) → buildBody(parsed) → parseBodyObj(rebuilt)` が同一フィールドを返すこと。出力文字列も元の body と完全一致すること（フィールド順含む）。
+
+### 44-5. parseBodyObj 戻り値を直接 spread して buildBody に渡せること
+
+```js
+const parsed = parseBodyObj(issue.body || '');
+const newBody = buildBody({ ...parsed, reviewedAt: today });
+```
+
+期待: 既存フィールド保持 + `reviewedAt` のみ更新。weekly-project-audit / runReviewSomeday で使用するパターン。
+
+### 44-6. reviewedAt のみ更新（runReviewSomeday パターン）
+
+`buildBody({ ...issue, reviewedAt: today })` が `reviewed_at:` 行を新値に置換し、古い値が残らないこと。
+
+### 44-7. CLI `build-body` サブコマンドの後方互換
+
+`todo.sh` 等の shell ラッパから呼ばれる `node todo-engine.js build-body <due> <recur> <project> <estimate> <actual> <desc> <activate> <before> <reviewedAt> <dependsOn>` の positional 引数 API が引き続き動作すること。内部では新オブジェクト形式に変換される。
