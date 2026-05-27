@@ -1,4 +1,4 @@
-Manage GitHub Issues as a GTD-style TODO list. Repository is configured via environment variables TODO_REPO_OWNER and TODO_REPO_NAME.
+Manage GitHub Issues as a GTD-style TODO list with next/waiting/someday/project/inbox/routine categories, due dates, recurrences, priorities (p1/p2/p3), Eisenhower matrix, weekly/daily reviews, project audits, and Inbox triage. Use this skill whenever the user mentions tasks, todos, GTD, Inbox, next actions, waiting for, someday/maybe, project management, weekly review, daily review, eisenhower, task estimate, deadline, follow-up date, or wants to add / list / complete / move / prioritize tasks, even if they don't explicitly say "/todo". Repository is configured via environment variables TODO_REPO_OWNER and TODO_REPO_NAME.
 
 Parse the arguments: $ARGUMENTS
 
@@ -24,10 +24,12 @@ test -f ~/.claude/todo.sh && echo "SH_MODE" || echo "MCP_MODE"
 | `edit <#> ...` | `update_issue` でbody/titleを更新 |
 | `dashboard` | `list_issues` を複数回呼び出してカテゴリ別に集計・表示 |
 | `today` | `list_issues` で due フィールドが今日以前のものを抽出 |
+| `eisenhower` | `list_issues` で next ラベルを取得し、p1/p2/due で4象限分類して表示 |
 | `search <キーワード>` | `list_issues` でタイトル・本文をフィルタ |
 | `archive list` | `list_issues` で state=closed を取得 |
 | `rename <#> <新タイトル>` | `update_issue` で title を変更 |
 | `due <#> <日付>` | `update_issue` でbody内の due フィールドを更新 |
+| `comment <#> <テキスト>` | `add_issue_comment` で Issue にコメント投稿 |
 
 MCP_MODEでは `bash ~/.claude/todo.sh` は呼び出さない。GitHub MCP ツールを直接使う。
 
@@ -54,9 +56,21 @@ MCP_MODEでは `bash ~/.claude/todo.sh` は呼び出さない。GitHub MCP ツ�
 
 ## パフォーマンスルール
 
-- **書き込み系コマンド**（add, done, move, edit, due, desc, recur, link, rename, priority, tag, untag, label, bulk）は常に `run_in_background: true` で実行し、結果を待たずに「更新中」等のメッセージで即応答する。
+- **書き込み系コマンド**（add, done, move, edit, due, desc, recur, link, rename, priority, tag, untag, label, bulk, comment, done --note, move --note）は常に `run_in_background: true` で実行する。
+- バックグラウンド実行後は **即座にClaudeのテキスト応答として** 以下の形式で応答し、Bashの出力結果を再掲しない。
+  - add: 「#(番号未確定) を追加中...」
+  - done: 「#(番号) の完了処理を実行中...」
+  - move: 「#(番号) の移動処理を実行中...」
+  - その他の書き込み系: 「更新中...」
+- **バックグラウンドBashの出力（✅〜のメッセージ等）はClaudeが読み直して再掲しない。** Bashの出力はUIに自動表示されるため、Claudeが同内容を繰り返すとメッセージが重複する。
+- **エラー時（stderrにエラー内容が出力された場合）は引き続きClaudeが読んでユーザーに説明すること。** 正常完了メッセージのみ再掲しない。
 - **読み取り系コマンド**（list, dashboard, today, stats, report, help, search, archive）はフォアグラウンドで実行してよい。
 - **読み取り系の結果は、Bashの出力をそのまま放置せず、Claudeのテキスト応答として表示すること。**（Bash出力は折りたたまれてユーザーが読めないため）
+- **書き込み系コマンドの即応答テンプレート（推論コスト削減）:**
+  ユーザーの意図が書き込み系コマンドと確定した時点で、下記の手順でコマンドを生成して即応答する。
+  1. `bash ~/.claude/todo.sh <command> [args]` を `run_in_background: true` で呼び出す
+  2. 呼び出しと同時に上記のテンプレートメッセージをClaudeのテキスト応答として返す
+  3. Bashの完了を待たない・出力を確認しない
 
 ---
 
@@ -66,17 +80,20 @@ MCP_MODEでは `bash ~/.claude/todo.sh` は呼び出さない。GitHub MCP ツ�
 
 | コマンド | 引数 | 説明 |
 |---------|------|------|
-| `add` / GTDキーワード | `[GTD] <タイトル> [@ctx...] [--due 日付] [--desc テキスト] [--recur パターン] [--project 番号] [--priority p1\|p2\|p3] [--estimate 時間]` | タスク追加（GTD省略時: inbox）。英字で始まるタイトルは `add` を明示必須 |
+| `add` / GTDキーワード | `[GTD] <タイトル> [@ctx...] [--due 日付] [--desc テキスト] [--recur パターン] [--project 番号] [--priority p1\|p2\|p3] [--estimate 時間]` | タスク追加（GTD省略時: inbox）。英字で始まるタイトルは `add` を明示必須（例: `/todo add My Task`）。英字で始まる引数を `add` なしで渡すとコマンド名と混同されエラーになる |
 | `list` | `[GTD] [@ctx] [p1\|p2\|p3] [project <番号>] [--group] [--no-due] [--no-estimate]` | タスク一覧（フィルタ組み合わせ可）。`--group` で期限別グルーピング表示。`--no-due` で期限未設定のタスクのみ表示（`--group` より優先）。`--no-estimate` で見積もり未設定のタスクのみ表示 |
-| `done` | `<#> [--actual 時間]` | タスク完了（recurあれば次のIssue自動作成） |
-| `move` | `<#> <GTD>` | GTDカテゴリ変更 |
+| `done` | `<#> [--actual 時間] [--note "テキスト"]` | タスク完了（recurあれば次のIssue自動作成）。`--note` を指定すると close 後にコメントを追加（振り返りメモ等） |
+| `move` | `<#> <GTD> [--note "テキスト"]` | GTDカテゴリ変更。`--note` を指定するとラベル変更後にコメントを追加（降格理由等） |
 | `edit` | `<#> [--due 日付] [--desc テキスト] [--recur パターン\|clear] [--priority p1\|p2\|p3\|clear] [--project 番号] [--estimate 時間]` | 複数フィールド一括編集 |
 | `rename` | `<#> <新タイトル>` | タイトル変更 |
 | `due` | `<#> <日付>` | 期日設定 |
-| `desc` | `<#> <テキスト>` | 説明設定 |
+| `desc` | `<#> <テキスト>` | 説明に追記（上書きは `edit --desc` を使う）。テキスト省略はエラー |
 | `recur` | `<#> <daily\|weekly\|monthly\|weekdays\|clear>` | 繰り返し設定 |
 | `priority` | `<#> <p1\|p2\|p3\|clear>` | 優先度設定 |
 | `link` | `<#> <project#>` | プロジェクト紐付け |
+
+> **注意**: `desc` のテキストに `due:` `activate:` 等を含めると body 内で重複します。
+> メタデータ変更は `/todo edit <#> --due <日付>` 等を使ってください。
 
 ### コンテキスト・ラベル
 
@@ -85,6 +102,15 @@ MCP_MODEでは `bash ~/.claude/todo.sh` は呼び出さない。GitHub MCP ツ�
 | `tag` | `<#> @ctx...` | コンテキスト追加 |
 | `untag` | `<#> @ctx...` | コンテキスト削除 |
 | `label` | `list\|add <名前> [--color hex]\|delete <名前>\|rename <旧> <新>` | ラベル管理 |
+
+### コメント操作
+
+| コマンド | 引数 | 説明 |
+|---------|------|------|
+| `comment` | `<#> <テキスト>` | Issue にコメントを追加（任意タイミング）。書き込み系（`run_in_background: true`） |
+
+ユーザーが「#N の経緯まとめて」「#N の状況確認」「#N にこれまでのメモ一覧を見せて」のような自然言語で依頼した場合は、
+`bash ~/.claude/todo.sh api list-comments <N>` を実行し、取得結果を要約して返す。
 
 ### 一括操作・読み取り・分析
 
@@ -96,6 +122,7 @@ MCP_MODEでは `bash ~/.claude/todo.sh` は呼び出さない。GitHub MCP ツ�
 | `activate <#> <日付>` | `edit <#> --activate <日付>` の簡略記法 |
 | `review-someday <番号>` | somedayタスクの見直し日(reviewed_at)を今日に更新 |
 | `today` | 今日のタスク（期限超過＋今日期限） |
+| `eisenhower` | アイゼンハワーマトリクス（next タスクを重要×緊急の4象限で表示） |
 | `dashboard` | ダッシュボード（俯瞰ビュー） |
 | `stats` | 統計情報 |
 | `report <weekly\|monthly\|Nd>` | 生産性レポート |
@@ -127,15 +154,6 @@ MCP_MODEでは `bash ~/.claude/todo.sh` は呼び出さない。GitHub MCP ツ�
 | `view use <名前>` または `view <名前>` | ビューでリスト表示 |
 | `view delete <名前>` | ビュー削除 |
 
-**実行例:**
-```bash
-bash ~/.claude/todo.sh next 上司に報告する @上司 --due 明日 --priority p2  # タスク追加
-bash ~/.claude/todo.sh list next                                           # 一覧（next）
-bash ~/.claude/todo.sh done 42 --actual 1h30m                              # 完了
-bash ~/.claude/todo.sh dashboard                                           # ダッシュボード
-bash ~/.claude/todo.sh template use 朝会 今日の朝会                          # テンプレート使用
-```
-
 `--due` の日本語表現（`今日`/`きょう`、`明日`/`あした`/`あす`、`明後日`/`あさって`、
 `昨日`/`きのう`、`月曜`〜`日曜`（次の該当曜日）、`今週金曜`（今週のその曜日）、
 `来週`（来週月曜）、`来月`（来月1日））も使用可能。
@@ -154,7 +172,6 @@ bash ~/.claude/todo.sh template use 朝会 今日の朝会                      
 Inboxのアイテムを1件ずつ確認:
 - ja: 「#<番号>「<title>」→ next / routine / waiting / someday / project / reference / close / skip ?」
 - en: "#<number> "<title>" → next / routine / waiting / someday / project / reference / close / skip?"
-（`close` = done でクローズ。完全削除ではない）
 - Inboxが0件の場合は「Inbox は空です。スキップします。」と表示して Step 2 へ進む
 - ユーザーが8択以外を入力した場合は再質問する
 
@@ -163,6 +180,8 @@ Inboxのアイテムを1件ずつ確認:
 0件の場合はスキップメッセージを表示して次へ。
 
 期限なし Next Actions の確認: `bash ~/.claude/todo.sh list next --no-due` で取得し、**全件**を「今日 / 今週 / 来週 / someday / skip ?」で対話する。各選択肢のコマンドは daily-review Step 3.5 と同じ。0件はスキップ。
+
+💡 **Pinned hint**: 今週の最重要タスク（p1 または「今週必ずやる」と決めたもの）は GitHub UI で pin できます（Issues タブ → 該当 Issue → ⋯ → Pin issue）。APIから操作できないため手動操作が必要です。
 
 **Step 3: Waiting For を確認**
 `bash ~/.claude/todo.sh list waiting` で一覧表示。催促・完了するものがあれば `bash ~/.claude/todo.sh move/done` で処理。
@@ -178,6 +197,9 @@ activate が未設定（フォローアップ日なし）のタスクがあれ�
 - ⚠️ next 欠落は必須対応（next 追加 / someday 降格 / close）
 - ⚠️ 停滞 30 日以上は someday 降格の判断を促す
 - 各確認済み項目に `reviewed_at` が自動記録される
+
+棚卸し完了後、`bash ~/.claude/todo.sh migrate sub-issue --dry-run` を実行し、**GitHub sub-issue に未登録のサブタスクが 3件以上ある場合のみ**以下のヒントを表示する（任意実行）:
+「body `project: #N` で紐づいているタスクのうち <n> 件が GitHub sub-issue に未登録です。`/todo migrate sub-issue` で一括登録できます（任意）。」
 
 **Step 5: Someday/Maybe を確認**
 `bash ~/.claude/todo.sh list someday` で一覧表示。⚠️マーク（30日以上未見直し）のタスクを優先的に確認する。

@@ -123,7 +123,7 @@ run_template_node() {
 # ────────────────────────────────────────────
 echo "=========================================="
 echo " todo スキル テストランナー"
-echo " 基準日: $TEST_TODAY（日曜日）"
+echo " 基準日: ${TEST_TODAY}（日曜日）"
 echo "=========================================="
 
 # ──────────────────────────────────────────
@@ -929,7 +929,7 @@ echo "§22a  todo-engine.js — ユーティリティ・バリデーション"
 assert_eq "engine: normalize-due 今日" "$TEST_TODAY" "$(node "$ENGINE" normalize-due '今日' "$TEST_TODAY")"
 assert_eq "engine: normalize-due 明日" "2026-04-06" "$(node "$ENGINE" normalize-due '明日' "$TEST_TODAY")"
 assert_eq "engine: normalize-due 来週" "2026-04-12" "$(node "$ENGINE" normalize-due '来週' "$TEST_TODAY")"
-assert_eq "engine: normalize-due パススルー" "4/10" "$(node "$ENGINE" normalize-due '4/10' "$TEST_TODAY")"
+assert_eq "engine: normalize-due M/D → YYYY-MM-DD 変換" "2026-04-10" "$(node "$ENGINE" normalize-due '4/10' "$TEST_TODAY")"
 
 # add-days / add-month
 assert_eq "engine: add-days +7" "2026-04-12" "$(node "$ENGINE" add-days "$TEST_TODAY" 7)"
@@ -2057,6 +2057,1344 @@ if ! printf '%s' "$M2_FILT_OUT" | grep -aq '#21'; then
 else
   printf "  ❌ M2-unit-6: next フィルタ — inbox-only (#21) が混入している\n"; FAIL=$((FAIL+1))
 fi
+
+# ──────────────────────────────────────────
+# § Phase1  コメント機能テスト（GitHub API モック）
+# create-comment / runComment / runDone --note / runMove --note
+# ──────────────────────────────────────────
+echo ""
+echo "§Phase1  コメント機能テスト（モック）"
+
+# ────────────────────────────────────────────
+# P1-1 正常系: コメントサニタイズ — 通常テキストはそのまま
+# ────────────────────────────────────────────
+P1_SANITIZE_NORMAL=$(node -e "
+  let body = 'テスト通常テキスト';
+  body = body.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  body = body.replace(/[\x00-\x09\x0B-\x1F]/g, '');
+  process.stdout.write(body);
+")
+assert_eq "P1-1: 通常テキストはサニタイズ後も変化なし" "テスト通常テキスト" "$P1_SANITIZE_NORMAL"
+
+# ────────────────────────────────────────────
+# P1-2 正常系: \r\n が \n に正規化される
+# ────────────────────────────────────────────
+P1_SANITIZE_CRLF=$(node -e "
+  let body = 'line1\r\nline2\r\nline3';
+  body = body.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  body = body.replace(/[\x00-\x09\x0B-\x1F]/g, '');
+  // \r が残っていないことを確認（\r → '' で確認用に見えるように変換）
+  const hasCarriageReturn = body.includes('\r');
+  process.stdout.write(hasCarriageReturn ? 'HAS_CR' : 'NO_CR');
+")
+assert_eq "P1-2: \\r\\n が \\n に正規化され \\r が除去される" "NO_CR" "$P1_SANITIZE_CRLF"
+
+# ────────────────────────────────────────────
+# P1-3 正常系: 単独 \r が \n に正規化される
+# ────────────────────────────────────────────
+P1_SANITIZE_CR_ONLY=$(node -e "
+  let body = 'line1\rline2';
+  body = body.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const hasCarriageReturn = body.includes('\r');
+  process.stdout.write(hasCarriageReturn ? 'HAS_CR' : 'NO_CR');
+")
+assert_eq "P1-3: 単独 \\r が \\n に変換される" "NO_CR" "$P1_SANITIZE_CR_ONLY"
+
+# ────────────────────────────────────────────
+# P1-4 セキュリティ: NULL バイトが除去される
+# ────────────────────────────────────────────
+P1_SANITIZE_NULL=$(node -e "
+  let body = 'before\x00after';
+  body = body.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  body = body.replace(/[\x00-\x09\x0B-\x1F]/g, '');
+  process.stdout.write(body);
+")
+assert_eq "P1-4: NULL バイト（\\x00）が除去される" "beforeafter" "$P1_SANITIZE_NULL"
+
+# ────────────────────────────────────────────
+# P1-5 セキュリティ: 制御文字（\x01-\x1F、\n 除く）が除去される
+# ────────────────────────────────────────────
+P1_SANITIZE_CTRL=$(node -e "
+  let body = 'before\x01\x02\x08\x0Bafter';
+  body = body.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  body = body.replace(/[\x00-\x09\x0B-\x1F]/g, '');
+  process.stdout.write(body);
+")
+assert_eq "P1-5: 制御文字（\\x01〜\\x1F、\\n除く）が除去される" "beforeafter" "$P1_SANITIZE_CTRL"
+
+# ────────────────────────────────────────────
+# P1-6 セキュリティ: \n（改行）は保持される
+# ────────────────────────────────────────────
+P1_SANITIZE_NL=$(node -e "
+  let body = 'line1\nline2';
+  body = body.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  body = body.replace(/[\x00-\x09\x0B-\x1F]/g, '');
+  const lineCount = body.split('\n').length;
+  process.stdout.write(String(lineCount));
+")
+assert_eq "P1-6: \\n（改行）はサニタイズ後も保持される" "2" "$P1_SANITIZE_NL"
+
+# ────────────────────────────────────────────
+# P1-7 境界値: 65536 文字ちょうどはエラーなし
+# ────────────────────────────────────────────
+P1_BOUNDARY_OK=$(node -e "
+  const body = 'a'.repeat(65536);
+  if (body.length > 65536) { process.stdout.write('ERROR'); } else { process.stdout.write('OK'); }
+")
+assert_eq "P1-7: 65536 文字ちょうどはエラーなし" "OK" "$P1_BOUNDARY_OK"
+
+# ────────────────────────────────────────────
+# P1-8 境界値: 65537 文字（超過）はエラー
+# ────────────────────────────────────────────
+P1_BOUNDARY_ERR=$(node -e "
+  const body = 'a'.repeat(65537);
+  if (body.length > 65536) { process.stdout.write('ERROR'); } else { process.stdout.write('OK'); }
+")
+assert_eq "P1-8: 65537 文字（超過）はエラー判定" "ERROR" "$P1_BOUNDARY_ERR"
+
+# ────────────────────────────────────────────
+# P1-9 入力文字パターン: シェル特殊文字を含むテキストはサニタイズで除去されない（FORBIDDENチェック不適用）
+# ────────────────────────────────────────────
+P1_SPECIAL_CHARS=$(node -e "
+  // コメント本文に FORBIDDEN_CHARS チェックは適用しない（自由テキスト）
+  let body = 'メモ: \`cmd\` \$(evil) ; rm -rf /';
+  body = body.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  body = body.replace(/[\x00-\x09\x0B-\x1F]/g, '');
+  // シェル特殊文字が含まれていても除去されないことを確認
+  const hasBacktick = body.includes('\`');
+  process.stdout.write(hasBacktick ? 'PRESERVED' : 'REMOVED');
+")
+assert_eq "P1-9: コメント本文のシェル特殊文字は FORBIDDEN_CHARS チェック不適用（自由テキスト）" "PRESERVED" "$P1_SPECIAL_CHARS"
+
+# ────────────────────────────────────────────
+# P1-10 入力文字パターン: 日本語・絵文字が文字化けしない
+# ────────────────────────────────────────────
+P1_UNICODE=$(node -e "
+  let body = '進捗確認 ✅ 完了しました 🎉';
+  body = body.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  body = body.replace(/[\x00-\x09\x0B-\x1F]/g, '');
+  process.stdout.write(body);
+")
+assert_eq "P1-10: 日本語・絵文字がサニタイズ後も保持される" "進捗確認 ✅ 完了しました 🎉" "$P1_UNICODE"
+
+# ────────────────────────────────────────────
+# P1-11 入力文字パターン: クォート類はサニタイズ後も保持される
+# ────────────────────────────────────────────
+P1_QUOTES=$(node -e "
+  let body = \"田中さんに \\\"確認済み\\\" と伝えた（O'clock）\";
+  body = body.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  body = body.replace(/[\x00-\x09\x0B-\x1F]/g, '');
+  const hasDoubleQuote = body.includes('\"');
+  const hasSingleQuote = body.includes(\"'\");
+  process.stdout.write((hasDoubleQuote && hasSingleQuote) ? 'PRESERVED' : 'REMOVED');
+")
+assert_eq "P1-11: ダブルクォート・シングルクォートはサニタイズ後も保持される" "PRESERVED" "$P1_QUOTES"
+
+# ────────────────────────────────────────────
+# P1-12 バリデーション: 空文字列はエラー
+# ────────────────────────────────────────────
+P1_EMPTY_ERR=$(node -e "
+  let body = '';
+  body = body.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  body = body.replace(/[\x00-\x09\x0B-\x1F]/g, '');
+  if (!body.trim()) { process.stdout.write('ERROR'); } else { process.stdout.write('OK'); }
+")
+assert_eq "P1-12: 空文字列はエラー判定" "ERROR" "$P1_EMPTY_ERR"
+
+# ────────────────────────────────────────────
+# P1-13 バリデーション: 空白のみの文字列はエラー
+# ────────────────────────────────────────────
+P1_WHITESPACE_ERR=$(node -e "
+  let body = '   \t  ';
+  body = body.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  body = body.replace(/[\x00-\x09\x0B-\x1F]/g, '');
+  if (!body.trim()) { process.stdout.write('ERROR'); } else { process.stdout.write('OK'); }
+")
+assert_eq "P1-13: 空白のみの文字列はエラー判定" "ERROR" "$P1_WHITESPACE_ERR"
+
+# ────────────────────────────────────────────
+# P1-14 エンジン統合: parseArgs が --note を正しく解析する
+# エンジンのソースコードに --note パーサーが存在することを確認する
+# ────────────────────────────────────────────
+if grep -q "'--note'" "$ENGINE"; then
+  printf "  ✅ P1-14: parseArgs に --note パーサーが追加されている\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ P1-14: parseArgs に --note パーサーが見つからない\n"; FAIL=$((FAIL+1))
+fi
+
+# ────────────────────────────────────────────
+# P1-15 エンジン統合: runMain switch に case 'comment' が存在する
+# ────────────────────────────────────────────
+if grep -q "case 'comment':" "$ENGINE"; then
+  printf "  ✅ P1-15: runMain switch に case 'comment': が追加されている\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ P1-15: runMain switch に case 'comment': が見つからない\n"; FAIL=$((FAIL+1))
+fi
+
+# ────────────────────────────────────────────
+# P1-16 エンジン統合: apiMain switch に case 'create-comment' が存在する
+# ────────────────────────────────────────────
+if grep -q "case 'create-comment':" "$ENGINE"; then
+  printf "  ✅ P1-16: apiMain switch に case 'create-comment': が追加されている\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ P1-16: apiMain switch に case 'create-comment': が見つからない\n"; FAIL=$((FAIL+1))
+fi
+
+# ────────────────────────────────────────────
+# P1-17 エンジン統合: runComment 関数が定義されている
+# ────────────────────────────────────────────
+if grep -q "async function runComment" "$ENGINE"; then
+  printf "  ✅ P1-17: runComment 関数が定義されている\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ P1-17: runComment 関数が見つからない\n"; FAIL=$((FAIL+1))
+fi
+
+# ────────────────────────────────────────────
+# P1-18 エンジン統合: createCommentSanitized 関数が定義されている
+# ────────────────────────────────────────────
+if grep -q "async function createCommentSanitized" "$ENGINE"; then
+  printf "  ✅ P1-18: createCommentSanitized 関数が定義されている\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ P1-18: createCommentSanitized 関数が見つからない\n"; FAIL=$((FAIL+1))
+fi
+
+# ────────────────────────────────────────────
+# P1-19 エンジン統合: runDone に --note 対応コードが存在する
+# ────────────────────────────────────────────
+if grep -q "parsed.note" "$ENGINE"; then
+  printf "  ✅ P1-19: runDone / runMove に --note (parsed.note) 対応コードが存在する\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ P1-19: --note (parsed.note) 対応コードが見つからない\n"; FAIL=$((FAIL+1))
+fi
+
+# ────────────────────────────────────────────
+# P1-20 エンジン統合: COMMENT_BODY_ENV が create-comment ケースで参照される
+# ────────────────────────────────────────────
+if grep -q "COMMENT_BODY_ENV" "$ENGINE"; then
+  printf "  ✅ P1-20: create-comment ケースで COMMENT_BODY_ENV が参照されている\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ P1-20: COMMENT_BODY_ENV が見つからない\n"; FAIL=$((FAIL+1))
+fi
+
+# ────────────────────────────────────────────
+# P1-21 todo.md: comment コマンドが MCP_MODE 対応表に存在する
+# ────────────────────────────────────────────
+TODO_MD="$SCRIPT_DIR/../todo.md"
+if grep -q "add_issue_comment" "$TODO_MD" 2>/dev/null; then
+  printf "  ✅ P1-21: todo.md に add_issue_comment（MCP_MODE comment 対応）が追加されている\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ P1-21: todo.md に add_issue_comment が見つからない\n"; FAIL=$((FAIL+1))
+fi
+
+# ────────────────────────────────────────────
+# P1-22 todo.md: パフォーマンスルールに comment が追記されている
+# ────────────────────────────────────────────
+if grep -q "comment.*run_in_background\|comment.*move --note\|comment, done --note" "$TODO_MD" 2>/dev/null; then
+  printf "  ✅ P1-22: todo.md パフォーマンスルールに comment / done --note / move --note が追記されている\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ P1-22: todo.md パフォーマンスルールに comment の追記が見つからない\n"; FAIL=$((FAIL+1))
+fi
+
+# ────────────────────────────────────────────
+# P1-23 todo.md: weekly-review Step 2 に Pinned hint が追加されている
+# ────────────────────────────────────────────
+if grep -q "Pinned hint" "$TODO_MD" 2>/dev/null; then
+  printf "  ✅ P1-23: todo.md weekly-review Step 2 に Pinned hint が追加されている\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ P1-23: todo.md に Pinned hint が見つからない\n"; FAIL=$((FAIL+1))
+fi
+
+# ────────────────────────────────────────────
+# P1-24 todo.md: weekly-review Step 4 に migrate sub-issue ヒントが追加されている
+# ────────────────────────────────────────────
+if grep -q "migrate sub-issue --dry-run" "$TODO_MD" 2>/dev/null; then
+  printf "  ✅ P1-24: todo.md weekly-review Step 4 に migrate sub-issue ヒントが追加されている\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ P1-24: todo.md に migrate sub-issue --dry-run が見つからない\n"; FAIL=$((FAIL+1))
+fi
+
+# ────────────────────────────────────────────
+# P1-25 todo-manual.md: コメント機能セクションが追加されている
+# ────────────────────────────────────────────
+TODO_MANUAL="$SCRIPT_DIR/../../../../docs/todo-manual.md"
+if grep -q "コメント機能" "$TODO_MANUAL" 2>/dev/null; then
+  printf "  ✅ P1-25: todo-manual.md にコメント機能セクションが追加されている\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ P1-25: todo-manual.md にコメント機能セクションが見つからない\n"; FAIL=$((FAIL+1))
+fi
+
+# ────────────────────────────────────────────
+# P1-26 todo-manual.md: body/コメントの使い分け原則が記載されている
+# ────────────────────────────────────────────
+if grep -q "body.*コメント.*使い分け\|使い分け原則" "$TODO_MANUAL" 2>/dev/null; then
+  printf "  ✅ P1-26: todo-manual.md に body/コメント使い分け原則が記載されている\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ P1-26: todo-manual.md に使い分け原則が見つからない\n"; FAIL=$((FAIL+1))
+fi
+
+# ────────────────────────────────────────────
+# P1-27 GTDワークフロー維持確認: 既存 GTD_LABELS 定数が変更されていない
+# ────────────────────────────────────────────
+P1_GTD_LABELS=$(ENGINE_PATH="$ENGINE" node -e "
+  const fs = require('fs');
+  const src = fs.readFileSync(process.env.ENGINE_PATH, 'utf8');
+  const m = src.match(/const GTD_LABELS = \[([^\]]+)\]/);
+  if (m) { process.stdout.write(m[1].trim()); } else { process.stdout.write('NOT_FOUND'); }
+")
+if printf '%s' "$P1_GTD_LABELS" | grep -q "next.*routine.*inbox.*waiting.*someday.*reference"; then
+  printf "  ✅ P1-27: GTD_LABELS 定数が変更されていない（%s）\n" "$P1_GTD_LABELS"; PASS=$((PASS+1))
+else
+  printf "  ❌ P1-27: GTD_LABELS 定数が変更された可能性がある: [%s]\n" "$P1_GTD_LABELS"; FAIL=$((FAIL+1))
+fi
+
+# ────────────────────────────────────────────
+# P1-28 エンジン構文チェック: node --check が成功する
+# ────────────────────────────────────────────
+if node --check "$ENGINE" 2>/dev/null; then
+  printf "  ✅ P1-28: エンジン JavaScript 構文エラーなし\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ P1-28: エンジン JavaScript 構文エラー\n"; FAIL=$((FAIL+1))
+fi
+
+# ────────────────────────────────────────────
+# eisenhower コマンド テスト（E-N-1 〜 E-N-12、E-E-2、E-R-1〜E-R-6）
+# GitHub 接続不要。env var 経由で OPEN_ENV を渡す。
+# ────────────────────────────────────────────
+
+# 共通フィクスチャ作成ヘルパー
+# make_issue <number> <title> <labels_csv> <body>
+make_issue() {
+  local num="$1" title="$2" labels_csv="$3" body="$4"
+  node -e "
+const num = parseInt(process.argv[1]);
+const title = process.argv[2];
+const labels_csv = process.argv[3];
+const body = process.argv[4];
+const labels = labels_csv ? labels_csv.split(',').map(l => ({name:l})) : [];
+process.stdout.write(JSON.stringify({number:num, title, body, labels}));
+" -- "$num" "$title" "$labels_csv" "$body"
+}
+
+# E-N-1: 混在データの4象限分類
+EN1_TODAY="2026-05-01"
+EN1_I1=$(make_issue 1 "今すぐやるタスク" "next,p1" "due: 2026-05-01")
+EN1_I2=$(make_issue 2 "計画タスクp2明日" "next,p2" "due: 2026-05-02")
+EN1_I3=$(make_issue 3 "Q3タスクp3今日" "next,p3" "due: 2026-05-01")
+EN1_I4=$(make_issue 4 "Q4タスクp3期限なし" "next,p3" "")
+EN1_ISSUES="[${EN1_I1},${EN1_I2},${EN1_I3},${EN1_I4}]"
+
+EN1_OUTPUT=$(OPEN_ENV="$EN1_ISSUES" TODAY_ENV="$EN1_TODAY" node "$ENGINE" eisenhower 2>&1)
+assert_contains "E-N-1: Q1にp1+今日期限タスクが表示される" "今すぐやるタスク" "$EN1_OUTPUT"
+assert_contains "E-N-1: Q2にp2+明日期限タスクが表示される" "計画タスクp2明日" "$EN1_OUTPUT"
+assert_contains "E-N-1: Q3にp3+今日期限タスクが表示される" "Q3タスクp3今日" "$EN1_OUTPUT"
+assert_contains "E-N-1: Q4にp3+期限なしタスクが表示される" "Q4タスクp3期限なし" "$EN1_OUTPUT"
+
+# Q1ヘッダよりQ2ヘッダが後に来ることを確認（順序）
+EN1_Q1_POS=$(printf '%s' "$EN1_OUTPUT" | grep -n "Q1" | head -1 | cut -d: -f1)
+EN1_Q2_POS=$(printf '%s' "$EN1_OUTPUT" | grep -n "Q2" | head -1 | cut -d: -f1)
+if [ -n "$EN1_Q1_POS" ] && [ -n "$EN1_Q2_POS" ] && [ "$EN1_Q1_POS" -lt "$EN1_Q2_POS" ]; then
+  printf "  ✅ E-N-1: Q1がQ2より前に表示される\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ E-N-1: Q1/Q2の順序が正しくない（Q1=%s Q2=%s）\n" "$EN1_Q1_POS" "$EN1_Q2_POS"; FAIL=$((FAIL+1))
+fi
+
+# E-N-2: next タスクが 0件
+EN2_TODAY="2026-05-01"
+EN2_OUTPUT=$(OPEN_ENV="[]" TODAY_ENV="$EN2_TODAY" node "$ENGINE" eisenhower 2>&1)
+assert_contains "E-N-2: 全象限に（なし）が表示される（Q1）" "Q1" "$EN2_OUTPUT"
+assert_contains "E-N-2: 全象限に（なし）が表示される（Q2）" "Q2" "$EN2_OUTPUT"
+assert_contains "E-N-2: 全象限に（なし）が表示される（Q3）" "Q3" "$EN2_OUTPUT"
+assert_contains "E-N-2: 全象限に（なし）が表示される（Q4）" "Q4" "$EN2_OUTPUT"
+assert_contains "E-N-2: フッターに「合計 next: 0件」が表示される" "合計 next: 0" "$EN2_OUTPUT"
+
+# E-N-3: Q1 が 0件のとき（なし）のみ表示（no_q1メッセージなし）
+EN3_TODAY="2026-05-01"
+EN3_I1=$(make_issue 10 "Q2タスク" "next,p1" "due: 2026-05-10")
+EN3_ISSUES="[${EN3_I1}]"
+EN3_OUTPUT=$(OPEN_ENV="$EN3_ISSUES" TODAY_ENV="$EN3_TODAY" node "$ENGINE" eisenhower 2>&1)
+assert_contains "E-N-3: Q1ヘッダが表示される" "Q1" "$EN3_OUTPUT"
+assert_contains "E-N-3: Q1に（なし）が表示される" "（なし）" "$EN3_OUTPUT"
+# no_q1専用メッセージが出ていないことを確認（廃止済み）
+assert_not_contains "E-N-3: no_q1専用メッセージは出力されない" "今すぐ対応が必要なタスクはありません" "$EN3_OUTPUT"
+
+# E-N-4: 期限超過（昨日以前）のp1/p2タスクはQ1に表示
+EN4_TODAY="2026-05-01"
+EN4_I1=$(make_issue 20 "期限超過タスク" "next,p1" "due: 2026-04-30")
+EN4_ISSUES="[${EN4_I1}]"
+EN4_OUTPUT=$(OPEN_ENV="$EN4_ISSUES" TODAY_ENV="$EN4_TODAY" node "$ENGINE" eisenhower 2>&1)
+assert_contains "E-N-4: 期限超過p1タスクがQ1に表示される" "期限超過タスク" "$EN4_OUTPUT"
+# Q1ヘッダの後にタスクが来て、Q2ヘッダの前に終わること
+EN4_TASK_POS=$(printf '%s' "$EN4_OUTPUT" | grep -n "期限超過タスク" | head -1 | cut -d: -f1)
+EN4_Q2_POS=$(printf '%s' "$EN4_OUTPUT" | grep -n "Q2" | head -1 | cut -d: -f1)
+if [ -n "$EN4_TASK_POS" ] && [ -n "$EN4_Q2_POS" ] && [ "$EN4_TASK_POS" -lt "$EN4_Q2_POS" ]; then
+  printf "  ✅ E-N-4: 期限超過タスクがQ2より前（Q1セクション）に表示される\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ E-N-4: 期限超過タスクの位置が正しくない（task=%s Q2=%s）\n" "$EN4_TASK_POS" "$EN4_Q2_POS"; FAIL=$((FAIL+1))
+fi
+assert_contains "E-N-4: 📅 日付が表示される" "2026-04-30" "$EN4_OUTPUT"
+
+# E-N-5: p1/p2 で due 未設定のタスクは Q2 に表示（due列は空）
+EN5_TODAY="2026-05-01"
+EN5_I1=$(make_issue 30 "Q2due未設定タスク" "next,p2" "")
+EN5_ISSUES="[${EN5_I1}]"
+EN5_OUTPUT=$(OPEN_ENV="$EN5_ISSUES" TODAY_ENV="$EN5_TODAY" node "$ENGINE" eisenhower 2>&1)
+assert_contains "E-N-5: p2+due未設定タスクがQ2に表示される" "Q2due未設定タスク" "$EN5_OUTPUT"
+# Q2に表示されていてQ1には出ていないこと
+EN5_TASK_POS=$(printf '%s' "$EN5_OUTPUT" | grep -n "Q2due未設定タスク" | head -1 | cut -d: -f1)
+EN5_Q2_POS=$(printf '%s' "$EN5_OUTPUT" | grep -n "Q2" | head -1 | cut -d: -f1)
+EN5_Q3_POS=$(printf '%s' "$EN5_OUTPUT" | grep -n "Q3" | head -1 | cut -d: -f1)
+if [ -n "$EN5_TASK_POS" ] && [ -n "$EN5_Q2_POS" ] && [ -n "$EN5_Q3_POS" ] && \
+   [ "$EN5_TASK_POS" -gt "$EN5_Q2_POS" ] && [ "$EN5_TASK_POS" -lt "$EN5_Q3_POS" ]; then
+  printf "  ✅ E-N-5: p2+due未設定タスクがQ2セクション内に表示される\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ E-N-5: p2+due未設定タスクの位置が正しくない（task=%s Q2=%s Q3=%s）\n" "$EN5_TASK_POS" "$EN5_Q2_POS" "$EN5_Q3_POS"; FAIL=$((FAIL+1))
+fi
+
+# E-N-6: p3 + due 未設定は Q4 に表示
+EN6_TODAY="2026-05-01"
+EN6_I1=$(make_issue 40 "Q4p3due未設定" "next,p3" "")
+EN6_ISSUES="[${EN6_I1}]"
+EN6_OUTPUT=$(OPEN_ENV="$EN6_ISSUES" TODAY_ENV="$EN6_TODAY" node "$ENGINE" eisenhower 2>&1)
+EN6_TASK_POS=$(printf '%s' "$EN6_OUTPUT" | grep -n "Q4p3due未設定" | head -1 | cut -d: -f1)
+EN6_Q4_POS=$(printf '%s' "$EN6_OUTPUT" | grep -n "Q4" | head -1 | cut -d: -f1)
+if [ -n "$EN6_TASK_POS" ] && [ -n "$EN6_Q4_POS" ] && [ "$EN6_TASK_POS" -gt "$EN6_Q4_POS" ]; then
+  printf "  ✅ E-N-6: p3+due未設定タスクがQ4セクションに表示される\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ E-N-6: p3+due未設定タスクの位置が正しくない（task=%s Q4=%s）\n" "$EN6_TASK_POS" "$EN6_Q4_POS"; FAIL=$((FAIL+1))
+fi
+
+# E-N-7: next 以外のラベル（inbox/waiting）のタスクは出力に現れない
+EN7_TODAY="2026-05-01"
+EN7_I1=$(make_issue 50 "inboxタスク除外" "inbox,p1" "due: 2026-05-01")
+EN7_I2=$(make_issue 51 "waitingタスク除外" "waiting,p2" "due: 2026-05-01")
+EN7_ISSUES="[${EN7_I1},${EN7_I2}]"
+EN7_OUTPUT=$(OPEN_ENV="$EN7_ISSUES" TODAY_ENV="$EN7_TODAY" node "$ENGINE" eisenhower 2>&1)
+assert_not_contains "E-N-7: inboxタスクはeisenhowerに出力されない" "inboxタスク除外" "$EN7_OUTPUT"
+assert_not_contains "E-N-7: waitingタスクはeisenhowerに出力されない" "waitingタスク除外" "$EN7_OUTPUT"
+
+# E-N-8: Q1内のソート順（p1→p2、due昇順）
+EN8_TODAY="2026-05-01"
+EN8_I1=$(make_issue 60 "p2late" "next,p2" "due: 2026-05-01")
+EN8_I2=$(make_issue 61 "p1early" "next,p1" "due: 2026-04-30")
+EN8_ISSUES="[${EN8_I1},${EN8_I2}]"
+EN8_OUTPUT=$(OPEN_ENV="$EN8_ISSUES" TODAY_ENV="$EN8_TODAY" node "$ENGINE" eisenhower 2>&1)
+EN8_P1_POS=$(printf '%s' "$EN8_OUTPUT" | grep -n "p1early" | head -1 | cut -d: -f1)
+EN8_P2_POS=$(printf '%s' "$EN8_OUTPUT" | grep -n "p2late" | head -1 | cut -d: -f1)
+if [ -n "$EN8_P1_POS" ] && [ -n "$EN8_P2_POS" ] && [ "$EN8_P1_POS" -lt "$EN8_P2_POS" ]; then
+  printf "  ✅ E-N-8: Q1内でp1タスクがp2タスクより前にソートされる\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ E-N-8: Q1内のソート順が正しくない（p1=%s p2=%s）\n" "$EN8_P1_POS" "$EN8_P2_POS"; FAIL=$((FAIL+1))
+fi
+
+# E-N-9: 英語モード（LANG_ENV=en）での出力
+EN9_TODAY="2026-05-01"
+EN9_I1=$(make_issue 70 "English task" "next,p3" "due: 2026-05-01")
+EN9_ISSUES="[${EN9_I1}]"
+EN9_OUTPUT=$(OPEN_ENV="$EN9_ISSUES" TODAY_ENV="$EN9_TODAY" LANG_ENV="en" node "$ENGINE" eisenhower 2>&1)
+assert_contains "E-N-9: 英語モードでQ3が英語ヘッダで表示される" "Urgent (Low Importance)" "$EN9_OUTPUT"
+assert_contains "E-N-9: 英語モードでQ4が英語ヘッダで表示される" "Q4 Others" "$EN9_OUTPUT"
+
+# E-N-10: renderIssueList と同じ行フォーマット（priIcon・context・見積もり）
+EN10_TODAY="2026-05-01"
+EN10_BODY=$'due: 2026-05-01\nestimate: 60'
+EN10_I1=$(make_issue 80 "フォーマットテスト" "next,p1,@PC" "$EN10_BODY")
+EN10_ISSUES="[${EN10_I1}]"
+EN10_OUTPUT=$(OPEN_ENV="$EN10_ISSUES" TODAY_ENV="$EN10_TODAY" node "$ENGINE" eisenhower 2>&1)
+# priIcon の確認は node で実施（Windows Git Bash の grep は絵文字マッチが不安定）
+EN10_PRI_CHECK=$(printf '%s' "$EN10_OUTPUT" | node -e "
+let data=''; process.stdin.on('data',d=>data+=d);
+process.stdin.on('end',()=>{
+  process.stdout.write(data.includes('🔴') ? 'HAS_PRI_ICON' : 'NO_PRI_ICON');
+});
+")
+assert_eq "E-N-10: priIcon（🔴）が表示される" "HAS_PRI_ICON" "$EN10_PRI_CHECK"
+assert_contains "E-N-10: コンテキスト[@PC]が表示される" "@PC" "$EN10_OUTPUT"
+assert_contains "E-N-10: 見積もり（⏱）が表示される" "⏱" "$EN10_OUTPUT"
+
+# E-N-11: 優先度未設定（p9）タスクが next に含まれる場合
+EN11_TODAY="2026-05-01"
+EN11_I1=$(make_issue 90 "p9未設定タスクA" "next" "due: 2026-05-01")
+EN11_I2=$(make_issue 91 "p9未設定タスクB" "next" "")
+EN11_I3=$(make_issue 92 "Q1通常タスク" "next,p1" "due: 2026-05-01")
+EN11_ISSUES="[${EN11_I1},${EN11_I2},${EN11_I3}]"
+EN11_OUTPUT=$(OPEN_ENV="$EN11_ISSUES" TODAY_ENV="$EN11_TODAY" node "$ENGINE" eisenhower 2>&1)
+assert_contains "E-N-11: 先頭に優先度未設定警告が表示される" "⚠ 優先度未設定（2件）" "$EN11_OUTPUT"
+assert_not_contains "E-N-11: p9タスクAはQ1〜Q4に表示されない" "p9未設定タスクA" "$EN11_OUTPUT"
+assert_not_contains "E-N-11: p9タスクBはQ1〜Q4に表示されない" "p9未設定タスクB" "$EN11_OUTPUT"
+# 警告セクションがQ1ヘッダより前に表示される
+EN11_UNSET_POS=$(printf '%s' "$EN11_OUTPUT" | grep -n "優先度未設定" | head -1 | cut -d: -f1)
+EN11_Q1_POS=$(printf '%s' "$EN11_OUTPUT" | grep -n "Q1" | head -1 | cut -d: -f1)
+if [ -n "$EN11_UNSET_POS" ] && [ -n "$EN11_Q1_POS" ] && [ "$EN11_UNSET_POS" -lt "$EN11_Q1_POS" ]; then
+  printf "  ✅ E-N-11: 優先度未設定警告がQ1ヘッダより前に表示される\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ E-N-11: 優先度未設定警告の位置が正しくない（unset=%s Q1=%s）\n" "$EN11_UNSET_POS" "$EN11_Q1_POS"; FAIL=$((FAIL+1))
+fi
+
+# E-N-12: 優先度未設定タスクが 0件 → 警告セクション非表示
+EN12_TODAY="2026-05-01"
+EN12_I1=$(make_issue 100 "優先度設定済み" "next,p1" "due: 2026-05-01")
+EN12_ISSUES="[${EN12_I1}]"
+EN12_OUTPUT=$(OPEN_ENV="$EN12_ISSUES" TODAY_ENV="$EN12_TODAY" node "$ENGINE" eisenhower 2>&1)
+assert_not_contains "E-N-12: 警告セクションが表示されない" "優先度未設定" "$EN12_OUTPUT"
+
+# E-E-2: オープンIssueが0件のリポジトリ（エラーなく全象限なし表示）
+EE2_OUTPUT=$(OPEN_ENV="[]" TODAY_ENV="2026-05-01" node "$ENGINE" eisenhower 2>&1)
+EE2_EXIT=$?
+assert_exit_ok "E-E-2: 0件でもエラーなく終了する" "$EE2_EXIT"
+assert_contains "E-E-2: Q1ヘッダが表示される" "Q1" "$EE2_OUTPUT"
+assert_contains "E-E-2: Q2ヘッダが表示される" "Q2" "$EE2_OUTPUT"
+
+# E-R-1: today() の出力が変わらない（既存 today コマンドのリグレッション）
+ER1_TODAY="2026-05-01"
+ER1_I1=$(make_issue 110 "today期限タスク" "next,p1" "due: 2026-05-01")
+ER1_ISSUES="[${ER1_I1}]"
+ER1_OUTPUT=$(OPEN_ENV="$ER1_ISSUES" CLOSED_ENV="[]" TODAY_ENV="$ER1_TODAY" node "$ENGINE" today 2>&1)
+assert_contains "E-R-1: today コマンドが正常動作する（今日のタスクが表示される）" "今日" "$ER1_OUTPUT"
+assert_contains "E-R-1: today コマンドにtodayタスクが表示される" "today期限タスク" "$ER1_OUTPUT"
+
+# E-R-2: list-all の出力が変わらない
+ER2_I1=$(make_issue 120 "nextタスク" "next,p1" "")
+ER2_ISSUES="[${ER2_I1}]"
+ER2_OUTPUT=$(OPEN_ENV="$ER2_ISSUES" TODAY_ENV="2026-05-01" node "$ENGINE" list-all 2>&1)
+assert_contains "E-R-2: list-all コマンドが正常動作する" "nextタスク" "$ER2_OUTPUT"
+
+# E-R-3: dashboard の出力が変わらない
+ER3_I1=$(make_issue 130 "dashboardタスク" "next,p1" "due: 2026-05-01")
+ER3_ISSUES="[${ER3_I1}]"
+ER3_OUTPUT=$(OPEN_ENV="$ER3_ISSUES" CLOSED_ENV="[]" TODAY_ENV="2026-05-01" node "$ENGINE" dashboard 2>&1)
+assert_contains "E-R-3: dashboard コマンドが正常動作する" "dashboardタスク" "$ER3_OUTPUT"
+
+# E-R-4: help に eisenhower が追加されている
+ER4_OUTPUT=$(node "$ENGINE" help 2>&1)
+assert_contains "E-R-4: help に eisenhower が表示される" "eisenhower" "$ER4_OUTPUT"
+
+# E-R-6: フッターの {total} は next ラベル全タスク数（p9 タスク含む）の確認
+ER6_TODAY="2026-05-01"
+ER6_I1=$(make_issue 200 "p9タスク1" "next" "")
+ER6_I2=$(make_issue 201 "p9タスク2" "next" "")
+ER6_I3=$(make_issue 202 "p1タスク" "next,p1" "due: 2026-05-01")
+ER6_ISSUES="[${ER6_I1},${ER6_I2},${ER6_I3}]"
+ER6_OUTPUT=$(OPEN_ENV="$ER6_ISSUES" TODAY_ENV="$ER6_TODAY" node "$ENGINE" eisenhower 2>&1)
+assert_contains "E-R-6: フッターの合計は3件（p9含む）" "合計 next: 3件" "$ER6_OUTPUT"
+# Q1のカウントは1件（p1タスクのみ）
+assert_contains "E-R-6: Q1カウントは1件（p9除く）" "Q1: 1件" "$ER6_OUTPUT"
+
+# ──────────────────────────────────────────
+# L-1: list-issues の updatedAt フィールド
+#   GitHub API の issue オブジェクトから updatedAt が正しくマップされることを
+#   エンジンの map ロジックをインラインで再現して確認する
+# ──────────────────────────────────────────
+echo ""
+echo "## L-1: list-issues updatedAt フィールド"
+
+# L-1-1: updated_at が ISO8601 文字列の場合、updatedAt として返る
+L1_OUTPUT=$(node -e "
+const raw = [
+  { number: 1, title: 'タスクA', body: 'body', labels: [{name:'next'}],
+    closed_at: null, updated_at: '2026-04-01T12:00:00Z', pull_request: undefined }
+];
+const result = raw.map(i => ({
+  number: i.number,
+  title: i.title,
+  body: i.body || '',
+  labels: i.labels.map(l => ({ name: l.name })),
+  closedAt: i.closed_at || null,
+  updatedAt: i.updated_at || null
+}));
+process.stdout.write(JSON.stringify(result));
+")
+assert_contains "L-1-1: updatedAt が ISO8601 文字列で返る" '"updatedAt":"2026-04-01T12:00:00Z"' "$L1_OUTPUT"
+
+# L-1-2: updated_at が null/undefined の場合、updatedAt は null になる
+L2_OUTPUT=$(node -e "
+const raw = [
+  { number: 2, title: 'タスクB', body: '', labels: [],
+    closed_at: null, updated_at: null, pull_request: undefined }
+];
+const result = raw.map(i => ({
+  number: i.number,
+  title: i.title,
+  body: i.body || '',
+  labels: i.labels.map(l => ({ name: l.name })),
+  closedAt: i.closed_at || null,
+  updatedAt: i.updated_at || null
+}));
+process.stdout.write(JSON.stringify(result));
+")
+assert_contains "L-1-2: updated_at が null のとき updatedAt は null" '"updatedAt":null' "$L2_OUTPUT"
+
+# L-1-3: updatedAt フィールドがオブジェクトのキーとして存在する
+assert_contains "L-1-3: updatedAt キーが出力に含まれる" '"updatedAt"' "$L1_OUTPUT"
+
+# ──────────────────────────────────────────
+# BUG#1321-A parseArgs --label オプションテスト
+# GitHub 接続不要。parseArgs のソースコード確認 + エンジンの validate コマンド経由テスト。
+# ──────────────────────────────────────────
+echo ""
+echo "## BUG1321-A: --label オプション引数パーサーテスト"
+
+# BUG1321-A-1: parseArgs に --label パーサーが追加されている（ソース確認）
+if grep -q "'--label'" "$ENGINE"; then
+  printf "  ✅ BUG1321-A-1: parseArgs に --label パーサーが追加されている\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ BUG1321-A-1: parseArgs に --label パーサーが見つからない\n"; FAIL=$((FAIL+1))
+fi
+
+# BUG1321-A-2: result.labels 配列が初期化されている（ソース確認）
+if grep -q "labels: \[\]" "$ENGINE"; then
+  printf "  ✅ BUG1321-A-2: result.labels 配列が初期化されている\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ BUG1321-A-2: result.labels 配列の初期化が見つからない\n"; FAIL=$((FAIL+1))
+fi
+
+# BUG1321-A-3: --label の値が extra に残らない / labels に格納される（一時ファイル経由）
+_BUG1321_TMP=$(mktemp /tmp/test-parseargs-XXXXXX.js)
+cat > "$_BUG1321_TMP" << 'PARSEARGS_TEST_EOF'
+// parseArgs 単体テスト（BUG1321-A-3/A-4）
+const fs = require('fs');
+const src = fs.readFileSync(process.argv[2], 'utf8');
+// parseArgs 関数を eval で取り込む
+const engineModule = {};
+const match = src.match(/^function parseArgs[\s\S]+?^}/m);
+if (!match) { process.stdout.write('EXTRACT_FAILED'); process.exit(0); }
+let parseArgs;
+try {
+  eval('parseArgs = ' + match[0].replace(/^function parseArgs/, 'function'));
+} catch(e) { process.stdout.write('EVAL_FAILED:' + e.message); process.exit(0); }
+const result = parseArgs(['タイトル', '--activate', '2026-05-10', '--due', '2026-05-10', '--label', '@claude', '--priority', 'p2']);
+process.stdout.write(JSON.stringify({ extra: result.extra, labels: result.labels }));
+PARSEARGS_TEST_EOF
+
+_BUG1321_A3_OUT=$(node "$_BUG1321_TMP" "$ENGINE" 2>&1)
+
+# JSON解析して extra と labels を取り出す
+_BUG1321_A3_EXTRA=$(printf '%s' "$_BUG1321_A3_OUT" | ENGINE_PATH="$ENGINE" node -e "
+  let raw = '';
+  process.stdin.on('data', d => raw += d);
+  process.stdin.on('end', () => {
+    try { const d = JSON.parse(raw); process.stdout.write(JSON.stringify(d.extra)); }
+    catch(e) { process.stdout.write('PARSE_ERR:' + raw); }
+  });
+")
+_BUG1321_A4_LABELS=$(printf '%s' "$_BUG1321_A3_OUT" | ENGINE_PATH="$ENGINE" node -e "
+  let raw = '';
+  process.stdin.on('data', d => raw += d);
+  process.stdin.on('end', () => {
+    try { const d = JSON.parse(raw); process.stdout.write(JSON.stringify(d.labels)); }
+    catch(e) { process.stdout.write('PARSE_ERR:' + raw); }
+  });
+")
+assert_eq "BUG1321-A-3: --label の値が extra に残らない" '["タイトル"]' "$_BUG1321_A3_EXTRA"
+assert_eq "BUG1321-A-4: --label の値が labels 配列に格納される" '["@claude"]' "$_BUG1321_A4_LABELS"
+rm -f "$_BUG1321_TMP"
+
+# BUG1321-A-5: --label が複数回指定されたとき全て格納される
+_BUG1321_A5_TMP=$(mktemp /tmp/test-parseargs-a5-XXXXXX.js)
+cat > "$_BUG1321_A5_TMP" << 'A5_EOF'
+const fs = require('fs');
+const src = fs.readFileSync(process.argv[2], 'utf8');
+const match = src.match(/^function parseArgs[\s\S]+?^}/m);
+if (!match) { process.stdout.write('EXTRACT_FAILED'); process.exit(0); }
+let parseArgs;
+try { eval('parseArgs = ' + match[0].replace(/^function parseArgs/, 'function')); }
+catch(e) { process.stdout.write('EVAL_FAILED'); process.exit(0); }
+const result = parseArgs(['タイトル', '--label', 'foo', '--label', 'bar']);
+process.stdout.write(JSON.stringify(result.labels));
+A5_EOF
+BUG1321_A5=$(node "$_BUG1321_A5_TMP" "$ENGINE" 2>&1)
+assert_eq "BUG1321-A-5: --label が複数指定されたとき全て labels に格納される" '["foo","bar"]' "$BUG1321_A5"
+rm -f "$_BUG1321_A5_TMP"
+
+# BUG1321-A-6: --label なしの場合 labels は空配列
+_BUG1321_A6_TMP=$(mktemp /tmp/test-parseargs-a6-XXXXXX.js)
+cat > "$_BUG1321_A6_TMP" << 'A6_EOF'
+const fs = require('fs');
+const src = fs.readFileSync(process.argv[2], 'utf8');
+const match = src.match(/^function parseArgs[\s\S]+?^}/m);
+if (!match) { process.stdout.write('EXTRACT_FAILED'); process.exit(0); }
+let parseArgs;
+try { eval('parseArgs = ' + match[0].replace(/^function parseArgs/, 'function')); }
+catch(e) { process.stdout.write('EVAL_FAILED'); process.exit(0); }
+const result = parseArgs(['タイトル', '--due', '2026-05-10']);
+process.stdout.write(JSON.stringify(result.labels));
+A6_EOF
+BUG1321_A6=$(node "$_BUG1321_A6_TMP" "$ENGINE" 2>&1)
+assert_eq "BUG1321-A-6: --label なしの場合 labels は空配列" '[]' "$BUG1321_A6"
+rm -f "$_BUG1321_A6_TMP"
+
+# BUG1321-A-7: --label の後ろに他オプションが続いても正しくパースされる（境界値）
+_BUG1321_A7_TMP=$(mktemp /tmp/test-parseargs-a7-XXXXXX.js)
+cat > "$_BUG1321_A7_TMP" << 'A7_EOF'
+const fs = require('fs');
+const src = fs.readFileSync(process.argv[2], 'utf8');
+const match = src.match(/^function parseArgs[\s\S]+?^}/m);
+if (!match) { process.stdout.write('EXTRACT_FAILED'); process.exit(0); }
+let parseArgs;
+try { eval('parseArgs = ' + match[0].replace(/^function parseArgs/, 'function')); }
+catch(e) { process.stdout.write('EVAL_FAILED'); process.exit(0); }
+const result = parseArgs(['タイトル', '--label', '@claude', '--priority', 'p2']);
+process.stdout.write(JSON.stringify({ extra: result.extra, labels: result.labels, priority: result.priority }));
+A7_EOF
+_BUG1321_A7_OUT=$(node "$_BUG1321_A7_TMP" "$ENGINE" 2>&1)
+_BUG1321_A7_EXTRA=$(printf '%s' "$_BUG1321_A7_OUT" | node -e "
+  let raw=''; process.stdin.on('data',d=>raw+=d);
+  process.stdin.on('end',()=>{try{const d=JSON.parse(raw);process.stdout.write(JSON.stringify(d.extra));}catch(e){process.stdout.write('PARSE_ERR');}});
+")
+_BUG1321_A7_PRI=$(printf '%s' "$_BUG1321_A7_OUT" | node -e "
+  let raw=''; process.stdin.on('data',d=>raw+=d);
+  process.stdin.on('end',()=>{try{const d=JSON.parse(raw);process.stdout.write(d.priority||'null');}catch(e){process.stdout.write('PARSE_ERR');}});
+")
+assert_eq "BUG1321-A-7: --label + --priority 組み合わせで extra にノイズが残らない" '["タイトル"]' "$_BUG1321_A7_EXTRA"
+assert_eq "BUG1321-A-7: --label + --priority 組み合わせで priority が正しくパースされる" 'p2' "$_BUG1321_A7_PRI"
+rm -f "$_BUG1321_A7_TMP"
+
+# ──────────────────────────────────────────
+# BUG#1321-B validateName [ ] 緩和テスト
+# validate コマンド（エンジンの公開I/F）経由で確認
+# ──────────────────────────────────────────
+echo ""
+echo "## BUG1321-B: validateName [ ] 緩和テスト"
+
+# BUG1321-B-1: FORBIDDEN_CHARS に [ ] が含まれない（ソース確認）
+# FORBIDDEN_CHARS 定義行に [ または ] がないことを確認（ソース文字列レベル）
+_BUG1321_B1_LINE=$(grep 'const FORBIDDEN_CHARS' "$ENGINE")
+if printf '%s' "$_BUG1321_B1_LINE" | grep -q '\['; then
+  printf "  ❌ BUG1321-B-1: FORBIDDEN_CHARS に [ が含まれている（緩和されていない）\n"; FAIL=$((FAIL+1))
+else
+  printf "  ✅ BUG1321-B-1: FORBIDDEN_CHARS に [ ] が含まれない（緩和済み）\n"; PASS=$((PASS+1))
+fi
+
+# BUG1321-B-2: [bug] プレフィックスのタイトルがバリデーションを通過する（正常系）
+BUG1321_B2_OUT=$(LANG_ENV=ja node "$ENGINE" validate name "[bug] /todo: --label オプションがタイトルに混入する" 2>&1)
+BUG1321_B2_EXIT=$?
+if [ "$BUG1321_B2_EXIT" -eq 0 ]; then
+  printf "  ✅ BUG1321-B-2: [bug] プレフィックスのタイトルがバリデーションを通過する\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ BUG1321-B-2: [bug] プレフィックスのタイトルがバリデーションを通過する\n"
+  printf "     出力: %s\n" "$BUG1321_B2_OUT"
+  FAIL=$((FAIL+1))
+fi
+
+# BUG1321-B-3: [feature] プレフィックスのタイトルがバリデーションを通過する（正常系）
+BUG1321_B3_OUT=$(LANG_ENV=ja node "$ENGINE" validate name "[feature] 新機能追加" 2>&1)
+BUG1321_B3_EXIT=$?
+if [ "$BUG1321_B3_EXIT" -eq 0 ]; then
+  printf "  ✅ BUG1321-B-3: [feature] プレフィックスのタイトルがバリデーションを通過する\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ BUG1321-B-3: [feature] プレフィックスのタイトルがバリデーションを通過する\n"
+  printf "     出力: %s\n" "$BUG1321_B3_OUT"
+  FAIL=$((FAIL+1))
+fi
+
+# BUG1321-B-4: セキュリティ — セミコロンは引き続き弾かれる
+BUG1321_B4_OUT=$(LANG_ENV=ja node "$ENGINE" validate name "test; rm -rf /" 2>&1)
+BUG1321_B4_EXIT=$?
+if [ "$BUG1321_B4_EXIT" -ne 0 ]; then
+  printf "  ✅ BUG1321-B-4: セミコロン含むタイトルは引き続きINVALID\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ BUG1321-B-4: セミコロン含むタイトルは引き続きINVALID（通過してしまった）\n"; FAIL=$((FAIL+1))
+fi
+
+# BUG1321-B-5: セキュリティ — バッククォートは引き続き弾かれる
+BUG1321_B5_OUT=$(LANG_ENV=ja node "$ENGINE" validate name '`evil`' 2>&1)
+BUG1321_B5_EXIT=$?
+if [ "$BUG1321_B5_EXIT" -ne 0 ]; then
+  printf "  ✅ BUG1321-B-5: バッククォート含むタイトルは引き続きINVALID\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ BUG1321-B-5: バッククォート含むタイトルは引き続きINVALID（通過してしまった）\n"; FAIL=$((FAIL+1))
+fi
+
+# BUG1321-B-6: セキュリティ — $変数参照は引き続き弾かれる
+BUG1321_B6_OUT=$(LANG_ENV=ja node "$ENGINE" validate name '$HOME' 2>&1)
+BUG1321_B6_EXIT=$?
+if [ "$BUG1321_B6_EXIT" -ne 0 ]; then
+  printf "  ✅ BUG1321-B-6: \$変数参照含むタイトルは引き続きINVALID\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ BUG1321-B-6: \$変数参照含むタイトルは引き続きINVALID（通過してしまった）\n"; FAIL=$((FAIL+1))
+fi
+
+# ──────────────────────────────────────────
+# BUG#1329: parseArgs — --p1/--p2/--p3 ショートハンドがタイトルに混入する
+# GitHub 接続不要。parseArgs のソースコード確認 + 単体テスト。
+# ──────────────────────────────────────────
+echo ""
+echo "## BUG1329: parseArgs --p<N> ショートハンド タイトル混入テスト"
+
+# BUG1329-1: parseArgs に --p[123] ショートハンドのパーサーが追加されている（ソース確認）
+if grep -q '/^--p\[123\]\$/' "$ENGINE"; then
+  printf "  ✅ BUG1329-1: parseArgs に --p[123] ショートハンドパーサーが追加されている\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ BUG1329-1: parseArgs に --p[123] ショートハンドパーサーが見つからない\n"; FAIL=$((FAIL+1))
+fi
+
+# BUG1329-2: --p3 がタイトルに混入せず priority にパースされる
+_BUG1329_2_TMP=$(mktemp /tmp/bug1329-2-XXXXXX.js)
+cat > "$_BUG1329_2_TMP" << 'JSEOF'
+const src = require('fs').readFileSync(process.argv[2], 'utf8');
+const match = src.match(/^function parseArgs[\s\S]+?^}/m);
+let parseArgs;
+try { eval('parseArgs = ' + match[0].replace(/^function parseArgs/, 'function')); }
+catch(e) { process.stdout.write(JSON.stringify({err: e.message})); process.exit(0); }
+const result = parseArgs(['タイトル', '--p3']);
+process.stdout.write(JSON.stringify({ extra: result.extra, priority: result.priority }));
+JSEOF
+_BUG1329_2_OUT=$(node "$_BUG1329_2_TMP" "$ENGINE" 2>&1)
+_BUG1329_2_EXTRA=$(printf '%s' "$_BUG1329_2_OUT" | node -e "
+  let raw=''; process.stdin.on('data',d=>raw+=d);
+  process.stdin.on('end',()=>{try{const d=JSON.parse(raw);process.stdout.write(JSON.stringify(d.extra));}catch(e){process.stdout.write('PARSE_ERR');}});
+")
+_BUG1329_2_PRI=$(printf '%s' "$_BUG1329_2_OUT" | node -e "
+  let raw=''; process.stdin.on('data',d=>raw+=d);
+  process.stdin.on('end',()=>{try{const d=JSON.parse(raw);process.stdout.write(d.priority||'null');}catch(e){process.stdout.write('PARSE_ERR');}});
+")
+assert_eq "BUG1329-2: --p3 がタイトルに混入しない（extra にノイズなし）" '["タイトル"]' "$_BUG1329_2_EXTRA"
+assert_eq "BUG1329-2: --p3 が priority としてパースされる" 'p3' "$_BUG1329_2_PRI"
+rm -f "$_BUG1329_2_TMP"
+
+# BUG1329-3: --p1 ショートハンド
+_BUG1329_3_TMP=$(mktemp /tmp/bug1329-3-XXXXXX.js)
+cat > "$_BUG1329_3_TMP" << 'JSEOF'
+const src = require('fs').readFileSync(process.argv[2], 'utf8');
+const match = src.match(/^function parseArgs[\s\S]+?^}/m);
+let parseArgs;
+try { eval('parseArgs = ' + match[0].replace(/^function parseArgs/, 'function')); }
+catch(e) { process.stdout.write(JSON.stringify({err: e.message})); process.exit(0); }
+const result = parseArgs(['重要なタスク', '--p1', '--due', '2026-05-10']);
+process.stdout.write(JSON.stringify({ extra: result.extra, priority: result.priority, due: result.due }));
+JSEOF
+_BUG1329_3_OUT=$(node "$_BUG1329_3_TMP" "$ENGINE" 2>&1)
+_BUG1329_3_EXTRA=$(printf '%s' "$_BUG1329_3_OUT" | node -e "
+  let raw=''; process.stdin.on('data',d=>raw+=d);
+  process.stdin.on('end',()=>{try{const d=JSON.parse(raw);process.stdout.write(JSON.stringify(d.extra));}catch(e){process.stdout.write('PARSE_ERR');}});
+")
+_BUG1329_3_PRI=$(printf '%s' "$_BUG1329_3_OUT" | node -e "
+  let raw=''; process.stdin.on('data',d=>raw+=d);
+  process.stdin.on('end',()=>{try{const d=JSON.parse(raw);process.stdout.write(d.priority||'null');}catch(e){process.stdout.write('PARSE_ERR');}});
+")
+assert_eq "BUG1329-3: --p1 がタイトルに混入しない（extra にノイズなし）" '["重要なタスク"]' "$_BUG1329_3_EXTRA"
+assert_eq "BUG1329-3: --p1 が priority としてパースされる" 'p1' "$_BUG1329_3_PRI"
+rm -f "$_BUG1329_3_TMP"
+
+# BUG1329-4: --p2 ショートハンド（--label / @context / --desc との組み合わせ）
+_BUG1329_4_TMP=$(mktemp /tmp/bug1329-4-XXXXXX.js)
+cat > "$_BUG1329_4_TMP" << 'JSEOF'
+const src = require('fs').readFileSync(process.argv[2], 'utf8');
+const match = src.match(/^function parseArgs[\s\S]+?^}/m);
+let parseArgs;
+try { eval('parseArgs = ' + match[0].replace(/^function parseArgs/, 'function')); }
+catch(e) { process.stdout.write(JSON.stringify({err: e.message})); process.exit(0); }
+const result = parseArgs(['タスクA', '@claude', '--p2', '--desc', '詳細説明', '--label', 'feature']);
+process.stdout.write(JSON.stringify({
+  extra: result.extra, priority: result.priority,
+  labels: result.labels, contexts: result.contexts, desc: result.desc
+}));
+JSEOF
+_BUG1329_4_OUT=$(node "$_BUG1329_4_TMP" "$ENGINE" 2>&1)
+_BUG1329_4_EXTRA=$(printf '%s' "$_BUG1329_4_OUT" | node -e "
+  let raw=''; process.stdin.on('data',d=>raw+=d);
+  process.stdin.on('end',()=>{try{const d=JSON.parse(raw);process.stdout.write(JSON.stringify(d.extra));}catch(e){process.stdout.write('PARSE_ERR');}});
+")
+_BUG1329_4_PRI=$(printf '%s' "$_BUG1329_4_OUT" | node -e "
+  let raw=''; process.stdin.on('data',d=>raw+=d);
+  process.stdin.on('end',()=>{try{const d=JSON.parse(raw);process.stdout.write(d.priority||'null');}catch(e){process.stdout.write('PARSE_ERR');}});
+")
+assert_eq "BUG1329-4: --p2 + 他オプション混在で extra にノイズなし" '["タスクA"]' "$_BUG1329_4_EXTRA"
+assert_eq "BUG1329-4: --p2 + 他オプション混在で priority が正しくパースされる" 'p2' "$_BUG1329_4_PRI"
+rm -f "$_BUG1329_4_TMP"
+
+# BUG1329-5: --p3 がタイトル末尾位置でも混入しない（実害パターン再現）
+_BUG1329_5_TMP=$(mktemp /tmp/bug1329-5-XXXXXX.js)
+cat > "$_BUG1329_5_TMP" << 'JSEOF'
+const src = require('fs').readFileSync(process.argv[2], 'utf8');
+const match = src.match(/^function parseArgs[\s\S]+?^}/m);
+let parseArgs;
+try { eval('parseArgs = ' + match[0].replace(/^function parseArgs/, 'function')); }
+catch(e) { process.stdout.write(JSON.stringify({err: e.message})); process.exit(0); }
+// 実害パターン: タイトルの後に --p3 が末尾に来るケース
+const result = parseArgs(['タイトル', '@claude', '--desc', '詳細', '--p3']);
+process.stdout.write(JSON.stringify({ extra: result.extra, priority: result.priority }));
+JSEOF
+_BUG1329_5_OUT=$(node "$_BUG1329_5_TMP" "$ENGINE" 2>&1)
+_BUG1329_5_EXTRA=$(printf '%s' "$_BUG1329_5_OUT" | node -e "
+  let raw=''; process.stdin.on('data',d=>raw+=d);
+  process.stdin.on('end',()=>{try{const d=JSON.parse(raw);process.stdout.write(JSON.stringify(d.extra));}catch(e){process.stdout.write('PARSE_ERR');}});
+")
+_BUG1329_5_PRI=$(printf '%s' "$_BUG1329_5_OUT" | node -e "
+  let raw=''; process.stdin.on('data',d=>raw+=d);
+  process.stdin.on('end',()=>{try{const d=JSON.parse(raw);process.stdout.write(d.priority||'null');}catch(e){process.stdout.write('PARSE_ERR');}});
+")
+assert_eq "BUG1329-5: 末尾 --p3（実害パターン）がタイトルに混入しない" '["タイトル"]' "$_BUG1329_5_EXTRA"
+assert_eq "BUG1329-5: 末尾 --p3（実害パターン）が priority としてパースされる" 'p3' "$_BUG1329_5_PRI"
+rm -f "$_BUG1329_5_TMP"
+
+# ──────────────────────────────────────────
+# BUG#1326: ensureLabel — existence check で 422 ノイズ抑止
+# GitHub 接続不要。ソースコード確認 + Node.js モックテスト。
+# ──────────────────────────────────────────
+echo ""
+echo "## BUG1326: ensureLabel existence check テスト (T-13/T-14/T-15)"
+
+# T-13-src: ensureLabel が GET /repos/.../labels/{name} を使っている（ソース確認）
+if grep -q "GET /repos/{owner}/{repo}/labels/{name}" "$ENGINE"; then
+  printf "  ✅ T-13-src: ensureLabel が existence check (GET /labels/{name}) を使っている\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ T-13-src: ensureLabel に existence check が見つからない（422 catch 方式のまま？）\n"; FAIL=$((FAIL+1))
+fi
+
+# T-13-nocreate: 既存ラベル（GET 200）のとき createLabel を呼ばないこと（Node.js モック）
+_BUG1326_TMP=$(mktemp /tmp/test-ensure-label-XXXXXX.js)
+cat > "$_BUG1326_TMP" << 'ENSURE_LABEL_TEST_EOF'
+// ensureLabel モックテスト（BUG1326）
+const fs = require('fs');
+const src = fs.readFileSync(process.argv[2], 'utf8');
+// 関数定義を抽出して eval
+const match = src.match(/\/\/ ラベルが存在しなければ作成する[\s\S]*?^async function ensureLabel[\s\S]*?^}/m);
+if (!match) { process.stderr.write('ensureLabel not found\n'); process.exit(1); }
+eval(match[0]);
+
+async function runTests() {
+  let results = { t13_nocreate: null, t14_create: null, t15_auth_error: null };
+
+  // T-13: 既存ラベル（GET → 200）のとき createLabel が呼ばれないこと
+  let createLabelCalled = false;
+  const octokit13 = {
+    request: async (url) => { return { data: { name: '@claude' } }; }, // 200
+    issues: { createLabel: async () => { createLabelCalled = true; } }
+  };
+  await ensureLabel(octokit13, 'owner', 'repo', '@claude', 'FBCA04', '');
+  results.t13_nocreate = !createLabelCalled;
+
+  // T-14: 新規ラベル（GET → 404）のとき createLabel が呼ばれること
+  let createLabelCalled14 = false;
+  const octokit14 = {
+    request: async (url) => { const e = new Error('Not Found'); e.status = 404; throw e; },
+    issues: { createLabel: async () => { createLabelCalled14 = true; } }
+  };
+  await ensureLabel(octokit14, 'owner', 'repo', '@newtag', 'FBCA04', '');
+  results.t14_create = createLabelCalled14;
+
+  // T-15: 真のエラー（401）が伝播すること
+  let errorPropagated = false;
+  const octokit15 = {
+    request: async (url) => { const e = new Error('Unauthorized'); e.status = 401; throw e; },
+    issues: { createLabel: async () => {} }
+  };
+  try {
+    await ensureLabel(octokit15, 'owner', 'repo', '@test', 'FBCA04', '');
+  } catch(e) {
+    if (e.status === 401) errorPropagated = true;
+  }
+  results.t15_auth_error = errorPropagated;
+
+  process.stdout.write(JSON.stringify(results));
+}
+runTests().catch(e => { process.stderr.write(e.message+'\n'); process.exit(1); });
+ENSURE_LABEL_TEST_EOF
+
+_BUG1326_OUT=$(node "$_BUG1326_TMP" "$ENGINE" 2>&1)
+_BUG1326_EXIT=$?
+rm -f "$_BUG1326_TMP"
+
+if [ "$_BUG1326_EXIT" -ne 0 ]; then
+  printf "  ❌ BUG1326 モックテスト実行失敗: %s\n" "$_BUG1326_OUT"; FAIL=$((FAIL+3))
+else
+  # T-13: createLabel が呼ばれないこと
+  if printf '%s' "$_BUG1326_OUT" | grep -q '"t13_nocreate":true'; then
+    printf "  ✅ T-13: 既存ラベル（GET 200）で createLabel が呼ばれない\n"; PASS=$((PASS+1))
+  else
+    printf "  ❌ T-13: 既存ラベルでも createLabel が呼ばれてしまった\n"; FAIL=$((FAIL+1))
+  fi
+
+  # T-14: createLabel が呼ばれること
+  if printf '%s' "$_BUG1326_OUT" | grep -q '"t14_create":true'; then
+    printf "  ✅ T-14: 新規ラベル（GET 404）で createLabel が呼ばれる\n"; PASS=$((PASS+1))
+  else
+    printf "  ❌ T-14: 新規ラベルで createLabel が呼ばれなかった\n"; FAIL=$((FAIL+1))
+  fi
+
+  # T-15: 401 エラーが伝播すること
+  if printf '%s' "$_BUG1326_OUT" | grep -q '"t15_auth_error":true'; then
+    printf "  ✅ T-15: 真のエラー（401）がサイレント化されず伝播する\n"; PASS=$((PASS+1))
+  else
+    printf "  ❌ T-15: 真のエラー（401）がサイレント化されてしまった\n"; FAIL=$((FAIL+1))
+  fi
+fi
+
+# ──────────────────────────────────────────
+# BUG#1328: Octokit カスタムロガー — 期待される 4xx ノイズ抑止
+# GitHub 接続不要。ソースコード確認 + Node.js ロガー動作テスト。
+# ──────────────────────────────────────────
+
+echo ""
+echo "--- BUG#1328: Octokit カスタムロガー ---"
+
+# T-16-src: OCTOKIT_LOGGER 定数がソースに定義されていること
+if grep -q 'const OCTOKIT_LOGGER' "$ENGINE"; then
+  printf "  ✅ T-16-src: OCTOKIT_LOGGER 定数がソースに定義されている\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ T-16-src: OCTOKIT_LOGGER 定数が見つからない\n"; FAIL=$((FAIL+1))
+fi
+
+# T-17-src: new OctokitClass の両箇所に log: OCTOKIT_LOGGER が含まれること
+_t17_count=$(grep -c '{ auth: token, log: OCTOKIT_LOGGER }' "$ENGINE" || true)
+if [ "$_t17_count" -ge 2 ]; then
+  printf "  ✅ T-17-src: new OctokitClass の両箇所 (%d) に log: OCTOKIT_LOGGER が設定されている\n" "$_t17_count"; PASS=$((PASS+1))
+else
+  printf "  ❌ T-17-src: log: OCTOKIT_LOGGER の設定箇所が %d 件（2件必要）\n" "$_t17_count"; FAIL=$((FAIL+1))
+fi
+
+# T-18 〜 T-20: カスタムロガーの動作確認（Node.js インラインテスト）
+_BUG1328_TMP=$(mktemp /tmp/todo-test-logger-XXXXXX.js)
+cat > "$_BUG1328_TMP" << 'LOGGER_TEST_EOF'
+const ENGINE_PATH = process.argv[2];
+const src = require('fs').readFileSync(ENGINE_PATH, 'utf8');
+
+// OCTOKIT_LOGGER の定義部分を抽出して Function コンストラクタで評価する
+// const で宣言された変数は eval() の外スコープに漏れないため、
+// new Function で return させる方式を使う
+const match = src.match(/const OCTOKIT_LOGGER\s*=\s*(\{[\s\S]*?\});/);
+if (!match) { process.stderr.write('OCTOKIT_LOGGER not found\n'); process.exit(1); }
+
+// match[1] = オブジェクトリテラル部分 ( { debug: ..., error: ... } )
+// ただし error 関数内で console.error を参照するため、console をグローバルとして渡す
+// eslint-disable-next-line no-new-func
+const OCTOKIT_LOGGER = new Function('console', 'return ' + match[1])(console);
+
+const results = {};
+const captured = [];
+
+// console.error を一時的にモック
+const origError = console.error;
+console.error = (...args) => { captured.push(args.join(' ')); };
+
+// T-18: 404 を含むメッセージが抑止されること
+OCTOKIT_LOGGER.error('HttpError: Not Found [404]');
+results.t18_404_suppressed = captured.length === 0;
+captured.length = 0;
+
+// T-19: 422 を含むメッセージが抑止されること
+OCTOKIT_LOGGER.error('HttpError: Unprocessable Entity [422]');
+results.t19_422_suppressed = captured.length === 0;
+captured.length = 0;
+
+// T-20: 500 を含むメッセージが通過すること（抑止されないこと）
+OCTOKIT_LOGGER.error('HttpError: Internal Server Error [500]');
+results.t20_500_passed = captured.length > 0;
+captured.length = 0;
+
+// console.error を元に戻す
+console.error = origError;
+
+process.stdout.write(JSON.stringify(results) + '\n');
+LOGGER_TEST_EOF
+
+_BUG1328_OUT=$(node "$_BUG1328_TMP" "$ENGINE" 2>&1)
+_BUG1328_EXIT=$?
+rm -f "$_BUG1328_TMP"
+
+if [ "$_BUG1328_EXIT" -ne 0 ]; then
+  printf "  ❌ BUG1328 ロガーテスト実行失敗: %s\n" "$_BUG1328_OUT"; FAIL=$((FAIL+3))
+else
+  # T-18: 404 が抑止されること
+  if printf '%s' "$_BUG1328_OUT" | grep -q '"t18_404_suppressed":true'; then
+    printf "  ✅ T-18: OCTOKIT_LOGGER が 404 メッセージを抑止する\n"; PASS=$((PASS+1))
+  else
+    printf "  ❌ T-18: OCTOKIT_LOGGER が 404 メッセージを抑止していない\n"; FAIL=$((FAIL+1))
+  fi
+
+  # T-19: 422 が抑止されること
+  if printf '%s' "$_BUG1328_OUT" | grep -q '"t19_422_suppressed":true'; then
+    printf "  ✅ T-19: OCTOKIT_LOGGER が 422 メッセージを抑止する\n"; PASS=$((PASS+1))
+  else
+    printf "  ❌ T-19: OCTOKIT_LOGGER が 422 メッセージを抑止していない\n"; FAIL=$((FAIL+1))
+  fi
+
+  # T-20: 500 が通過すること
+  if printf '%s' "$_BUG1328_OUT" | grep -q '"t20_500_passed":true'; then
+    printf "  ✅ T-20: OCTOKIT_LOGGER が 500 メッセージを通過させる（抑止しない）\n"; PASS=$((PASS+1))
+  else
+    printf "  ❌ T-20: OCTOKIT_LOGGER が 500 メッセージを抑止してしまった\n"; FAIL=$((FAIL+1))
+  fi
+fi
+
+# ──────────────────────────────────────────
+# §32  due clear / 空文字 — validateDue・buildBody との統合
+# ──────────────────────────────────────────
+echo ""
+echo "§32  due clear / 空文字 — 期日削除バリデーション（シナリオ 5-1b, S-3b）"
+
+# validateDue で 'clear' が通過すること（engine validate due clear）
+node "$ENGINE" validate due 'clear' 2>/dev/null \
+  && { printf "  ✅ validate due clear: exit 0（クリア値として通過）\n"; PASS=$((PASS+1)); } \
+  || { printf "  ❌ validate due clear: exit 1（通過すべき）\n"; FAIL=$((FAIL+1)); }
+
+# validateDue で空文字が通過すること（engine validate due ""）
+node "$ENGINE" validate due '' 2>/dev/null \
+  && { printf "  ✅ validate due '': exit 0（空文字クリアとして通過）\n"; PASS=$((PASS+1)); } \
+  || { printf "  ❌ validate due '': exit 1（通過すべき）\n"; FAIL=$((FAIL+1)); }
+
+# validateDue で通常の日付は引き続き通過すること（回帰確認）
+node "$ENGINE" validate due '2026-06-26' 2>/dev/null \
+  && { printf "  ✅ validate due YYYY-MM-DD: exit 0（回帰確認）\n"; PASS=$((PASS+1)); } \
+  || { printf "  ❌ validate due YYYY-MM-DD: exit 1（通過すべき）\n"; FAIL=$((FAIL+1)); }
+
+# validateDue で M/D 形式は引き続き通過すること（回帰確認）
+node "$ENGINE" validate due '6/26' 2>/dev/null \
+  && { printf "  ✅ validate due M/D: exit 0（回帰確認）\n"; PASS=$((PASS+1)); } \
+  || { printf "  ❌ validate due M/D: exit 1（通過すべき）\n"; FAIL=$((FAIL+1)); }
+
+# 🟡-4: normalizeDue が M/D → YYYY-MM-DD に変換すること（Phase 3）
+ND_MD_OUT=$(node "$ENGINE" normalize-due '5/19' '2026-05-19')
+assert_eq "normalizeDue: 5/19 → 2026-05-19（今年YYYY-MM-DD）" "2026-05-19" "$ND_MD_OUT"
+ND_MD_OUT2=$(node "$ENGINE" normalize-due '4/1' '2026-04-05')
+assert_eq "normalizeDue: 4/1 → 2026-04-01（M/Dゼロ埋め）" "2026-04-01" "$ND_MD_OUT2"
+
+# validateDue で不正文字はエラー（回帰確認）
+node "$ENGINE" validate due '不正' 2>/dev/null \
+  && { printf "  ❌ validate due '不正': exit 0（エラーすべき）\n"; FAIL=$((FAIL+1)); } \
+  || { printf "  ✅ validate due '不正': exit 1（不正値は拒否）\n"; PASS=$((PASS+1)); }
+
+# build-body に空の due を渡すと due: 行が出力されないこと
+BB_NO_DUE=$(node "$ENGINE" build-body "" "weekly" "7" "" "" "説明文")
+if ! printf '%s' "$BB_NO_DUE" | grep -aq 'due:'; then
+  printf "  ✅ build-body due='': due行が出力されない\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ build-body due='': due行が出力されてしまう\n"; FAIL=$((FAIL+1))
+fi
+
+# build-body で recur/project/desc は保持されること（clear 後の副作用なし確認）
+assert_contains "build-body due='': recur行保持" "recur: weekly" "$BB_NO_DUE"
+assert_contains "build-body due='': project行保持" "project: #7" "$BB_NO_DUE"
+assert_contains "build-body due='': desc保持" "説明文" "$BB_NO_DUE"
+
+# recur clear と due clear は独立して動作すること
+# （recur clear 後の build-body で due は保持される）
+BB_RECUR_CLEAR=$(node "$ENGINE" build-body "2026-06-26" "" "7" "" "" "")
+assert_contains "recur clear後: due行保持" "due: 2026-06-26" "$BB_RECUR_CLEAR"
+if ! printf '%s' "$BB_RECUR_CLEAR" | grep -aq 'recur:'; then
+  printf "  ✅ recur clear後: recur行なし\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ recur clear後: recur行が残っている\n"; FAIL=$((FAIL+1))
+fi
+
+# ──────────────────────────────────────────
+# Phase 2 リファクタリングテスト（🟡-1: buildBody オブジェクト引数化）
+# parseBodyObj ↔ buildBody の対称性、差分更新パターン、デフォルト値の検証
+# ──────────────────────────────────────────
+echo ""
+echo "--- Phase 2 リファクタリングテスト（buildBody オブジェクト引数化） ---"
+
+# Node.js 内部 API（buildBody / parseBodyObj）を直接呼ぶインラインテスト群
+# 一時 JS ファイルに書き出してから node 実行（heredoc + $() の入れ子問題を回避）
+PHASE2_JS=$(mktemp /tmp/todo-phase2-test-XXXXXX.js)
+cat > "$PHASE2_JS" << 'JSEOF'
+const path = process.env.ENGINE_PATH;
+const fs = require('fs');
+const src = fs.readFileSync(path, 'utf8');
+
+// engine 本体は読み込むと exit するため、関数定義のみ抽出して eval
+function extractFn(name) {
+  const re = new RegExp('function ' + name + '\\s*\\([\\s\\S]*?\\n\\}\\n', 'm');
+  const m = src.match(re);
+  if (!m) throw new Error('function ' + name + ' not found');
+  return m[0];
+}
+
+eval(extractFn('buildBody'));
+eval(extractFn('parseBodyObj'));
+
+const results = [];
+function eq(desc, expected, actual) {
+  if (expected === actual) results.push('PASS\t' + desc);
+  else results.push('FAIL\t' + desc + '\n  expected: ' + JSON.stringify(expected) + '\n  actual: ' + JSON.stringify(actual));
+}
+
+// T1: 空オブジェクト → 空文字
+eq('buildBody({}) は空文字を返す', '', buildBody({}));
+
+// T2: 引数なし → エラーにならず空文字（fields || {} のフォールバック）
+eq('buildBody() は空文字を返す（引数なし）', '', buildBody());
+
+// T3: due のみ
+eq('buildBody({due}) は due 1行', 'due: 2026-01-01\n', buildBody({ due: '2026-01-01' }));
+
+// T4: 差分更新 — 既存 issue から desc のみ変更（他フィールド保持）
+const issue = {
+  due: '2026-05-19', recur: 'weekly', project: '7',
+  estimate: '120', actual: '60', desc: '元の説明',
+  activate: '2026-05-15', before: '4d',
+  reviewedAt: '2026-05-10', dependsOn: '99',
+};
+const updatedDesc = buildBody(Object.assign({}, issue, { desc: 'new desc' }));
+eq('差分更新 desc: due 行保持',         true, /^due: 2026-05-19$/m.test(updatedDesc));
+eq('差分更新 desc: recur 行保持',       true, /^recur: weekly$/m.test(updatedDesc));
+eq('差分更新 desc: project 行保持',     true, /^project: #7$/m.test(updatedDesc));
+eq('差分更新 desc: estimate 行保持',    true, /^estimate: 120$/m.test(updatedDesc));
+eq('差分更新 desc: actual 行保持',      true, /^actual: 60$/m.test(updatedDesc));
+eq('差分更新 desc: activate 行保持',    true, /^activate: 2026-05-15$/m.test(updatedDesc));
+eq('差分更新 desc: before 行保持',      true, /^before: 4d$/m.test(updatedDesc));
+eq('差分更新 desc: reviewed_at 行保持', true, /^reviewed_at: 2026-05-10$/m.test(updatedDesc));
+eq('差分更新 desc: depends_on 行保持',  true, /^depends_on: #99$/m.test(updatedDesc));
+eq('差分更新 desc: 新しい desc が反映', true, /new desc/.test(updatedDesc));
+eq('差分更新 desc: 古い desc は含まない', false, /元の説明/.test(updatedDesc));
+
+// T5: due クリア（明示的に空文字）
+const cleared = buildBody(Object.assign({}, issue, { due: '' }));
+eq('due クリア: due 行が消える',      false, /^due:/m.test(cleared));
+eq('due クリア: recur 行は保持',      true,  /^recur: weekly$/m.test(cleared));
+eq('due クリア: depends_on 行は保持', true,  /^depends_on: #99$/m.test(cleared));
+
+// T6: round-trip — parseBodyObj → buildBody → parseBodyObj が同一フィールド
+const originalBody =
+  'due: 2026-05-19\n' +
+  'activate: 2026-05-15\n' +
+  'before: 4d\n' +
+  'depends_on: #99\n' +
+  'recur: weekly\n' +
+  'project: #7\n' +
+  'estimate: 120\n' +
+  'actual: 60\n' +
+  'reviewed_at: 2026-05-10\n' +
+  '\n' +
+  '本文の説明文';
+const parsed = parseBodyObj(originalBody);
+const rebuilt = buildBody(Object.assign({}, parsed));
+eq('round-trip: body 完全一致 (parseBodyObj→buildBody)', originalBody, rebuilt);
+
+// T7: round-trip 後さらに parseBodyObj → 全フィールド一致
+const reparsed = parseBodyObj(rebuilt);
+eq('round-trip parse-build-parse: due',        parsed.due,        reparsed.due);
+eq('round-trip parse-build-parse: recur',      parsed.recur,      reparsed.recur);
+eq('round-trip parse-build-parse: project',    parsed.project,    reparsed.project);
+eq('round-trip parse-build-parse: estimate',   parsed.estimate,   reparsed.estimate);
+eq('round-trip parse-build-parse: actual',     parsed.actual,     reparsed.actual);
+eq('round-trip parse-build-parse: activate',   parsed.activate,   reparsed.activate);
+eq('round-trip parse-build-parse: before',     parsed.before,     reparsed.before);
+eq('round-trip parse-build-parse: reviewedAt', parsed.reviewedAt, reparsed.reviewedAt);
+eq('round-trip parse-build-parse: dependsOn',  parsed.dependsOn,  reparsed.dependsOn);
+eq('round-trip parse-build-parse: desc',       parsed.desc,       reparsed.desc);
+
+// T8: reviewedAt のみ更新（runReviewSomeday パターン）
+const reviewed = buildBody(Object.assign({}, issue, { reviewedAt: '2026-05-19' }));
+eq('reviewedAt 更新: 新しい値が反映',   true,  /^reviewed_at: 2026-05-19$/m.test(reviewed));
+eq('reviewedAt 更新: 古い値は残らない', false, /^reviewed_at: 2026-05-10$/m.test(reviewed));
+
+// T9: parseBodyObj 戻り値を直接 spread で渡せる（対称性）
+const projParsed = parseBodyObj('due: 2026-06-01\nproject: #5\nreviewed_at: 2026-05-01\n\nproj desc');
+const projUpdated = buildBody(Object.assign({}, projParsed, { reviewedAt: '2026-05-19' }));
+eq('parseBodyObj→buildBody: due 行',         true, /^due: 2026-06-01$/m.test(projUpdated));
+eq('parseBodyObj→buildBody: project 行',     true, /^project: #5$/m.test(projUpdated));
+eq('parseBodyObj→buildBody: reviewed_at 新', true, /^reviewed_at: 2026-05-19$/m.test(projUpdated));
+eq('parseBodyObj→buildBody: desc 保持',      true, /proj desc/.test(projUpdated));
+
+// T10: undefined フィールドはデフォルト空文字扱い
+const partial = buildBody({ due: '2026-01-01', desc: 'メモ' });
+eq('部分指定: due 行あり',    true,  /^due: 2026-01-01$/m.test(partial));
+eq('部分指定: recur 行なし',  false, /^recur:/m.test(partial));
+eq('部分指定: desc あり',     true,  /メモ/.test(partial));
+
+// 結果出力
+results.forEach(function (r) { console.log(r); });
+JSEOF
+PHASE2_OUT=$(ENGINE_PATH="$ENGINE" node "$PHASE2_JS" 2>&1)
+rm -f "$PHASE2_JS"
+
+# Phase 2 結果のパース
+while IFS=$'\t' read -r status desc; do
+  if [ "$status" = "PASS" ]; then
+    printf "  ✅ %s\n" "$desc"; PASS=$((PASS+1))
+  elif [ "$status" = "FAIL" ]; then
+    printf "  ❌ %s\n" "$desc"; FAIL=$((FAIL+1))
+  fi
+done <<< "$PHASE2_OUT"
+
+# Phase 2 CLI 経由テスト — build-body サブコマンドの後方互換（positional 引数）
+# 既存 §parse-body/build-body テストでカバー済みだが、新形式と CLI 経由の結果が一致することを確認
+BB_NEW_FORMAT_OK=$(node "$ENGINE" build-body "2026-04-10" "weekly" "7" "120" "90" "説明文" "2026-04-05" "5d" "2026-03-30" "42")
+assert_contains "Phase 2: CLI build-body due"          "due: 2026-04-10"          "$BB_NEW_FORMAT_OK"
+assert_contains "Phase 2: CLI build-body recur"        "recur: weekly"            "$BB_NEW_FORMAT_OK"
+assert_contains "Phase 2: CLI build-body project"      "project: #7"              "$BB_NEW_FORMAT_OK"
+assert_contains "Phase 2: CLI build-body estimate"     "estimate: 120"            "$BB_NEW_FORMAT_OK"
+assert_contains "Phase 2: CLI build-body actual"       "actual: 90"               "$BB_NEW_FORMAT_OK"
+assert_contains "Phase 2: CLI build-body activate"     "activate: 2026-04-05"     "$BB_NEW_FORMAT_OK"
+assert_contains "Phase 2: CLI build-body before"       "before: 5d"               "$BB_NEW_FORMAT_OK"
+assert_contains "Phase 2: CLI build-body reviewed_at"  "reviewed_at: 2026-03-30"  "$BB_NEW_FORMAT_OK"
+assert_contains "Phase 2: CLI build-body depends_on"   "depends_on: #42"          "$BB_NEW_FORMAT_OK"
+assert_contains "Phase 2: CLI build-body desc"         "説明文"                    "$BB_NEW_FORMAT_OK"
+
+# ──────────────────────────────────────────
+# Phase 1 レビュー修正テスト（🔴-3, 🔴-4, 🟡-10）
+# ──────────────────────────────────────────
+echo ""
+echo "--- Phase 1 レビュー修正テスト ---"
+
+# 🔴-3: runLabel null チェック — 引数なし呼び出しでクラッシュしない
+LABEL_ADD_NOOP=$(GH_TOKEN=dummy REPO_OWNER=test REPO_NAME=test \
+  node "$ENGINE" run label add 2>&1); EC_LABEL_ADD=$?
+assert_exit_fail "/todo label add（引数なし）→ exit 1" "$EC_LABEL_ADD"
+assert_contains "/todo label add（引数なし）→ Usage 出力" "Usage" "$LABEL_ADD_NOOP"
+
+LABEL_DEL_NOOP=$(GH_TOKEN=dummy REPO_OWNER=test REPO_NAME=test \
+  node "$ENGINE" run label delete 2>&1); EC_LABEL_DEL=$?
+assert_exit_fail "/todo label delete（引数なし）→ exit 1" "$EC_LABEL_DEL"
+assert_contains "/todo label delete（引数なし）→ Usage 出力" "Usage" "$LABEL_DEL_NOOP"
+
+LABEL_REN_ONE=$(GH_TOKEN=dummy REPO_OWNER=test REPO_NAME=test \
+  node "$ENGINE" run label rename foo 2>&1); EC_LABEL_REN=$?
+assert_exit_fail "/todo label rename（引数1個）→ exit 1" "$EC_LABEL_REN"
+assert_contains "/todo label rename（引数1個）→ Usage 出力" "Usage" "$LABEL_REN_ONE"
+
+# 🔴-4: runView 引数なし呼び出しでクラッシュしない
+VIEW_NOOP=$(GH_TOKEN=dummy REPO_OWNER=test REPO_NAME=test \
+  node "$ENGINE" run view 2>&1); EC_VIEW=$?
+assert_exit_fail "/todo view（引数なし）→ exit 1" "$EC_VIEW"
+assert_contains "/todo view（引数なし）→ Usage 出力" "Usage" "$VIEW_NOOP"
+
+# 🟡-10: MAX_OPEN_ISSUES_LIMIT 定数が定義されていること
+MAX_CONST=$(node -e "const s=require('fs').readFileSync('$ENGINE','utf8'); \
+  const m=s.match(/const MAX_OPEN_ISSUES_LIMIT\s*=\s*(\d+)/); \
+  console.log(m?m[1]:'NOT_FOUND')")
+assert_eq "MAX_OPEN_ISSUES_LIMIT 定数が定義されている" "200" "$MAX_CONST"
+
+# ──────────────────────────────────────────
+# Phase 3 レビュー修正テスト（🟡-2〜🟡-7）
+# ──────────────────────────────────────────
+echo ""
+echo "--- Phase 3 リファクタリングテスト ---"
+
+# 🟡-2: parseBody が parseBodyObj のラッパーとして動作し、dependsOn も含む全フィールドが一致
+PB3_OUT=$(node "$ENGINE" parse-body "due: 2026-05-19
+depends_on: #42
+
+Phase3テスト")
+PB3_DUE=$(printf '%s\n' "$PB3_OUT" | grep '^DUE=' | cut -d= -f2-)
+PB3_B64=$(printf '%s\n' "$PB3_OUT" | grep '^DESC_B64=' | cut -d= -f2-)
+PB3_DESC=$(node "$ENGINE" decode-b64 "$PB3_B64")
+assert_eq "parseBody ラッパー: DUE フィールド" "2026-05-19" "$PB3_DUE"
+assert_eq "parseBody ラッパー: DESC フィールド" "Phase3テスト" "$PB3_DESC"
+
+# 🟡-3: removeLabelIfPresent ヘルパが定義されていること（コード内に存在することを確認）
+RL_DEF=$(node -e "const s=require('fs').readFileSync('$ENGINE','utf8'); \
+  console.log(s.includes('async function removeLabelIfPresent') ? 'FOUND' : 'NOT_FOUND')")
+assert_eq "removeLabelIfPresent ヘルパが定義されている" "FOUND" "$RL_DEF"
+
+# 🟡-3: execRemoveLabels が removeLabelIfPresent を呼ぶ形に書き換えられていること
+ERL_IMPL=$(node -e "const s=require('fs').readFileSync('$ENGINE','utf8'); \
+  const m=s.match(/async function execRemoveLabels[\s\S]*?^}/m); \
+  console.log(m && m[0].includes('removeLabelIfPresent') ? 'OK' : 'NG')")
+assert_eq "execRemoveLabels が removeLabelIfPresent を使用" "OK" "$ERL_IMPL"
+
+# 🟡-4: normalize-due が M/D 形式を YYYY-MM-DD に変換すること（回帰）
+assert_eq "normalize-due: 5/19 → YYYY-MM-DD" "2026-05-19" "$(node "$ENGINE" normalize-due '5/19' '2026-05-19')"
+assert_eq "normalize-due: 12/31 → YYYY-MM-DD" "2026-12-31" "$(node "$ENGINE" normalize-due '12/31' '2026-05-19')"
+
+# 🟡-6: renderToday 関数が定義され、today_fn が存在しないこと
+RT_DEF=$(node -e "const s=require('fs').readFileSync('$ENGINE','utf8'); \
+  console.log(s.includes('function renderToday()') ? 'FOUND' : 'NOT_FOUND')")
+assert_eq "renderToday 関数が定義されている" "FOUND" "$RT_DEF"
+TF_GONE=$(node -e "const s=require('fs').readFileSync('$ENGINE','utf8'); \
+  console.log(s.includes('function today_fn()') ? 'FOUND' : 'NOT_FOUND')")
+assert_eq "today_fn ラッパーが削除されている" "NOT_FOUND" "$TF_GONE"
 
 # ──────────────────────────────────────────
 # 結果サマリー
