@@ -19,13 +19,23 @@ Just type `/todo` to add, manage, and review tasks entirely from the terminal.
 
 ## Installation
 
-### Prerequisites
+### Plugin install (recommended)
+
+```bash
+claude plugin install claude-todo-gtd@claude-community
+```
+
+After installing, create a private GitHub repository to store your tasks and set the environment variables below (see step 3–4 of the manual install).
+
+### Manual install
+
+#### Prerequisites
 
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed
 - [GitHub CLI (`gh`)](https://cli.github.com/) installed and authenticated
 - Node.js (used for date processing)
 
-### Setup
+#### Setup
 
 1. Copy the files:
 ```bash

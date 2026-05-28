@@ -1,5 +1,7 @@
 # /todo — Claude Code GTD タスク管理スキル
 
+> 🌐 [English README](README_EN.md)
+
 GitHub Issues をバックエンドに使った、Claude Code 用の GTD（Getting Things Done）タスク管理スラッシュコマンド。
 
 `/todo` と打つだけで、タスクの追加・管理・レビューが全てターミナルから完結します。
