@@ -1,3 +1,7 @@
+---
+description: GTD task management via GitHub Issues. Supports inbox triage, next/waiting/someday/project categories, due dates, recurrence, priorities, Eisenhower matrix, weekly/daily reviews, and project audits.
+---
+
 Manage GitHub Issues as a GTD-style TODO list with next/waiting/someday/project/inbox/routine categories, due dates, recurrences, priorities (p1/p2/p3), Eisenhower matrix, weekly/daily reviews, project audits, and Inbox triage. Use this skill whenever the user mentions tasks, todos, GTD, Inbox, next actions, waiting for, someday/maybe, project management, weekly review, daily review, eisenhower, task estimate, deadline, follow-up date, or wants to add / list / complete / move / prioritize tasks, even if they don't explicitly say "/todo". Repository is configured via environment variables TODO_REPO_OWNER and TODO_REPO_NAME.
 
 Parse the arguments: $ARGUMENTS
