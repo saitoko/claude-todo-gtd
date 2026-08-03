@@ -1,7 +1,7 @@
 #!/bin/bash
 # GitHub接続テスト — ${TODO_REPO_OWNER}/${TODO_REPO_NAME}
-TODO_REPO_OWNER="${TODO_REPO_OWNER:-your-github-username}"
-TODO_REPO_NAME="${TODO_REPO_NAME:-my-tasks}"
+TODO_REPO_OWNER="${TODO_REPO_OWNER:-saitoko}"
+TODO_REPO_NAME="${TODO_REPO_NAME:-000-partner}"
 set -uo pipefail
 
 # ─── 環境変数チェック ───────────────────────────────────────
@@ -1746,6 +1746,7 @@ echo "§P4  Phase 3: weekly-project-audit / migrate sub-issue テスト"
 # §P4 で使うエンジンパス（todo-engine.js の絶対パス）
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ENGINE_PATH="$SCRIPT_DIR/scripts/todo-engine.js"
+[ -f "$ENGINE_PATH" ] || ENGINE_PATH="$SCRIPT_DIR/todo-engine.js"  # 公開リポジトリはルート直下レイアウト
 
 # ─── P-07: /todo list で next 欠落プロジェクトの ⚠️ マーカー表示 ───
 echo ""

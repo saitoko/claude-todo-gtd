@@ -598,6 +598,30 @@ function nextDue(pattern, baseDate) {
   }
 }
 
+// 最大反復回数（無限ループ防止の安全装置）。daily換算で約10年分に相当する上限。
+const MAX_RECUR_CATCHUP_ITERATIONS = 3660;
+
+// リカレンス完了時の次due計算（cadence保持スキップ方式）
+// base（元のdue）が期限超過で過去の日付の場合、nextDue()を1周期進めるだけでは
+// 結果が今日以前のままになることがある（例: weeklyタスクが数週間放置された場合）。
+// 曜日・周期を保持したまま「今日より後」になるまでnextDue()を繰り返し適用する。
+// 戻り値: { nextDate: string, skipped: boolean }
+//   skipped=true の場合、1回目の適用結果が今日以前だったため追加スキップが発生したことを示す
+function nextDueCatchUp(pattern, base, today) {
+  let date = nextDue(pattern, base);
+  let skipped = false;
+  let iterations = 0;
+  while (date <= today && iterations < MAX_RECUR_CATCHUP_ITERATIONS) {
+    date = nextDue(pattern, date);
+    skipped = true;
+    iterations++;
+  }
+  if (skipped && date <= today) {
+    process.stderr.write(`⚠️ リカレンス周期スキップの反復上限(${MAX_RECUR_CATCHUP_ITERATIONS})に達しました。due: ${date}\n`);
+  }
+  return { nextDate: date, skipped };
+}
+
 // ─── バリデーション関数 ───
 
 function validateCtx(value) {
@@ -2090,6 +2114,7 @@ switch (cmd) {
   case 'format-time':     process.stdout.write(formatTime(args[1])); break;
   case 'priority-color':  process.stdout.write(priorityColor(args[1])); break;
   case 'next-due':        process.stdout.write(nextDue(args[1], args[2])); break;
+  case 'next-due-catchup': process.stdout.write(JSON.stringify(nextDueCatchUp(args[1], args[2], args[3]))); break;
   case 'decode-b64':      process.stdout.write(Buffer.from(args[1]||'','base64').toString('utf8')); break;
   case 'ctx-to-json': {
     const list = (args[1]||'').trim();
@@ -2667,7 +2692,7 @@ async function runDone(octokit, owner, repo, tokens) {
   if (issue.recur) {
     validateRecur(issue.recur);
     const base = issue.due || today;
-    const nextDate = nextDue(issue.recur, base);
+    const { nextDate, skipped } = nextDueCatchUp(issue.recur, base, today);
     // beforeがあればactivateを再計算
     let nextActivate = '';
     const nextBefore = issue.before || '';
@@ -2689,7 +2714,7 @@ async function runDone(octokit, owner, repo, tokens) {
       owner, repo, title: issue.title,
       body, labels: issue.labels
     });
-    runOut(`✅ #${num} を完了しました。繰り返しタスク #${newIssue.number} を ${nextDate} で作成しました。${nextActivate ? '（activate: '+nextActivate+'）' : ''}`);
+    runOut(`✅ #${num} を完了しました。繰り返しタスク #${newIssue.number} を ${nextDate} で作成しました。${nextActivate ? '（activate: '+nextActivate+'）' : ''}${skipped ? `\n⏭ 期限超過のため過去の周期をスキップしました（due基準: ${base} → 再作成: ${nextDate}）` : ''}`);
   } else {
     runOut(`✅ #${num} を完了しました。`);
   }

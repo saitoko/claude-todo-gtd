@@ -5,6 +5,7 @@
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENGINE="$SCRIPT_DIR/../scripts/todo-engine.js"  # todo-engine.js
+[ -f "$ENGINE" ] || ENGINE="$SCRIPT_DIR/../todo-engine.js"  # 公開リポジトリはルート直下レイアウト
 FMT_JS="$SCRIPT_DIR/helpers/date-fmt.js"  # 共通日付フォーマット関数
 TEMP_TFILE=$(mktemp /tmp/todo-test-templates-XXXXXX.json)
 printf '{}' > "$TEMP_TFILE"
@@ -1549,7 +1550,7 @@ assert_contains "Report: ヘッダー"               "生産性レポート"    
 assert_contains "Report: 期間表示"               "2026-03-29 〜 2026-04-05" "$RPT_OUT"
 
 # 完了数（期間内7件、期間外1件除外）
-assert_contains "Report: 完了7件"                "**7件**"            "$RPT_OUT"
+assert_contains "Report: 完了7件"                '\*\*7件\*\*'        "$RPT_OUT"
 assert_contains "Report: 日平均1.0"              "1.0件"              "$RPT_OUT"
 
 # 日別カウント（04-05 に2件）
@@ -2317,6 +2318,7 @@ fi
 # P1-25 todo-manual.md: コメント機能セクションが追加されている
 # ────────────────────────────────────────────
 TODO_MANUAL="$SCRIPT_DIR/../../../../docs/todo-manual.md"
+[ -f "$TODO_MANUAL" ] || TODO_MANUAL="$SCRIPT_DIR/../todo-manual.md"  # 公開リポジトリはルート直下レイアウト
 if grep -q "コメント機能" "$TODO_MANUAL" 2>/dev/null; then
   printf "  ✅ P1-25: todo-manual.md にコメント機能セクションが追加されている\n"; PASS=$((PASS+1))
 else
@@ -3395,6 +3397,70 @@ assert_eq "renderToday 関数が定義されている" "FOUND" "$RT_DEF"
 TF_GONE=$(node -e "const s=require('fs').readFileSync('$ENGINE','utf8'); \
   console.log(s.includes('function today_fn()') ? 'FOUND' : 'NOT_FOUND')")
 assert_eq "today_fn ラッパーが削除されている" "NOT_FOUND" "$TF_GONE"
+
+# ──────────────────────────────────────────
+# §33  リカレンス完了時の周期スキップ計算（cadence保持キャッチアップ、実事故 #1564→#1584 再発防止）
+# ──────────────────────────────────────────
+echo ""
+echo "§33  リカレンス完了時の周期スキップ計算（due超過時のcatchup）"
+
+# next-due-catchup <pattern> <base> <today> は {"nextDate":"...","skipped":bool} を返す
+recur_catchup() {
+  node "$ENGINE" next-due-catchup "$1" "$2" "$3"
+}
+
+# 実事故再現（#1564→#1584）: weekly, due=2026-06-13, today=2026-07-11
+# → 手動修正実績どおり 2026-07-18（曜日保持・skipped）になること
+assert_eq "実事故再現: weekly 過去due(2026-06-13,today=2026-07-11)→2026-07-18(skipped)" \
+  '{"nextDate":"2026-07-18","skipped":true}' "$(recur_catchup weekly 2026-06-13 2026-07-11)"
+
+# weekly: 複数週超過 → 曜日を保持したまま今日より後になるまでスキップ
+assert_eq "weekly: due超過(複数週) → 未来かつ曜日保持(skipped)" \
+  '{"nextDate":"2026-07-18","skipped":true}' "$(recur_catchup weekly 2026-06-13 2026-07-13)"
+
+# daily: 過去due → today+1(skipped)
+assert_eq "daily: due超過 → today+1(skipped)" \
+  '{"nextDate":"2026-07-14","skipped":true}' "$(recur_catchup daily 2026-07-01 2026-07-13)"
+
+# monthly: 過去due(数ヶ月超過) → 未来月(skipped)
+assert_eq "monthly: due超過(数ヶ月) → 未来月(skipped)" \
+  '{"nextDate":"2026-08-01","skipped":true}' "$(recur_catchup monthly 2026-03-01 2026-07-13)"
+
+# weekdays: 過去due → 未来の平日まで進む(skipped)
+assert_eq "weekdays: due超過 → 未来の平日(skipped)" \
+  '{"nextDate":"2026-07-14","skipped":true}' "$(recur_catchup weekdays 2026-06-01 2026-07-13)"
+
+# due = today（従来どおり base+1周期のみ、skippedなし）
+assert_eq "weekly: due=today → base+1周期のみ(skippedなし)" \
+  '{"nextDate":"2026-07-20","skipped":false}' "$(recur_catchup weekly 2026-07-13 2026-07-13)"
+assert_eq "daily: due=today → base+1周期のみ(skippedなし)" \
+  '{"nextDate":"2026-07-14","skipped":false}' "$(recur_catchup daily 2026-07-13 2026-07-13)"
+assert_eq "monthly: due=today → base+1周期のみ(skippedなし)" \
+  '{"nextDate":"2026-08-13","skipped":false}' "$(recur_catchup monthly 2026-07-13 2026-07-13)"
+assert_eq "weekdays: due=today → base+1周期のみ(skippedなし)" \
+  '{"nextDate":"2026-07-14","skipped":false}' "$(recur_catchup weekdays 2026-07-13 2026-07-13)"
+
+# due が未来（従来どおり base+1周期のみ、skippedなし）
+assert_eq "weekly: due=未来 → base+1周期のみ(skippedなし)" \
+  '{"nextDate":"2026-07-27","skipped":false}' "$(recur_catchup weekly 2026-07-20 2026-07-13)"
+assert_eq "daily: due=未来 → base+1周期のみ(skippedなし)" \
+  '{"nextDate":"2026-07-15","skipped":false}' "$(recur_catchup daily 2026-07-14 2026-07-13)"
+
+# due なし（base=today扱い、従来どおり。runDoneの `issue.due || today` をシミュレート）
+assert_eq "weekly: dueなし(base=today) → today+7周期(skippedなし)" \
+  '{"nextDate":"2026-07-20","skipped":false}' "$(recur_catchup weekly 2026-07-13 2026-07-13)"
+
+# 回帰ガード: runDone が nextDue を直接使わず nextDueCatchUp 経由になっていること
+# （#1564→#1584 バグの再発防止。過去due+1周期のみだと過去日付のままになる）
+DONE_USES_CATCHUP=$(node -e "const s=require('fs').readFileSync('$ENGINE','utf8'); \
+  const m=s.match(/async function runDone[\s\S]*?^}/m); \
+  console.log(m && m[0].includes('nextDueCatchUp(') ? 'OK' : 'NG')")
+assert_eq "runDone が nextDueCatchUp を使用している（過去due日付バグ回帰防止）" "OK" "$DONE_USES_CATCHUP"
+
+# 無限ループ防止ガードが定義されていること
+CATCHUP_GUARD=$(node -e "const s=require('fs').readFileSync('$ENGINE','utf8'); \
+  console.log(s.includes('MAX_RECUR_CATCHUP_ITERATIONS') ? 'FOUND' : 'NOT_FOUND')")
+assert_eq "MAX_RECUR_CATCHUP_ITERATIONS ガードが定義されている" "FOUND" "$CATCHUP_GUARD"
 
 # ──────────────────────────────────────────
 # 結果サマリー

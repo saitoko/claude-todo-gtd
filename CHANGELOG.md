@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+---
+
+## [v2.2.0] - 2026-08-03
+
 ### Added
 
 - `/todo due <#> clear` — 期日を削除する（`recur clear` と同一命名規則）(Issue #1473)
@@ -17,6 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- リカレンスタスク完了時、期限超過タスクで再作成 due が過去日付になるバグを修正。`nextDueCatchUp` で曜日・周期を保持したまま「今日より後」になるまで周期を進める方式（`MAX_RECUR_CATCHUP_ITERATIONS = 3660` ガード付き）。周期スキップが発生した場合は完了メッセージに表示する (2026-07-13)
 - `runArchive`: `sub === 'list' || sub === 'list'` の重複条件をシングル条件に修正（コードクローンバグ, 🔴-1）
 - `runArchive search`: グローバル変数 `REPO_OWNER`/`REPO_NAME` を引数 `owner`/`repo` に修正（🔴-2）
 - `runLabel add/delete/rename`: 引数なし呼び出しで TypeError クラッシュしていたのを、Usage メッセージ + `exit 1` で適切にガードするよう修正（🔴-3）
