@@ -10,6 +10,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v2.2.1] - 2026-08-03
+
+### Fixed
+
+- `runView`: `view delete <name>` が「名前扱いフォールバック」（`sub === 'use' || !sub.startsWith('-')`）に吸われ、削除機能がCLI経路から到達不能だったバグを修正。`delete` サブコマンドの判定をフォールバックより前に移動（Issue #1643）
+- `runMain`: `run` プレフィックス経由（`todo.sh` は常にこの経路）で `api` サブコマンドが「未知のコマンド」エラーになり、`api list-comments` 等のドキュメント記載の使用例が実行不能だったバグを修正。`runMain` に `case 'api'` を追加し `apiMain` へ委譲するようにした（Issue #1644）
+- `tag rename <old> <new>` を実装。`label rename` と同一のコンテキストラベル一括リネーム処理を共通関数 `renameCtxLabel` に切り出し、両コマンドから呼び出す形に統一（ドキュメント記載のみで未実装だった機能。Issue #1644）
+- `README_EN.md` Quick Start の先頭例が英字ガードで即エラーになっていたのを `/todo add buy groceries` に修正し、英字タイトルは `add` を明示する旨を追記（Issue #1644）
+
+---
+
 ## [v2.2.0] - 2026-08-03
 
 ### Added

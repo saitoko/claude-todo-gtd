@@ -3131,7 +3131,27 @@ function normalizeTagTokens(rawTokens) {
   });
 }
 
+// @ctx ラベルを全タスク横断でリネームする（label rename / tag rename で共用。Issue #1644）
+async function renameCtxLabel(octokit, owner, repo, raw1, raw2, usage) {
+  if (!raw1 || !raw2) { process.stderr.write(`Usage: ${usage}\n`); process.exit(1); }
+  const oldName = raw1.startsWith('@') ? raw1 : '@'+raw1;
+  const newName = raw2.startsWith('@') ? raw2 : '@'+raw2;
+  validateCtx(oldName.slice(1)); validateCtx(newName.slice(1));
+  await ensureLabel(octokit, owner, repo, newName, 'FBCA04', 'コンテキスト');
+  const allIssues = await fetchAllOpen(octokit, owner, repo);
+  const targets = allIssues.filter(i => i.labels.some(l => l.name === oldName));
+  for (const i of targets) {
+    await octokit.issues.addLabels({ owner, repo, issue_number: i.number, labels: [newName] });
+    await removeLabelIfPresent(octokit, owner, repo, i.number, oldName);
+  }
+  try { await octokit.issues.deleteLabel({ owner, repo, name: oldName }); } catch(e) { if (e.status !== 404) throw e; }
+  runOut(`✅ ${oldName} を ${newName} にリネームしました。${targets.length}件のIssueを更新しました。`);
+}
+
 async function runTag(octokit, owner, repo, tokens) {
+  if (tokens[0] === 'rename') {
+    return await renameCtxLabel(octokit, owner, repo, tokens[1], tokens[2], '/todo tag rename <old> <new>');
+  }
   const num = parseInt(tokens[0]);
   if (!num) { process.stderr.write(t('error.positive_int')+'\n'); process.exit(1); }
   validateNumber(String(num));
@@ -3189,22 +3209,7 @@ async function runLabel(octokit, owner, repo, tokens) {
     try { await octokit.issues.deleteLabel({ owner, repo, name }); } catch(e) { if (e.status !== 404) throw e; }
     runOut(`✅ ラベル ${name} を削除しました。`);
   } else if (sub === 'rename') {
-    const raw1 = tokens[1];
-    const raw2 = tokens[2];
-    if (!raw1) { process.stderr.write('Usage: /todo label rename <old> <new>\n'); process.exit(1); }
-    if (!raw2) { process.stderr.write('Usage: /todo label rename <old> <new>\n'); process.exit(1); }
-    const oldName = raw1.startsWith('@') ? raw1 : '@'+raw1;
-    const newName = raw2.startsWith('@') ? raw2 : '@'+raw2;
-    validateCtx(oldName.slice(1)); validateCtx(newName.slice(1));
-    await ensureLabel(octokit, owner, repo, newName, 'FBCA04', 'コンテキスト');
-    const allIssues = await fetchAllOpen(octokit, owner, repo);
-    const targets = allIssues.filter(i => i.labels.some(l => l.name === oldName));
-    for (const i of targets) {
-      await octokit.issues.addLabels({ owner, repo, issue_number: i.number, labels: [newName] });
-      await removeLabelIfPresent(octokit, owner, repo, i.number, oldName);
-    }
-    try { await octokit.issues.deleteLabel({ owner, repo, name: oldName }); } catch(e) { if (e.status !== 404) throw e; }
-    runOut(`✅ ${oldName} を ${newName} にリネームしました。${targets.length}件のIssueを更新しました。`);
+    return await renameCtxLabel(octokit, owner, repo, tokens[1], tokens[2], '/todo label rename <old> <new>');
   } else {
     process.stderr.write('Usage: run label list|add|delete|rename\n'); process.exit(1);
   }
@@ -3663,6 +3668,14 @@ async function runView(octokit, owner, repo, tokens) {
     process.env.CTX_ENV = ctx;
     process.env.PRI_ENV = pri;
     viewSave();
+  } else if (sub === 'delete') {
+    // 予約サブコマンドは「名前扱いフォールバック」より前に判定する
+    // （でないと view delete <name> が「delete」という名前のビュー扱いになり到達不能になる。Issue #1643）
+    const name = tokens[1];
+    if (!name) { process.stderr.write('Usage: run view delete <name>\n'); process.exit(1); }
+    validateName(name);
+    process.env.VNAME_ENV = name;
+    viewDelete();
   } else if (sub === 'use' || !sub.startsWith('-')) {
     // view use <name> または view <name>（subがコマンド名でない場合）
     const name = sub === 'use' ? tokens[1] : sub;
@@ -3683,12 +3696,6 @@ async function runView(octokit, owner, repo, tokens) {
     const parts = [v.gtd, v.context ? v.context.join(' ') : '', v.priority].filter(Boolean);
     runOut(`## 👁 ビュー: ${name} [${parts.join(', ')}]\n`);
     listAll();
-  } else if (sub === 'delete') {
-    const name = tokens[1];
-    if (!name) { process.stderr.write('Usage: run view delete <name>\n'); process.exit(1); }
-    validateName(name);
-    process.env.VNAME_ENV = name;
-    viewDelete();
   } else {
     process.stderr.write('Usage: run view list|save|use|delete\n'); process.exit(1);
   }
@@ -4130,6 +4137,7 @@ async function runMain(args) {
       return await runEdit(octokit, owner, repo, [num, '--activate', date]);
     }
     case 'comment':   return await runComment(octokit, owner, repo, rest);
+    case 'api':       return await apiMain(rest); // todo.sh は常に run を前置するため run 経由でも api サブコマンドを使えるようにする（Issue #1644）
     default: {
       // 第1引数が英字コマンド風で既知コマンドにない → 誤入力として即エラー
       // （GTD 原則: 仕分け済みをInboxに戻さない。暗黙の inbox 吸い込みは ghost issue を生む）

@@ -79,9 +79,11 @@ Environment variable: LANG_ENV=en
 
 ## Quick Start
 
+> **Note:** Titles starting with a Latin letter are treated as command lookups (to avoid accidentally creating "ghost" issues from typos), so use `add` explicitly when the title itself starts with an English word. Non-Latin titles (e.g. Japanese) can be captured directly without `add` for frictionless collection.
+
 ```bash
-# Add a task (goes to inbox)
-/todo buy groceries
+# Add a task (goes to inbox) — use "add" because the title starts with an English word
+/todo add buy groceries
 
 # Add as next action (with due date and context)
 /todo next write design doc @PC --due tomorrow

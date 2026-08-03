@@ -3463,6 +3463,93 @@ CATCHUP_GUARD=$(node -e "const s=require('fs').readFileSync('$ENGINE','utf8'); \
 assert_eq "MAX_RECUR_CATCHUP_ITERATIONS ガードが定義されている" "FOUND" "$CATCHUP_GUARD"
 
 # ──────────────────────────────────────────
+# Issue #1643 / #1644 回帰テスト（エンジン直叩き。todo.sh が常に前置する 'run' 経由で検証する）
+# ──────────────────────────────────────────
+echo ""
+echo "▶ Issue #1643: run view delete 到達不能バグ 回帰テスト（HOME差し替えサンドボックス）"
+
+# 'run' 経由のコマンドは runMain 冒頭で initOctokit() が走るため、@octokit/rest を
+# 解決できるサンドボックスHOMEを用意する（実HOMEのnode_modulesをシンボリックリンク）。
+# 実HOMEの todo-views.json には一切触れない。
+REAL_HOME_1643="$HOME"
+FAKE_HOME_1643=$(mktemp -d /tmp/todo-test-home-1643-XXXXXX)
+mkdir -p "$FAKE_HOME_1643/.claude"
+printf '{}' > "$FAKE_HOME_1643/.claude/todo-views.json"
+if [ -d "$REAL_HOME_1643/.claude/node_modules" ]; then
+  ln -s "$REAL_HOME_1643/.claude/node_modules" "$FAKE_HOME_1643/.claude/node_modules" 2>/dev/null || true
+fi
+export HOME="$FAKE_HOME_1643"
+if [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* ]]; then
+  REAL_USERPROFILE_1643="${USERPROFILE:-}"
+  export USERPROFILE="$FAKE_HOME_1643"
+fi
+
+if [ -f "$FAKE_HOME_1643/.claude/node_modules/@octokit/rest/dist-src/index.js" ]; then
+  VNAME_1643="issue1643regressionview"
+
+  # 1) ビューを1件作成
+  V1643_SAVE=$(GH_TOKEN=dummy node "$ENGINE" run view save "$VNAME_1643" next @PC 2>&1)
+  assert_contains "1643: run view save <name> 成功" "$VNAME_1643" "$V1643_SAVE"
+
+  # 2) run view delete <name>（todo.sh 経由と同じ 'run' プレフィックス）でエンジンを直叩き
+  V1643_DEL=$(GH_TOKEN=dummy node "$ENGINE" run view delete "$VNAME_1643" 2>&1); EC_1643_DEL=$?
+  assert_exit_ok "1643: run view delete <name> → exit 0" "$EC_1643_DEL"
+  assert_contains "1643: run view delete <name> → 削除対象名が正しく認識される" "$VNAME_1643" "$V1643_DEL"
+  assert_not_contains "1643: 旧バグ（'delete'という名前のビューを探しに行く挙動）が再発していない" 'ビュー「delete」は存在しません' "$V1643_DEL"
+
+  # 3) 削除済みビューを再度 delete → 「存在しません」エラー（対象名は正しく <name> のまま。'delete' ではない）
+  V1643_DEL2=$(GH_TOKEN=dummy node "$ENGINE" run view delete "$VNAME_1643" 2>&1); EC_1643_DEL2=$?
+  assert_exit_fail "1643: 削除済みビューを再度 delete → exit 1" "$EC_1643_DEL2"
+  assert_contains "1643: 削除済みビュー再削除エラーに対象名（<name>）が出る" "$VNAME_1643" "$V1643_DEL2"
+  assert_not_contains "1643: 削除済みビュー再削除エラーが 'delete' という名前を誤って指していない" 'ビュー「delete」は存在しません' "$V1643_DEL2"
+else
+  printf "  ⏭  1643: @octokit/rest を解決できないためスキップ（run 系コマンドは initOctokit 必須）\n"
+  SKIP=$((SKIP+5))
+fi
+
+export HOME="$REAL_HOME_1643"
+if [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* ]]; then
+  if [ -n "${REAL_USERPROFILE_1643:-}" ]; then export USERPROFILE="$REAL_USERPROFILE_1643"; else unset USERPROFILE; fi
+fi
+rm -rf "$FAKE_HOME_1643" 2>/dev/null || true
+
+echo ""
+echo "▶ Issue #1644: run api list-comments ルーティング 回帰テスト（エンジン直叩き）"
+
+# todo.sh は常に 'run' を前置するため、runMain に 'api' ケースが無いと
+# 「未知のコマンド」エラーになっていた（ドキュメント記載の使用例が実行不能だったバグ）。
+# TODO_REPO_OWNER/NAME を明示的に unset し、apiMain 冒頭の決定的なエラーパスで
+# ルーティングの到達だけを検証する（実GitHub通信なし）。
+API_1644_OUT=$(env -u TODO_REPO_OWNER -u TODO_REPO_NAME GH_TOKEN=dummy node "$ENGINE" run api list-comments 1 2>&1); EC_API_1644=$?
+assert_exit_fail "1644: run api list-comments <N> → exit 1（TODO_REPO_OWNER/NAME未設定エラー）" "$EC_API_1644"
+assert_not_contains "1644: 'run api ...' が『未知のコマンド』エラーにならない（ルーティング修正確認）" '未知のコマンド「api」' "$API_1644_OUT"
+assert_contains "1644: run api list-comments が apiMain まで到達している" 'TODO_REPO_OWNER' "$API_1644_OUT"
+
+echo ""
+echo "▶ Issue #1644: tag rename 回帰テスト（エンジン直叩き。label rename と処理を共用）"
+
+# 1) 引数不足 → Usage エラー（label rename の既存挙動と同様）
+TAG_REN_NOOP=$(GH_TOKEN=dummy node "$ENGINE" run tag rename foo 2>&1); EC_TAG_REN_NOOP=$?
+assert_exit_fail "1644: /todo tag rename（引数1個）→ exit 1" "$EC_TAG_REN_NOOP"
+assert_contains "1644: /todo tag rename（引数1個）→ Usage 出力" "Usage" "$TAG_REN_NOOP"
+
+# 2) 不正文字を含む名前 → validateCtx まで到達してエラー（renameCtxLabel への委譲を実行経路で確認。実GitHub通信なし）
+TAG_REN_INVALID=$(GH_TOKEN=dummy node "$ENGINE" run tag rename 'a;b' newctx 2>&1); EC_TAG_REN_INVALID=$?
+assert_exit_fail "1644: /todo tag rename 不正文字 → exit 1" "$EC_TAG_REN_INVALID"
+assert_contains "1644: /todo tag rename 不正文字エラー（label rename と同じ検証ロジックに到達）" "コンテキスト名に不正文字" "$TAG_REN_INVALID"
+
+# 3) label rename 側もリファクタ後に同じ検証が効くことを確認（runLabel → renameCtxLabel 委譲の回帰防止）
+LABEL_REN_INVALID=$(GH_TOKEN=dummy node "$ENGINE" run label rename 'a;b' newctx 2>&1); EC_LABEL_REN_INVALID=$?
+assert_exit_fail "1644: /todo label rename 不正文字 → exit 1（リファクタ後も検証が効く）" "$EC_LABEL_REN_INVALID"
+assert_contains "1644: /todo label rename 不正文字エラー" "コンテキスト名に不正文字" "$LABEL_REN_INVALID"
+
+# 4) runTag が renameCtxLabel に委譲している（label rename と同一処理であることの静的確認）
+TAG_RENAME_DELEGATES=$(node -e "const s=require('fs').readFileSync('$ENGINE','utf8'); \
+  const m = s.match(/async function runTag\(octokit, owner, repo, tokens\) \{[\s\S]*?renameCtxLabel/); \
+  console.log(m ? 'OK' : 'NG')")
+assert_eq "1644: runTag の rename 分岐が renameCtxLabel に委譲している" "OK" "$TAG_RENAME_DELEGATES"
+
+# ──────────────────────────────────────────
 # 結果サマリー
 # ──────────────────────────────────────────
 echo ""
