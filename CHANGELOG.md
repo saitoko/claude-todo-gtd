@@ -10,6 +10,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v2.4.0] - 2026-08-03
+
+### Added
+
+- `todo-engine.js` の `initOctokit()` に環境変数トリガー方式の Octokit 注入シームを追加（`OCTOKIT_STUB_ENV`/`OCTOKIT_STUB_LOG_ENV`/`OCTOKIT_STUB_RESPONSES_ENV`）。記録型スタブ Octokit（`tests/stubs/octokit-stub.js`、JSONL記録 + キュー式応答解決 + `__throw`によるエラーシミュレーション）を経由し、書き込み系ハンドラ（`runAdd`/`runDone`/`runEdit`/`runBulk`/`runView`/`runPriority`/`runTag`）を GitHub 接続・トークンなしでCLI直叩きテストできるようにした。テスト基盤として `tests/run-tests-write.sh` を新設し、優先6ハンドラに正常系・異常系（副作用の過不足検証込み）の振る舞いテストを追加。`runPriority`/`runEdit` の validate-before-mutate 順序バグは修正せず、現状挙動を記録する characterization テストとして固定（修正は別Issue）。実行口は `bash tests/run-tests.sh` の1コマンドのまま変わらない（Issue #1648）
+
+### Changed
+
+- `apiMain()` 冒頭のトークン取得・Octokit構築の重複コードを `initOctokit()` 呼び出しに統合（DRYリファクタ、Octokit注入シームの恩恵が `api` サブコマンド系にも自動的に適用されるようになった）。挙動・エラーメッセージ文言に変更なし
+- テスト資産の一部をスタブベースの振る舞いテストに置換: §24 View CRUD（`node -e` コピー実装）、Issue #1643 回帰テスト（実HOMEのnode_modulesシンボリックリンク+スキップ分岐）、`POSTDONE_USES_CATCHUP`/`DONE_CALLS_POSTDONE`/`BULK_CALLS_POSTDONE`/`TAG_RENAME_DELEGATES`（いずれもソースgrep型で実行結果非検証）を `tests/run-tests-write.sh` の実CLI直叩きテストへ置換・削除。`run` 系テストの `GH_TOKEN=dummy`（実 `@octokit/rest` の実インストールに暗黙依存）をバリデーションのみで完結するものから順次 `OCTOKIT_STUB_ENV` に置換（Issue #1648）
+
+---
+
 ## [v2.3.0] - 2026-08-03
 
 ### Added

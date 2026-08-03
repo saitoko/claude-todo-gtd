@@ -1786,32 +1786,10 @@ async function apiMain(subArgs) {
   const subCmd = subArgs[0];
   if (!subCmd) { throw apiErr('Usage: todo-engine.js api <subcommand> [args...]'); }
 
-  // トークン取得の優先順位:
-  // 1. 環境変数 GH_TOKEN / GITHUB_TOKEN
-  // 2. ~/.claude/github-token ファイル
-  // 3. エラー
-  let token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
-  if (!token) {
-    const tokenPath = path.join(process.env.HOME || os.homedir(), '.claude', 'github-token');
-    if (fs.existsSync(tokenPath)) {
-      token = fs.readFileSync(tokenPath, 'utf8').trim();
-    }
-  }
-  if (!token) { throw apiErr('Error: GH_TOKEN is not set and ~/.claude/github-token not found'); }
-
-  // Octokit をローカルの node_modules から動的ロード（ESM パッケージのため import() を使用）
-  const octokitPath = path.join(process.env.HOME || os.homedir(), '.claude', 'node_modules', '@octokit', 'rest', 'dist-src', 'index.js');
-  let OctokitClass;
-  try {
-    // Windows ではパスを URL に変換してから import する
-    const { pathToFileURL } = require('url');
-    const mod = await import(pathToFileURL(octokitPath).href);
-    OctokitClass = mod.Octokit;
-  } catch(e) {
-    throw apiErr('Error: @octokit/rest not found. Run: npm install --prefix ~/.claude @octokit/rest\nDetail: '+e.message);
-  }
-
-  const octokit = new OctokitClass({ auth: token, log: OCTOKIT_LOGGER });
+  // トークン取得・Octokit構築は initOctokit() に委譲（Issue #1648: 重複コード削除 + テストシーム統合）。
+  // トークン取得優先順位（1. GH_TOKEN/GITHUB_TOKEN 2. ~/.claude/github-token 3. エラー）と
+  // エラーメッセージ文言は initOctokit() 側で完全に同一のものを踏襲している。
+  const octokit = await initOctokit();
   const owner = REPO_OWNER, repo = REPO_NAME;
 
   try {
@@ -2206,6 +2184,19 @@ switch (cmd) {
 
 // Octokit 初期化（apiMain から共通化）
 async function initOctokit() {
+  // ── テスト用シーム（Issue #1648）: OCTOKIT_STUB_ENV が設定されていればスタブ
+  // Octokit ファクトリを読み込んで返す。トークン取得・実 @octokit/rest ロードより
+  // 前に判定することで、テストがトークン不要で完結する。未設定時は以下の
+  // 既存ロジックへそのまま進む（後方互換）。 ──
+  const stubModulePath = process.env.OCTOKIT_STUB_ENV;
+  if (stubModulePath) {
+    const createStubOctokit = require(path.resolve(stubModulePath));
+    return createStubOctokit({
+      logPath: process.env.OCTOKIT_STUB_LOG_ENV || null,
+      responsesSpec: process.env.OCTOKIT_STUB_RESPONSES_ENV || null,
+    });
+  }
+
   let token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
   if (!token) {
     const tokenPath = path.join(process.env.HOME || os.homedir(), '.claude', 'github-token');

@@ -7,6 +7,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENGINE="$SCRIPT_DIR/../scripts/todo-engine.js"  # todo-engine.js
 [ -f "$ENGINE" ] || ENGINE="$SCRIPT_DIR/../todo-engine.js"  # 公開リポジトリはルート直下レイアウト
 FMT_JS="$SCRIPT_DIR/helpers/date-fmt.js"  # 共通日付フォーマット関数
+STUB_ENGINE_PATH="$SCRIPT_DIR/stubs/octokit-stub.js"  # Octokit注入シーム用スタブ（Issue #1648）。
+  # GH_TOKEN=dummy + 実 @octokit/rest 解決に依存していた「run」系バリデーションのみの
+  # テスト（実API呼び出しに到達しないもの）を、OCTOKIT_STUB_ENV 経由の環境非依存な形に
+  # 置換するために使う。
 TEMP_TFILE=$(mktemp /tmp/todo-test-templates-XXXXXX.json)
 printf '{}' > "$TEMP_TFILE"
 PASS=0
@@ -1337,164 +1341,12 @@ DR_TOMORROW_ZERO=$(TODAY_ENV="$TEST_TODAY" OPEN_ENV='[{"number":80,"title":"no-d
 assert_eq "Daily Review: 明日期限=0件" "0" "$DR_TOMORROW_ZERO"
 
 # ──────────────────────────────────────────
-# § 24  Custom Views — フィルタパース・CRUD（Pro機能）
+# § 24  Custom Views — CRUD（Issue #1648 Phase 2 で置換済み）
 # ──────────────────────────────────────────
-echo ""
-echo "§24  Custom Views — フィルタパース・CRUD"
-
-TEMP_VFILE=$(mktemp /tmp/todo-test-views-XXXXXX.json)
-printf '{}' > "$TEMP_VFILE"
-
-# フィルタパーステスト用ヘルパー
-parse_view_filter() {
-  local input="$1"
-  FILTER_ENV="$input" node -e "
-    const tokens=(process.env.FILTER_ENV||'').trim().split(/\s+/).filter(Boolean);
-    const gtdLabels=['next','inbox','waiting','someday','project','reference'];
-    let gtd='', ctx=[], pri='';
-    for(const t of tokens){
-      if(gtdLabels.includes(t)) gtd=t;
-      else if(t.startsWith('@')) ctx.push(t);
-      else if(/^p[123]$/.test(t)) pri=t;
-    }
-    process.stdout.write('GTD='+gtd+' CTX='+ctx.join(' ')+' PRI='+pri);
-  "
-}
-
-assert_eq "View parse: next @会社 p1"  "GTD=next CTX=@会社 PRI=p1"  "$(parse_view_filter 'next @会社 p1')"
-assert_eq "View parse: inbox"          "GTD=inbox CTX= PRI="        "$(parse_view_filter 'inbox')"
-assert_eq "View parse: @PC @自宅"      "GTD= CTX=@PC @自宅 PRI="   "$(parse_view_filter '@PC @自宅')"
-assert_eq "View parse: p2"             "GTD= CTX= PRI=p2"          "$(parse_view_filter 'p2')"
-assert_eq "View parse: next @会社 @PC p1" "GTD=next CTX=@会社 @PC PRI=p1" "$(parse_view_filter 'next @会社 @PC p1')"
-assert_eq "View parse: 空"             "GTD= CTX= PRI="            "$(parse_view_filter '')"
-
-# View save テスト
-VIEW_SAVE1=$(VNAME_ENV="仕事" GTD_ENV="next" CTX_ENV="@会社" PRI_ENV="p1" VFILE_ENV="$TEMP_VFILE" node -e "
-  const fs=require('fs');
-  const vfile=process.env.VFILE_ENV;
-  let data={};
-  try { data=JSON.parse(fs.readFileSync(vfile,'utf8')); } catch(e){}
-  const name=process.env.VNAME_ENV;
-  const v={};
-  const gtd=process.env.GTD_ENV||'';
-  if(gtd) v.gtd=gtd;
-  const ctx=process.env.CTX_ENV||'';
-  if(ctx) v.context=ctx.trim().split(/\s+/);
-  const pri=process.env.PRI_ENV||'';
-  if(pri) v.priority=pri;
-  data[name]=v;
-  fs.writeFileSync(vfile, JSON.stringify(data,null,2));
-  process.stdout.write('SAVED');
-")
-assert_eq "View save: 仕事"  "SAVED"  "$VIEW_SAVE1"
-
-VIEW_SAVE2=$(VNAME_ENV="自宅PC" GTD_ENV="next" CTX_ENV="@自宅 @PC" PRI_ENV="" VFILE_ENV="$TEMP_VFILE" node -e "
-  const fs=require('fs');
-  const vfile=process.env.VFILE_ENV;
-  let data={};
-  try { data=JSON.parse(fs.readFileSync(vfile,'utf8')); } catch(e){}
-  const name=process.env.VNAME_ENV;
-  const v={};
-  const gtd=process.env.GTD_ENV||'';
-  if(gtd) v.gtd=gtd;
-  const ctx=process.env.CTX_ENV||'';
-  if(ctx) v.context=ctx.trim().split(/\s+/);
-  const pri=process.env.PRI_ENV||'';
-  if(pri) v.priority=pri;
-  data[name]=v;
-  fs.writeFileSync(vfile, JSON.stringify(data,null,2));
-  process.stdout.write('SAVED');
-")
-assert_eq "View save: 自宅PC"  "SAVED"  "$VIEW_SAVE2"
-
-# View load テスト
-VIEW_LOAD=$(VNAME_ENV="仕事" VFILE_ENV="$TEMP_VFILE" node -e "
-  const fs=require('fs');
-  const vfile=process.env.VFILE_ENV;
-  const data=JSON.parse(fs.readFileSync(vfile,'utf8'));
-  const name=process.env.VNAME_ENV;
-  if(!data[name]){ process.stdout.write('ERROR'); process.exit(0); }
-  const v=data[name];
-  const parts=[];
-  if(v.gtd) parts.push('GTD='+v.gtd);
-  if(v.context) parts.push('CTX='+v.context.join(' '));
-  if(v.priority) parts.push('PRI='+v.priority);
-  process.stdout.write(parts.join(' '));
-")
-assert_eq "View load: 仕事"  "GTD=next CTX=@会社 PRI=p1"  "$VIEW_LOAD"
-
-# View load 存在しない
-VIEW_LOAD_MISS=$(VNAME_ENV="ない" VFILE_ENV="$TEMP_VFILE" node -e "
-  const fs=require('fs');
-  const vfile=process.env.VFILE_ENV;
-  const data=JSON.parse(fs.readFileSync(vfile,'utf8'));
-  const name=process.env.VNAME_ENV;
-  if(!data[name]){ process.stdout.write('存在しません'); process.exit(0); }
-  process.stdout.write('FOUND');
-")
-assert_contains "View load 存在しない: エラー" "存在しません" "$VIEW_LOAD_MISS"
-
-# View list テスト
-VIEW_LIST=$(VFILE_ENV="$TEMP_VFILE" node -e "
-  const fs=require('fs');
-  const vfile=process.env.VFILE_ENV;
-  const data=JSON.parse(fs.readFileSync(vfile,'utf8'));
-  const keys=Object.keys(data);
-  if(!keys.length){ process.stdout.write('（ビューなし）'); process.exit(0); }
-  for(const name of keys){
-    const v=data[name];
-    const parts=[];
-    if(v.gtd) parts.push(v.gtd);
-    if(v.context) parts.push(v.context.join(' '));
-    if(v.priority) parts.push(v.priority);
-    process.stdout.write(name+'  ['+parts.join(', ')+']\n');
-  }
-")
-assert_contains "View list: 仕事あり"    "仕事"    "$VIEW_LIST"
-assert_contains "View list: 自宅PCあり"  "自宅PC"  "$VIEW_LIST"
-
-# View delete テスト
-VIEW_DEL=$(VNAME_ENV="仕事" VFILE_ENV="$TEMP_VFILE" node -e "
-  const fs=require('fs');
-  const vfile=process.env.VFILE_ENV;
-  let data=JSON.parse(fs.readFileSync(vfile,'utf8'));
-  const name=process.env.VNAME_ENV;
-  if(!data[name]){ process.stdout.write('存在しません'); process.exit(0); }
-  delete data[name];
-  fs.writeFileSync(vfile, JSON.stringify(data,null,2));
-  process.stdout.write('DELETED');
-")
-assert_eq "View delete: 仕事"  "DELETED"  "$VIEW_DEL"
-
-# 削除後 list で仕事が消えている
-VIEW_LIST2=$(VFILE_ENV="$TEMP_VFILE" node -e "
-  const fs=require('fs');
-  const data=JSON.parse(fs.readFileSync(process.env.VFILE_ENV,'utf8'));
-  process.stdout.write(Object.keys(data).join(','));
-")
-assert_eq "View delete後: 自宅PCのみ" "自宅PC" "$VIEW_LIST2"
-
-# 存在しないビュー削除
-VIEW_DEL_MISS=$(VNAME_ENV="ない" VFILE_ENV="$TEMP_VFILE" node -e "
-  const fs=require('fs');
-  const vfile=process.env.VFILE_ENV;
-  let data=JSON.parse(fs.readFileSync(vfile,'utf8'));
-  const name=process.env.VNAME_ENV;
-  if(!data[name]){ process.stdout.write('存在しません'); process.exit(0); }
-  process.stdout.write('DELETED');
-")
-assert_contains "View delete 存在しない: エラー" "存在しません" "$VIEW_DEL_MISS"
-
-# 空 list
-printf '{}' > "$TEMP_VFILE"
-VIEW_LIST_EMPTY=$(VFILE_ENV="$TEMP_VFILE" node -e "
-  const fs=require('fs');
-  const data=JSON.parse(fs.readFileSync(process.env.VFILE_ENV,'utf8'));
-  const keys=Object.keys(data);
-  if(!keys.length){ process.stdout.write('（ビューなし）'); process.exit(0); }
-  process.stdout.write(keys.join(','));
-")
-assert_contains "View list 空: ビューなし" "ビューなし" "$VIEW_LIST_EMPTY"
+# 旧実装は `node -e` によるコピー実装（runView 本体を経由しない再実装）だったため、
+# 実装のバグ（例: 分岐順序ミス）を検出できなかった。Octokit 注入シーム導入に伴い、
+# tests/run-tests-write.sh §W3（runView 正常系/異常系）へスタブ経由の実CLI直叩き
+# テストとして置換した（save/save2件目/list/use/delete/再delete/存在しないview use）。
 
 # ──────────────────────────────────────────
 # § 25  Report — 期間パース・集計（Pro機能）
@@ -1593,9 +1445,6 @@ assert_contains "Report: 見積合計" "3h" "$RPT_EST_OUT"
 assert_contains "Report: 実績合計" "3h10m" "$RPT_EST_OUT"
 assert_contains "Report: 予実比" "106%" "$RPT_EST_OUT"
 assert_contains "Report: 見積+実績あり件数" "2件 / 2件" "$RPT_EST_OUT"
-
-# 一時ファイルクリーンアップ
-rm -f "$TEMP_VFILE"
 
 # ──────────────────────────────────────────
 # § 26  English output (LANG_ENV=en)
@@ -3037,12 +2886,18 @@ else
   printf "  ❌ T-16-src: OCTOKIT_LOGGER 定数が見つからない\n"; FAIL=$((FAIL+1))
 fi
 
-# T-17-src: new OctokitClass の両箇所に log: OCTOKIT_LOGGER が含まれること
+# T-17-src: new OctokitClass に log: OCTOKIT_LOGGER が含まれること
+# Issue #1648 で apiMain() の重複Octokit構築を initOctokit() 呼び出しに統合したため、
+# 構築箇所は1箇所（initOctokit 内）に減った。apiMain が initOctokit() を呼んでいることを
+# 合わせて確認し、両経路（run api.../api直接）でロガーが効いていることを担保する。
 _t17_count=$(grep -c '{ auth: token, log: OCTOKIT_LOGGER }' "$ENGINE" || true)
-if [ "$_t17_count" -ge 2 ]; then
-  printf "  ✅ T-17-src: new OctokitClass の両箇所 (%d) に log: OCTOKIT_LOGGER が設定されている\n" "$_t17_count"; PASS=$((PASS+1))
+_t17_apimain_delegates=$(node -e "const s=require('fs').readFileSync('$ENGINE','utf8'); \
+  const m=s.match(/async function apiMain[\s\S]*?^}/m); \
+  console.log(m && m[0].includes('await initOctokit()') ? 'OK' : 'NG')")
+if [ "$_t17_count" -ge 1 ] && [ "$_t17_apimain_delegates" = "OK" ]; then
+  printf "  ✅ T-17-src: Octokit構築箇所 (%d) に log: OCTOKIT_LOGGER が設定され、apiMain が initOctokit() に委譲している（#1648統合）\n" "$_t17_count"; PASS=$((PASS+1))
 else
-  printf "  ❌ T-17-src: log: OCTOKIT_LOGGER の設定箇所が %d 件（2件必要）\n" "$_t17_count"; FAIL=$((FAIL+1))
+  printf "  ❌ T-17-src: log: OCTOKIT_LOGGER 設定 %d 件 / apiMain委譲 %s\n" "$_t17_count" "$_t17_apimain_delegates"; FAIL=$((FAIL+1))
 fi
 
 # T-18 〜 T-20: カスタムロガーの動作確認（Node.js インラインテスト）
@@ -3331,23 +3186,25 @@ echo ""
 echo "--- Phase 1 レビュー修正テスト ---"
 
 # 🔴-3: runLabel null チェック — 引数なし呼び出しでクラッシュしない
-LABEL_ADD_NOOP=$(GH_TOKEN=dummy REPO_OWNER=test REPO_NAME=test \
+# （Issue #1648: GH_TOKEN=dummy → OCTOKIT_STUB_ENV に置換。実 @octokit/rest の実インストール
+#  に依存せず完結する。バリデーションエラーで即終了するため応答フィクスチャは不要）
+LABEL_ADD_NOOP=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" REPO_OWNER=test REPO_NAME=test \
   node "$ENGINE" run label add 2>&1); EC_LABEL_ADD=$?
 assert_exit_fail "/todo label add（引数なし）→ exit 1" "$EC_LABEL_ADD"
 assert_contains "/todo label add（引数なし）→ Usage 出力" "Usage" "$LABEL_ADD_NOOP"
 
-LABEL_DEL_NOOP=$(GH_TOKEN=dummy REPO_OWNER=test REPO_NAME=test \
+LABEL_DEL_NOOP=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" REPO_OWNER=test REPO_NAME=test \
   node "$ENGINE" run label delete 2>&1); EC_LABEL_DEL=$?
 assert_exit_fail "/todo label delete（引数なし）→ exit 1" "$EC_LABEL_DEL"
 assert_contains "/todo label delete（引数なし）→ Usage 出力" "Usage" "$LABEL_DEL_NOOP"
 
-LABEL_REN_ONE=$(GH_TOKEN=dummy REPO_OWNER=test REPO_NAME=test \
+LABEL_REN_ONE=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" REPO_OWNER=test REPO_NAME=test \
   node "$ENGINE" run label rename foo 2>&1); EC_LABEL_REN=$?
 assert_exit_fail "/todo label rename（引数1個）→ exit 1" "$EC_LABEL_REN"
 assert_contains "/todo label rename（引数1個）→ Usage 出力" "Usage" "$LABEL_REN_ONE"
 
 # 🔴-4: runView 引数なし呼び出しでクラッシュしない
-VIEW_NOOP=$(GH_TOKEN=dummy REPO_OWNER=test REPO_NAME=test \
+VIEW_NOOP=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" REPO_OWNER=test REPO_NAME=test \
   node "$ENGINE" run view 2>&1); EC_VIEW=$?
 assert_exit_fail "/todo view（引数なし）→ exit 1" "$EC_VIEW"
 assert_contains "/todo view（引数なし）→ Usage 出力" "Usage" "$VIEW_NOOP"
@@ -3452,23 +3309,11 @@ assert_eq "weekly: dueなし(base=today) → today+7周期(skippedなし)" \
 
 # 回帰ガード: 完了後処理（recur再作成）が nextDue を直接使わず nextDueCatchUp 経由になっていること
 # （#1564→#1584 バグの再発防止。過去due+1周期のみだと過去日付のままになる）
-# #1642リファクタで recur再作成 + depends_on昇格が postDoneProcessing() に共通化されたため、
-# 「postDoneProcessing が nextDueCatchUp を使用」+「runDone/runBulk が postDoneProcessing 経由であること」の2段で検証する
-POSTDONE_USES_CATCHUP=$(node -e "const s=require('fs').readFileSync('$ENGINE','utf8'); \
-  const m=s.match(/async function postDoneProcessing[\s\S]*?^}/m); \
-  console.log(m && m[0].includes('nextDueCatchUp(') ? 'OK' : 'NG')")
-assert_eq "postDoneProcessing が nextDueCatchUp を使用している（過去due日付バグ回帰防止）" "OK" "$POSTDONE_USES_CATCHUP"
-
-DONE_CALLS_POSTDONE=$(node -e "const s=require('fs').readFileSync('$ENGINE','utf8'); \
-  const m=s.match(/async function runDone[\s\S]*?^}/m); \
-  console.log(m && m[0].includes('postDoneProcessing(') ? 'OK' : 'NG')")
-assert_eq "runDone が postDoneProcessing 経由で完了後処理を行っている" "OK" "$DONE_CALLS_POSTDONE"
-
-# 回帰ガード(#1642): bulk done が完了後処理（recur再作成・depends_on昇格）をスキップしないこと
-BULK_CALLS_POSTDONE=$(node -e "const s=require('fs').readFileSync('$ENGINE','utf8'); \
-  const m=s.match(/async function runBulk[\s\S]*?^}/m); \
-  console.log(m && m[0].includes('postDoneProcessing(') ? 'OK' : 'NG')")
-assert_eq "runBulk(done) が postDoneProcessing を呼び recur再作成をスキップしない（#1642回帰防止）" "OK" "$BULK_CALLS_POSTDONE"
+# 旧 POSTDONE_USES_CATCHUP/DONE_CALLS_POSTDONE/BULK_CALLS_POSTDONE はソースgrep
+# （「文字列として呼び出しが書かれているか」のみ確認、実行結果は非検証）だった。
+# Issue #1648 でスタブ経由の振る舞いテストに置換した
+# （tests/run-tests-write.sh §W1 runDone / §W2 runBulk done。
+#  nextDueCatchUp() の計算結果が issues.create の body まで実際に伝播することを確認）。
 
 # 無限ループ防止ガードが定義されていること
 CATCHUP_GUARD=$(node -e "const s=require('fs').readFileSync('$ENGINE','utf8'); \
@@ -3476,91 +3321,38 @@ CATCHUP_GUARD=$(node -e "const s=require('fs').readFileSync('$ENGINE','utf8'); \
 assert_eq "MAX_RECUR_CATCHUP_ITERATIONS ガードが定義されている" "FOUND" "$CATCHUP_GUARD"
 
 # ──────────────────────────────────────────
-# Issue #1643 / #1644 回帰テスト（エンジン直叩き。todo.sh が常に前置する 'run' 経由で検証する）
+# Issue #1643 / #1644 回帰テスト
 # ──────────────────────────────────────────
-echo ""
-echo "▶ Issue #1643: run view delete 到達不能バグ 回帰テスト（HOME差し替えサンドボックス）"
-
-# 'run' 経由のコマンドは runMain 冒頭で initOctokit() が走るため、@octokit/rest を
-# 解決できるサンドボックスHOMEを用意する（実HOMEのnode_modulesをシンボリックリンク）。
-# 実HOMEの todo-views.json には一切触れない。
-REAL_HOME_1643="$HOME"
-FAKE_HOME_1643=$(mktemp -d /tmp/todo-test-home-1643-XXXXXX)
-mkdir -p "$FAKE_HOME_1643/.claude"
-printf '{}' > "$FAKE_HOME_1643/.claude/todo-views.json"
-if [ -d "$REAL_HOME_1643/.claude/node_modules" ]; then
-  ln -s "$REAL_HOME_1643/.claude/node_modules" "$FAKE_HOME_1643/.claude/node_modules" 2>/dev/null || true
-fi
-export HOME="$FAKE_HOME_1643"
-if [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* ]]; then
-  REAL_USERPROFILE_1643="${USERPROFILE:-}"
-  export USERPROFILE="$FAKE_HOME_1643"
-fi
-
-if [ -f "$FAKE_HOME_1643/.claude/node_modules/@octokit/rest/dist-src/index.js" ]; then
-  VNAME_1643="issue1643regressionview"
-
-  # 1) ビューを1件作成
-  V1643_SAVE=$(GH_TOKEN=dummy node "$ENGINE" run view save "$VNAME_1643" next @PC 2>&1)
-  assert_contains "1643: run view save <name> 成功" "$VNAME_1643" "$V1643_SAVE"
-
-  # 2) run view delete <name>（todo.sh 経由と同じ 'run' プレフィックス）でエンジンを直叩き
-  V1643_DEL=$(GH_TOKEN=dummy node "$ENGINE" run view delete "$VNAME_1643" 2>&1); EC_1643_DEL=$?
-  assert_exit_ok "1643: run view delete <name> → exit 0" "$EC_1643_DEL"
-  assert_contains "1643: run view delete <name> → 削除対象名が正しく認識される" "$VNAME_1643" "$V1643_DEL"
-  assert_not_contains "1643: 旧バグ（'delete'という名前のビューを探しに行く挙動）が再発していない" 'ビュー「delete」は存在しません' "$V1643_DEL"
-
-  # 3) 削除済みビューを再度 delete → 「存在しません」エラー（対象名は正しく <name> のまま。'delete' ではない）
-  V1643_DEL2=$(GH_TOKEN=dummy node "$ENGINE" run view delete "$VNAME_1643" 2>&1); EC_1643_DEL2=$?
-  assert_exit_fail "1643: 削除済みビューを再度 delete → exit 1" "$EC_1643_DEL2"
-  assert_contains "1643: 削除済みビュー再削除エラーに対象名（<name>）が出る" "$VNAME_1643" "$V1643_DEL2"
-  assert_not_contains "1643: 削除済みビュー再削除エラーが 'delete' という名前を誤って指していない" 'ビュー「delete」は存在しません' "$V1643_DEL2"
-else
-  printf "  ⏭  1643: @octokit/rest を解決できないためスキップ（run 系コマンドは initOctokit 必須）\n"
-  SKIP=$((SKIP+5))
-fi
-
-export HOME="$REAL_HOME_1643"
-if [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* ]]; then
-  if [ -n "${REAL_USERPROFILE_1643:-}" ]; then export USERPROFILE="$REAL_USERPROFILE_1643"; else unset USERPROFILE; fi
-fi
-rm -rf "$FAKE_HOME_1643" 2>/dev/null || true
-
-echo ""
-echo "▶ Issue #1644: run api list-comments ルーティング 回帰テスト（エンジン直叩き）"
-
-# todo.sh は常に 'run' を前置するため、runMain に 'api' ケースが無いと
-# 「未知のコマンド」エラーになっていた（ドキュメント記載の使用例が実行不能だったバグ）。
-# TODO_REPO_OWNER/NAME を明示的に unset し、apiMain 冒頭の決定的なエラーパスで
-# ルーティングの到達だけを検証する（実GitHub通信なし）。
-API_1644_OUT=$(env -u TODO_REPO_OWNER -u TODO_REPO_NAME GH_TOKEN=dummy node "$ENGINE" run api list-comments 1 2>&1); EC_API_1644=$?
-assert_exit_fail "1644: run api list-comments <N> → exit 1（TODO_REPO_OWNER/NAME未設定エラー）" "$EC_API_1644"
-assert_not_contains "1644: 'run api ...' が『未知のコマンド』エラーにならない（ルーティング修正確認）" '未知のコマンド「api」' "$API_1644_OUT"
-assert_contains "1644: run api list-comments が apiMain まで到達している" 'TODO_REPO_OWNER' "$API_1644_OUT"
-
+# 旧 #1643 ブロック（run view delete 到達不能バグ）は「実HOMEのnode_modulesを
+# シンボリックリンクした偽HOME」という重いサンドボックス回避策 + @octokit/rest が
+# 解決できない環境でのスキップ分岐を持っていた。Issue #1648 で OCTOKIT_STUB_ENV
+# ベースの決定論的テストに置換し、環境依存によるスキップが発生しなくなった
+# （tests/run-tests-write.sh §W3 runView: save/save2件目/list/use/delete/再delete）。
+#
+# 旧 API_1644_OUT（run api ルーティング到達確認）・TAG_RENAME_DELEGATES（ソースgrep）も
+# 同様にスタブベースの振る舞いテストへ置換した
+# （tests/run-tests-write.sh §W7 runTag rename / §W8 run api ルーティング）。
+#
+# 引数不足・不正文字によるバリデーションエラー系（tag rename / label rename）は
+# 実API呼び出しに到達しないため、GH_TOKEN=dummy → OCTOKIT_STUB_ENV に置換した上で
+# 本ファイルに残す（応答フィクスチャ不要で完結するため）。
 echo ""
 echo "▶ Issue #1644: tag rename 回帰テスト（エンジン直叩き。label rename と処理を共用）"
 
 # 1) 引数不足 → Usage エラー（label rename の既存挙動と同様）
-TAG_REN_NOOP=$(GH_TOKEN=dummy node "$ENGINE" run tag rename foo 2>&1); EC_TAG_REN_NOOP=$?
+TAG_REN_NOOP=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" node "$ENGINE" run tag rename foo 2>&1); EC_TAG_REN_NOOP=$?
 assert_exit_fail "1644: /todo tag rename（引数1個）→ exit 1" "$EC_TAG_REN_NOOP"
 assert_contains "1644: /todo tag rename（引数1個）→ Usage 出力" "Usage" "$TAG_REN_NOOP"
 
 # 2) 不正文字を含む名前 → validateCtx まで到達してエラー（renameCtxLabel への委譲を実行経路で確認。実GitHub通信なし）
-TAG_REN_INVALID=$(GH_TOKEN=dummy node "$ENGINE" run tag rename 'a;b' newctx 2>&1); EC_TAG_REN_INVALID=$?
+TAG_REN_INVALID=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" node "$ENGINE" run tag rename 'a;b' newctx 2>&1); EC_TAG_REN_INVALID=$?
 assert_exit_fail "1644: /todo tag rename 不正文字 → exit 1" "$EC_TAG_REN_INVALID"
 assert_contains "1644: /todo tag rename 不正文字エラー（label rename と同じ検証ロジックに到達）" "コンテキスト名に不正文字" "$TAG_REN_INVALID"
 
 # 3) label rename 側もリファクタ後に同じ検証が効くことを確認（runLabel → renameCtxLabel 委譲の回帰防止）
-LABEL_REN_INVALID=$(GH_TOKEN=dummy node "$ENGINE" run label rename 'a;b' newctx 2>&1); EC_LABEL_REN_INVALID=$?
+LABEL_REN_INVALID=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" node "$ENGINE" run label rename 'a;b' newctx 2>&1); EC_LABEL_REN_INVALID=$?
 assert_exit_fail "1644: /todo label rename 不正文字 → exit 1（リファクタ後も検証が効く）" "$EC_LABEL_REN_INVALID"
 assert_contains "1644: /todo label rename 不正文字エラー" "コンテキスト名に不正文字" "$LABEL_REN_INVALID"
-
-# 4) runTag が renameCtxLabel に委譲している（label rename と同一処理であることの静的確認）
-TAG_RENAME_DELEGATES=$(node -e "const s=require('fs').readFileSync('$ENGINE','utf8'); \
-  const m = s.match(/async function runTag\(octokit, owner, repo, tokens\) \{[\s\S]*?renameCtxLabel/); \
-  console.log(m ? 'OK' : 'NG')")
-assert_eq "1644: runTag の rename 分岐が renameCtxLabel に委譲している" "OK" "$TAG_RENAME_DELEGATES"
 
 # ──────────────────────────────────────────
 # Issue #1646: 予約語タイトル誤爆ガード
@@ -3574,30 +3366,30 @@ echo "▶ Issue #1646: 予約語タイトル誤爆ガード（エンジン直叩
 # initOctokit() はトークン文字列とローカルの @octokit/rest モジュール解決のみでネットワーク不要。
 # ガードは runAdd 内の ensureLabel/issues.create 等の実API呼び出しより前（GTD分岐の入口）で
 # 発火するため、この一連の呼び出しはネットワークアクセスなしで完結する。
-G1646_LIST=$(GH_TOKEN=dummy node "$ENGINE" run project list 2>&1); EC_1646_LIST=$?
+G1646_LIST=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" node "$ENGINE" run project list 2>&1); EC_1646_LIST=$?
 assert_exit_fail "1646: /todo project list → exit 1（誤爆ガード発火）" "$EC_1646_LIST"
 assert_contains "1646: /todo project list → ガードメッセージに「list」を含む" '「list」はコマンド名です' "$G1646_LIST"
 assert_contains "1646: /todo project list → 一覧表示の誘導 (/todo list project)" '/todo list project' "$G1646_LIST"
 assert_contains "1646: /todo project list → add明示の誘導 (/todo add project list)" '/todo add project list' "$G1646_LIST"
 
-G1646_HELP=$(GH_TOKEN=dummy node "$ENGINE" run next help 2>&1); EC_1646_HELP=$?
+G1646_HELP=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" node "$ENGINE" run next help 2>&1); EC_1646_HELP=$?
 assert_exit_fail "1646: /todo next help → exit 1（誤爆ガード発火）" "$EC_1646_HELP"
 assert_contains "1646: /todo next help → ガードメッセージに「help」を含む" '「help」はコマンド名です' "$G1646_HELP"
 
-G1646_DONE=$(GH_TOKEN=dummy node "$ENGINE" run waiting done 2>&1); EC_1646_DONE=$?
+G1646_DONE=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" node "$ENGINE" run waiting done 2>&1); EC_1646_DONE=$?
 assert_exit_fail "1646: /todo waiting done → exit 1（誤爆ガード発火）" "$EC_1646_DONE"
 assert_contains "1646: /todo waiting done → ガードメッセージに「done」を含む" '「done」はコマンド名です' "$G1646_DONE"
 
-G1646_PROJECT=$(GH_TOKEN=dummy node "$ENGINE" run someday project 2>&1); EC_1646_PROJECT=$?
+G1646_PROJECT=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" node "$ENGINE" run someday project 2>&1); EC_1646_PROJECT=$?
 assert_exit_fail "1646: /todo someday project → exit 1（誤爆ガード発火。project は switch外の手動追加分）" "$EC_1646_PROJECT"
 assert_contains "1646: /todo someday project → ガードメッセージに「project」を含む" '「project」はコマンド名です' "$G1646_PROJECT"
 
-G1646_COUNTS=$(GH_TOKEN=dummy node "$ENGINE" run inbox counts 2>&1); EC_1646_COUNTS=$?
+G1646_COUNTS=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" node "$ENGINE" run inbox counts 2>&1); EC_1646_COUNTS=$?
 assert_exit_fail "1646: /todo inbox counts → exit 1（誤爆ガード発火。counts は todo.sh 層専用コマンドとして手動追加）" "$EC_1646_COUNTS"
 assert_contains "1646: /todo inbox counts → ガードメッセージに「counts」を含む" '「counts」はコマンド名です' "$G1646_COUNTS"
 
 # 大文字小文字を区別しない判定の確認
-G1646_UPPER=$(GH_TOKEN=dummy node "$ENGINE" run next LIST 2>&1); EC_1646_UPPER=$?
+G1646_UPPER=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" node "$ENGINE" run next LIST 2>&1); EC_1646_UPPER=$?
 assert_exit_fail "1646: /todo next LIST（大文字）→ exit 1（誤爆ガード発火・大小文字非依存）" "$EC_1646_UPPER"
 assert_contains "1646: /todo next LIST → ガードメッセージに元の大文字表記「LIST」を保持" '「LIST」はコマンド名です' "$G1646_UPPER"
 
@@ -3677,6 +3469,33 @@ else
   else
     printf "  ❌ 1646: switch case が RESERVED_TITLE_GUARD_COMMANDS に未反映: %s\n" "$_G1646_STDERR"; FAIL=$((FAIL+1))
   fi
+fi
+
+# ──────────────────────────────────────────
+# 書き込み系ハンドラのスタブベーステスト（run-tests-write.sh、Issue #1648）
+# 3,266行超に肥大化した本ファイルへの追記を避けるため別ファイルに分離し、
+# ここで子プロセスとして呼び出して結果を合算する。実行口は
+# `bash tests/run-tests.sh` の1コマンドのまま変わらない。
+# ──────────────────────────────────────────
+echo ""
+echo "▶ 書き込み系ハンドラのスタブベーステスト（run-tests-write.sh）"
+WRITE_TEST_SCRIPT="$SCRIPT_DIR/run-tests-write.sh"
+if [ -f "$WRITE_TEST_SCRIPT" ]; then
+  WRITE_OUT=$(bash "$WRITE_TEST_SCRIPT" 2>&1)
+  echo "$WRITE_OUT"
+  W_SUMMARY_LINE=$(printf '%s\n' "$WRITE_OUT" | grep '__WRITE_SUITE_SUMMARY__' | tail -1)
+  W_PASS=$(printf '%s' "$W_SUMMARY_LINE" | sed -n 's/.*PASS=\([0-9]*\).*/\1/p')
+  W_FAIL=$(printf '%s' "$W_SUMMARY_LINE" | sed -n 's/.*FAIL=\([0-9]*\).*/\1/p')
+  W_SKIP=$(printf '%s' "$W_SUMMARY_LINE" | sed -n 's/.*SKIP=\([0-9]*\).*/\1/p')
+  if [ -z "$W_SUMMARY_LINE" ]; then
+    printf "  ❌ run-tests-write.sh の結果サマリー行が見つからない（集計不能）\n"; FAIL=$((FAIL+1))
+  else
+    PASS=$((PASS + ${W_PASS:-0}))
+    FAIL=$((FAIL + ${W_FAIL:-0}))
+    SKIP=$((SKIP + ${W_SKIP:-0}))
+  fi
+else
+  printf "  ❌ run-tests-write.sh が見つからない: %s\n" "$WRITE_TEST_SCRIPT"; FAIL=$((FAIL+1))
 fi
 
 # ──────────────────────────────────────────
