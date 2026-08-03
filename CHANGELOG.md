@@ -10,6 +10,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v2.5.0] - 2026-08-03
+
+### Added
+
+- `api done-issue <number>` を新設。Web版 `GitHubIssueRepository.done()` は旧実装で `api close-issue` を呼ぶだけで、CLIの `runDone` が呼ぶ `postDoneProcessing`（recur再作成 + depends_on昇格）を一切経由しないため、Web版で繰り返しタスクを完了すると周期チェーンが無言で途切れていた。`done-issue` は Issue を close した後に `postDoneProcessing` を呼び、`{ok, recurLine, otherLines, newIssueNumber}` の JSON を返す（Issue #1669）
+
+### Fixed
+
+- `postDoneProcessing()`: depends_on 昇格チェックが `if (issue.project || issue.dependsOn)`（完了する Issue **自身**の project/dependsOn の有無）でガードされ、完了 Issue 自身がどちらも持たない場合は他の Issue からの依存関係チェックごとスキップされていたバグを修正。depends_on 昇格は「他のオープン Issue がこの完了 Issue に依存しているか」を調べる処理であり、完了した Issue 自身の project/dependsOn 有無とは論理的に無関係なため、ガードを撤去し常に `fetchAllOpen` を実行するようにした（実例: #1275 完了後に #1299 が waiting のまま昇格しなかった不具合。プロジェクト昇格候補ヒントの表示条件は変更なし）（Issue #1660）
+- `parseArgs()`: `#` 始まりトークンのタグ判定に「空白を含まない」制約がなく、タイトル全体が1トークンで `#` 始まりの場合（例: `#1299 depends-on強化について`）に丸ごとタグ扱いされ「タイトルが空です」エラーになるバグを修正。タグ判定に `!tok.includes(' ')` を追加（Issue #1660）
+- `runView`: `view save` で複数の `@ctx` を同時指定した場合に無言で握りつぶしていたのを、明示的なエラー（`エラー: view save では @ctx は1つのみ指定できます`）で終了するように修正。エラー時はビューが保存されない（Issue #1675）
+
+---
+
 ## [v2.4.0] - 2026-08-03
 
 ### Added

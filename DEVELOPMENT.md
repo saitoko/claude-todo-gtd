@@ -38,7 +38,7 @@ cp workspaces/skill-dev/todo/scripts/todo-engine.js ~/.claude/todo-engine.js
 ## テスト
 
 - テストランナー: `bash workspaces/skill-dev/todo/tests/run-tests.sh`
-- 自動テスト総件数: **652件**（2026-07-13 時点。うち1件は本修正と無関係な既存FAILあり。詳細は「バグ修正履歴」参照）
+- 自動テスト総件数: **833件**（2026-08-03 時点。全件PASS）
 - シナリオ一覧: `tests/scenarios.md`
 - 全件 PASS が品質ゲートの必須条件
 - 件数を更新する際は本ファイルの数値も合わせて更新する
@@ -101,6 +101,52 @@ function nextDueCatchUp(pattern, base, today) {
 **対象ファイル:** `workspaces/skill-dev/todo/scripts/todo-engine.js`（`runDone()` および `nextDueCatchUp()`）
 
 **既知の未解決事項（本修正のスコープ外）:** テストスイートに1件、本修正と無関係な既存FAIL（`§25 Report: 完了7件` — `assert_contains` の期待値パターン `**7件**` が BRE の repetition operator と衝突し `grep` がエラーを返す。`git stash` で本修正前のコードに戻しても再現するため、修正前から存在する既存バグ）。詳細は本作業のCOOへの報告を参照。
+
+### 2026-08-03: depends_on 昇格が完了 Issue 自身の project/dependsOn 有無でスキップされる（#1660）
+
+**症状:** #1275（project も depends_on も本文になし）を完了しても、#1275 に依存する #1299（`depends_on: #1275`）が本来 next へ自動昇格するはずが、waiting のまま放置される。
+
+**原因:** `postDoneProcessing()` の depends_on 昇格チェックが `if (issue.project || issue.dependsOn)`（完了する Issue **自身**の project/dependsOn の有無）でガードされていた。しかし depends_on 昇格は「他のオープン Issue がこの完了 Issue に依存しているか」を判定する処理であり、完了した Issue 自身が project/dependsOn を持つかどうかとは論理的に無関係。
+
+```js
+// NG: 完了Issue自身にproject/dependsOnがないとdepends_on昇格チェック自体がスキップされる
+if (issue.project || issue.dependsOn) {
+  const openIssues = await fetchAllOpen(...);
+  // depends_on昇格処理...
+}
+```
+
+**修正:** ガードを撤去し、project/dependsOn の有無に関わらず常に `fetchAllOpen` を実行して depends_on 昇格チェックを行うようにした（プロジェクト昇格候補ヒントは、完了した Issue 自身が project を持つ場合のみ表示する仕様のまま維持。こちらは論理的に妥当なガードのため変更していない）。
+
+```js
+// OK: 常にfetchAllOpenを実行し、依存関係を確認する
+{
+  const openIssues = await fetchAllOpen(...);
+  // depends_on昇格処理...
+}
+```
+
+**対象ファイル:** `workspaces/skill-dev/todo/scripts/todo-engine.js`（`postDoneProcessing()`）
+
+### 2026-08-03: `#` 始まりのタイトルが丸ごとタグ扱いされ「タイトルが空です」エラーになる（#1660）
+
+**症状:** `/todo add "#1299 depends-on強化について"` のように、タイトル全体が1トークンで `#` 始まりの場合、タグとして誤認識され「タイトルが空です」エラーになる。
+
+**原因:** `parseArgs()` のタグ判定 `tok.startsWith('#') && !/^#\d+$/.test(tok)` に「空白を含まない」制約がなく、空白を含む1トークン全体（例: `#1299 depends-on強化について`）もタグとして拾われていた。
+
+```js
+// NG: 空白を含む文字列もタグ扱いされてしまう
+} else if (tok.startsWith('#') && !/^#\d+$/.test(tok)) {
+```
+
+**修正:** タグ判定に `!tok.includes(' ')` を追加し、空白を含むトークンはタグ扱いしないようにした。
+
+```js
+// OK: 空白を含む場合はタグ扱いしない（#42のようなIssue番号単体は従来通り除外）
+} else if (tok.startsWith('#') && !tok.includes(' ') && !/^#\d+$/.test(tok)) {
+```
+
+**対象ファイル:** `workspaces/skill-dev/todo/scripts/todo-engine.js`（`parseArgs()`）
 
 ## 注意事項
 
