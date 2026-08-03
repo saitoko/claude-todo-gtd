@@ -15,13 +15,14 @@
 | 入力 | 解釈される動作 |
 |---|---|
 | `/todo next "資料作成"` | next ラベルで「資料作成」を登録（◯ 想定どおり） |
-| `/todo project list` | **project ラベルで「list」タイトルの Issue を作成（✕ ゴミ Issue）** |
+| `/todo project list` | **予約語タイトル誤爆ガードが発火しエラー終了（✕ ゴミ Issue にはならない）** |
 | `/todo list project` | project ラベルの一覧表示（◯ list は専用サブコマンド） |
 | `/todo "後で見る本"` | 第一引数が GTD ラベル名に一致しないため inbox 扱い、全文がタイトルになる |
 
 - **一覧表示したいときは `/todo list <フィルタ>`**（または `gh issue list --label "..."`）
 - **タスクを追加したいときは `/todo <GTDラベル> "<タイトル>"`**
 - 未知のサブコマンドを試す前に `bash ~/.claude/todo.sh help` で構造を確認すること
+- **予約語タイトル誤爆ガード（Issue #1646）**: `/todo <GTDラベル> <タイトル>` のタイトルが `list`/`help`/`done`/`project`/`counts` 等の単一トークンかつ既知コマンド名と完全一致する場合、ゴミ Issue を作らずエラー終了し `/todo list <ラベル>`（一覧表示）または `/todo add <ラベル> <タイトル>`（タスク追加を明示）への切り替えを促す。複数トークンの英語タイトルや日本語タイトルは従来どおり登録できる
 
 （参考: `logs/governance-incidents/2026-05-02_todo-subcommand-misuse.md`）
 

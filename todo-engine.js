@@ -2669,25 +2669,14 @@ async function fetchRecentClosed(octokit, owner, repo, limit, fields) {
   });
 }
 
-async function runDone(octokit, owner, repo, tokens) {
+// close 後の共通後処理（recur再作成 + depends_on昇格 + プロジェクト昇格候補ヒント）
+// runDone（単体完了）と runBulk の done 分岐（一括完了）の両方から呼ばれる。
+// #1642: bulk done がこの後処理をスキップしていたため、リカレンス付きIssueを
+// bulk done に含めると周期チェーンが無言で途切れるデータ損失バグがあった。
+async function postDoneProcessing(octokit, owner, repo, num, issue) {
   const today = getToday();
-  const num = parseInt(tokens[0]);
-  if (!num) { process.stderr.write(t('error.positive_int')+'\n'); process.exit(1); }
-  validateNumber(String(num));
-  const parsed = parseArgs(tokens.slice(1));
-
-  const issue = await fetchAndParseIssue(octokit, owner, repo, num);
-  let actual = issue.actual;
-  if (parsed.actual) {
-    const a = parseTime(parsed.actual);
-    if (a === null) { process.stderr.write(t('error.time_format')+'\n'); process.exit(1); }
-    actual = String(a);
-  }
-  if (actual !== issue.actual) {
-    const body = buildBody({ ...issue, actual });
-    await octokit.issues.update({ owner, repo, issue_number: num, body });
-  }
-  await octokit.issues.update({ owner, repo, issue_number: num, state: 'closed' });
+  let recurLine = null;
+  const otherLines = [];
 
   if (issue.recur) {
     validateRecur(issue.recur);
@@ -2714,9 +2703,7 @@ async function runDone(octokit, owner, repo, tokens) {
       owner, repo, title: issue.title,
       body, labels: issue.labels
     });
-    runOut(`✅ #${num} を完了しました。繰り返しタスク #${newIssue.number} を ${nextDate} で作成しました。${nextActivate ? '（activate: '+nextActivate+'）' : ''}${skipped ? `\n⏭ 期限超過のため過去の周期をスキップしました（due基準: ${base} → 再作成: ${nextDate}）` : ''}`);
-  } else {
-    runOut(`✅ #${num} を完了しました。`);
+    recurLine = `繰り返しタスク #${newIssue.number} を ${nextDate} で作成しました。${nextActivate ? '（activate: '+nextActivate+'）' : ''}${skipped ? `\n⏭ 期限超過のため過去の周期をスキップしました（due基準: ${base} → 再作成: ${nextDate}）` : ''}`;
   }
 
   // depends_on 昇格チェックおよびプロジェクト昇格候補ヒント
@@ -2743,10 +2730,10 @@ async function runDone(octokit, owner, repo, tokens) {
           await removeLabelIfPresent(octokit, owner, repo, raw.number, gtdLabel);
         }
         await octokit.issues.addLabels({ owner, repo, issue_number: raw.number, labels: [nextLabel] });
-        runOut(tpl('promote.promoted_depends', { num: raw.number, title: raw.title, dep: num }));
+        otherLines.push(tpl('promote.promoted_depends', { num: raw.number, title: raw.title, dep: num }));
         promoted++;
       }
-      if (promoted > 0) runOut(tpl('promote.summary', { n: promoted }));
+      if (promoted > 0) otherLines.push(tpl('promote.summary', { n: promoted }));
     }
 
     // プロジェクト次タスク昇格候補ヒント — 完了タスクのプロジェクトに紐づくオープンタスクのうち昇格候補を表示
@@ -2775,15 +2762,45 @@ async function runDone(octokit, owner, repo, tokens) {
       }
 
       if (candidates.length > 0) {
-        runOut(tpl('done.promote_hint_header', { proj: projNum, title: projTitle }));
+        otherLines.push(tpl('done.promote_hint_header', { proj: projNum, title: projTitle }));
         candidates.forEach((c, idx) => {
           const gtdDisplay = GTD_DISPLAY[c.gtd] || c.gtd;
-          runOut(tpl('done.promote_hint_item', { i: idx + 1, num: c.num, title: c.title, gtd: gtdDisplay }));
+          otherLines.push(tpl('done.promote_hint_item', { i: idx + 1, num: c.num, title: c.title, gtd: gtdDisplay }));
         });
-        runOut(t('done.promote_hint_footer'));
+        otherLines.push(t('done.promote_hint_footer'));
       }
     } // end if (issue.project)
   }
+
+  return { recurLine, otherLines };
+}
+
+async function runDone(octokit, owner, repo, tokens) {
+  const num = parseInt(tokens[0]);
+  if (!num) { process.stderr.write(t('error.positive_int')+'\n'); process.exit(1); }
+  validateNumber(String(num));
+  const parsed = parseArgs(tokens.slice(1));
+
+  const issue = await fetchAndParseIssue(octokit, owner, repo, num);
+  let actual = issue.actual;
+  if (parsed.actual) {
+    const a = parseTime(parsed.actual);
+    if (a === null) { process.stderr.write(t('error.time_format')+'\n'); process.exit(1); }
+    actual = String(a);
+  }
+  if (actual !== issue.actual) {
+    const body = buildBody({ ...issue, actual });
+    await octokit.issues.update({ owner, repo, issue_number: num, body });
+  }
+  await octokit.issues.update({ owner, repo, issue_number: num, state: 'closed' });
+
+  const { recurLine, otherLines } = await postDoneProcessing(octokit, owner, repo, num, issue);
+  if (recurLine) {
+    runOut(`✅ #${num} を完了しました。${recurLine}`);
+  } else {
+    runOut(`✅ #${num} を完了しました。`);
+  }
+  otherLines.forEach(line => runOut(line));
 
   // --note が指定されていれば close 後にコメントを追加（直列処理）
   if (parsed.note) {
@@ -3717,6 +3734,7 @@ async function runBulk(octokit, owner, repo, tokens) {
 
   let doneCount = 0, errCount = 0;
   if (sub === 'done') {
+    let recurCreated = 0;
     for (const num of nums) {
       try {
         const parsed = parseArgs(rest);
@@ -3728,10 +3746,19 @@ async function runBulk(octokit, owner, repo, tokens) {
           await octokit.issues.update({ owner, repo, issue_number: num, body });
         }
         await octokit.issues.update({ owner, repo, issue_number: num, state: 'closed' });
+
+        // #1642: recur再作成 + depends_on昇格を runDone と共通の後処理で実施
+        const { recurLine, otherLines } = await postDoneProcessing(octokit, owner, repo, num, issue);
+        if (recurLine) {
+          recurCreated++;
+          runOut(`  #${num}: ${recurLine}`);
+        }
+        otherLines.forEach(line => runOut(`  ${line}`));
+
         doneCount++;
       } catch(e) { runOut(`  #${num} エラー: ${e.message}`); errCount++; }
     }
-    runOut(`✅ ${doneCount}件完了${errCount ? '（エラー: '+errCount+'件）' : ''}`);
+    runOut(`✅ ${doneCount}件完了${recurCreated ? '（うち繰り返し再作成: '+recurCreated+'件）' : ''}${errCount ? '（エラー: '+errCount+'件）' : ''}`);
   } else if (sub === 'move') {
     const target = rest[0];
     if (!target || !GTD_LABELS.includes(target)) {
@@ -4068,6 +4095,33 @@ async function runMigrateSubIssue(octokit, owner, repo, tokens) {
   runOut(`✅ migrate sub-issue 完了: ${registered}件登録 / ${skipped}件スキップ / ${errors}件エラー`);
 }
 
+// ─── 予約語タイトル誤爆ガード（Issue #1646） ───
+// runMain の switch にある実コマンド名一覧。ケースを追加/削除したら必ずここも更新すること。
+// tests/run-tests.sh の「1646: dispatcher コマンド名とガード対象の同期」がドリフトを検知する。
+// 'project' と 'counts' は switch のケースとしては現れないが誤爆しうるため手動追加している:
+//   - 'project': GTDラベルと同格の分岐（cmd === PROJECT_LABEL）で switch より手前に処理される
+//   - 'counts' : todo.sh 層のみで処理され、run 経由でもエンジンの switch には到達しない
+const RESERVED_TITLE_GUARD_COMMANDS = new Set([
+  'add','list','done','close','move','edit','due','desc','recur','link','rename',
+  'priority','tag','untag','label','search','archive','dashboard','dash','today',
+  'eisenhower','stats','report','help','template','schema','show','view','bulk',
+  'promote','promote-project','unlink','review-someday','weekly-project-audit',
+  'migrate','activate','comment','api',
+  PROJECT_LABEL, 'counts',
+]);
+
+// GTDラベル暗黙add経路（例: /todo project list）で、タイトルが単一トークンかつ
+// 既知コマンド名と完全一致する場合に誤爆と判定する（大文字小文字は区別しない）。
+// `add` を明示した経路（case 'add'）はこの関数を経由しないため対象外。
+// 副作用なしの純粋関数（テストで直接呼び出せるようにするため）。
+// 戻り値: 誤爆と判定したトークン文字列（元の大文字小文字のまま） or null
+function reservedTitleGuardWord(restTokens) {
+  const extra = parseArgs(restTokens).extra.filter(s => s.trim());
+  if (extra.length !== 1) return null;
+  const word = extra[0];
+  return RESERVED_TITLE_GUARD_COMMANDS.has(word.toLowerCase()) ? word : null;
+}
+
 // runMain: コマンドディスパッチャー
 async function runMain(args) {
   const octokit = await initOctokit();
@@ -4078,6 +4132,16 @@ async function runMain(args) {
 
   // GTDキーワードが先頭 → add として扱う（project も同様）
   if (GTD_LABELS.includes(cmd) || cmd === PROJECT_LABEL) {
+    // 予約語タイトル誤爆ガード（Issue #1646）: 「/todo project list」のような
+    // 一覧表示の意図を、タイトル「list」のゴミIssueとして黙って作成しない
+    const guardWord = reservedTitleGuardWord(rest);
+    if (guardWord) {
+      process.stderr.write(`エラー: 「${guardWord}」はコマンド名です。\n`);
+      process.stderr.write(`  （コマンドと混同を避けるため、一覧表示の意図なら /todo list ${cmd} を使ってください）\n`);
+      process.stderr.write(`  タスク追加の意図で明示的に追加したい場合: /todo add ${cmd} ${guardWord}\n`);
+      process.stderr.write(`  コマンド一覧: /todo help\n`);
+      process.exit(1);
+    }
     return await runAdd(octokit, owner, repo, args);
   }
 

@@ -3450,12 +3450,25 @@ assert_eq "daily: due=未来 → base+1周期のみ(skippedなし)" \
 assert_eq "weekly: dueなし(base=today) → today+7周期(skippedなし)" \
   '{"nextDate":"2026-07-20","skipped":false}' "$(recur_catchup weekly 2026-07-13 2026-07-13)"
 
-# 回帰ガード: runDone が nextDue を直接使わず nextDueCatchUp 経由になっていること
+# 回帰ガード: 完了後処理（recur再作成）が nextDue を直接使わず nextDueCatchUp 経由になっていること
 # （#1564→#1584 バグの再発防止。過去due+1周期のみだと過去日付のままになる）
-DONE_USES_CATCHUP=$(node -e "const s=require('fs').readFileSync('$ENGINE','utf8'); \
-  const m=s.match(/async function runDone[\s\S]*?^}/m); \
+# #1642リファクタで recur再作成 + depends_on昇格が postDoneProcessing() に共通化されたため、
+# 「postDoneProcessing が nextDueCatchUp を使用」+「runDone/runBulk が postDoneProcessing 経由であること」の2段で検証する
+POSTDONE_USES_CATCHUP=$(node -e "const s=require('fs').readFileSync('$ENGINE','utf8'); \
+  const m=s.match(/async function postDoneProcessing[\s\S]*?^}/m); \
   console.log(m && m[0].includes('nextDueCatchUp(') ? 'OK' : 'NG')")
-assert_eq "runDone が nextDueCatchUp を使用している（過去due日付バグ回帰防止）" "OK" "$DONE_USES_CATCHUP"
+assert_eq "postDoneProcessing が nextDueCatchUp を使用している（過去due日付バグ回帰防止）" "OK" "$POSTDONE_USES_CATCHUP"
+
+DONE_CALLS_POSTDONE=$(node -e "const s=require('fs').readFileSync('$ENGINE','utf8'); \
+  const m=s.match(/async function runDone[\s\S]*?^}/m); \
+  console.log(m && m[0].includes('postDoneProcessing(') ? 'OK' : 'NG')")
+assert_eq "runDone が postDoneProcessing 経由で完了後処理を行っている" "OK" "$DONE_CALLS_POSTDONE"
+
+# 回帰ガード(#1642): bulk done が完了後処理（recur再作成・depends_on昇格）をスキップしないこと
+BULK_CALLS_POSTDONE=$(node -e "const s=require('fs').readFileSync('$ENGINE','utf8'); \
+  const m=s.match(/async function runBulk[\s\S]*?^}/m); \
+  console.log(m && m[0].includes('postDoneProcessing(') ? 'OK' : 'NG')")
+assert_eq "runBulk(done) が postDoneProcessing を呼び recur再作成をスキップしない（#1642回帰防止）" "OK" "$BULK_CALLS_POSTDONE"
 
 # 無限ループ防止ガードが定義されていること
 CATCHUP_GUARD=$(node -e "const s=require('fs').readFileSync('$ENGINE','utf8'); \
@@ -3548,6 +3561,123 @@ TAG_RENAME_DELEGATES=$(node -e "const s=require('fs').readFileSync('$ENGINE','ut
   const m = s.match(/async function runTag\(octokit, owner, repo, tokens\) \{[\s\S]*?renameCtxLabel/); \
   console.log(m ? 'OK' : 'NG')")
 assert_eq "1644: runTag の rename 分岐が renameCtxLabel に委譲している" "OK" "$TAG_RENAME_DELEGATES"
+
+# ──────────────────────────────────────────
+# Issue #1646: 予約語タイトル誤爆ガード
+# 「/todo project list」のような GTD ラベル暗黙add経路で、タイトルが単一トークンかつ
+# 既知コマンド名と完全一致する場合にゴミIssueを黙って作成しないことを確認する。
+# ──────────────────────────────────────────
+echo ""
+echo "▶ Issue #1646: 予約語タイトル誤爆ガード（エンジン直叩き）"
+
+# --- 発火パターン（CLI直接呼び出し）---
+# initOctokit() はトークン文字列とローカルの @octokit/rest モジュール解決のみでネットワーク不要。
+# ガードは runAdd 内の ensureLabel/issues.create 等の実API呼び出しより前（GTD分岐の入口）で
+# 発火するため、この一連の呼び出しはネットワークアクセスなしで完結する。
+G1646_LIST=$(GH_TOKEN=dummy node "$ENGINE" run project list 2>&1); EC_1646_LIST=$?
+assert_exit_fail "1646: /todo project list → exit 1（誤爆ガード発火）" "$EC_1646_LIST"
+assert_contains "1646: /todo project list → ガードメッセージに「list」を含む" '「list」はコマンド名です' "$G1646_LIST"
+assert_contains "1646: /todo project list → 一覧表示の誘導 (/todo list project)" '/todo list project' "$G1646_LIST"
+assert_contains "1646: /todo project list → add明示の誘導 (/todo add project list)" '/todo add project list' "$G1646_LIST"
+
+G1646_HELP=$(GH_TOKEN=dummy node "$ENGINE" run next help 2>&1); EC_1646_HELP=$?
+assert_exit_fail "1646: /todo next help → exit 1（誤爆ガード発火）" "$EC_1646_HELP"
+assert_contains "1646: /todo next help → ガードメッセージに「help」を含む" '「help」はコマンド名です' "$G1646_HELP"
+
+G1646_DONE=$(GH_TOKEN=dummy node "$ENGINE" run waiting done 2>&1); EC_1646_DONE=$?
+assert_exit_fail "1646: /todo waiting done → exit 1（誤爆ガード発火）" "$EC_1646_DONE"
+assert_contains "1646: /todo waiting done → ガードメッセージに「done」を含む" '「done」はコマンド名です' "$G1646_DONE"
+
+G1646_PROJECT=$(GH_TOKEN=dummy node "$ENGINE" run someday project 2>&1); EC_1646_PROJECT=$?
+assert_exit_fail "1646: /todo someday project → exit 1（誤爆ガード発火。project は switch外の手動追加分）" "$EC_1646_PROJECT"
+assert_contains "1646: /todo someday project → ガードメッセージに「project」を含む" '「project」はコマンド名です' "$G1646_PROJECT"
+
+G1646_COUNTS=$(GH_TOKEN=dummy node "$ENGINE" run inbox counts 2>&1); EC_1646_COUNTS=$?
+assert_exit_fail "1646: /todo inbox counts → exit 1（誤爆ガード発火。counts は todo.sh 層専用コマンドとして手動追加）" "$EC_1646_COUNTS"
+assert_contains "1646: /todo inbox counts → ガードメッセージに「counts」を含む" '「counts」はコマンド名です' "$G1646_COUNTS"
+
+# 大文字小文字を区別しない判定の確認
+G1646_UPPER=$(GH_TOKEN=dummy node "$ENGINE" run next LIST 2>&1); EC_1646_UPPER=$?
+assert_exit_fail "1646: /todo next LIST（大文字）→ exit 1（誤爆ガード発火・大小文字非依存）" "$EC_1646_UPPER"
+assert_contains "1646: /todo next LIST → ガードメッセージに元の大文字表記「LIST」を保持" '「LIST」はコマンド名です' "$G1646_UPPER"
+
+# --- 非発火パターン（純粋関数 reservedTitleGuardWord を抽出して直接呼び出し）---
+# runAdd 経路（ensureLabel/issues.create 等の実API呼び出し）を経由せずに検証するため、
+# CLI 直接実行ではなくソースからガード関連コードを抽出して単体テストする。
+_G1646_TMP=$(mktemp /tmp/todo-test-reserved-guard-XXXXXX.js)
+cat > "$_G1646_TMP" << 'RESERVED_GUARD_TEST_EOF'
+const fs = require('fs');
+const src = fs.readFileSync(process.argv[2], 'utf8');
+
+const gtdLabelsMatch  = src.match(/^const GTD_LABELS = \[[^\]]*\];/m);
+const projectLabelMatch = src.match(/^const PROJECT_LABEL = '[^']+';/m);
+const parseArgsMatch  = src.match(/^function parseArgs\(tokens\) \{[\s\S]*?^}/m);
+const guardConstMatch = src.match(/^const RESERVED_TITLE_GUARD_COMMANDS = new Set\(\[[\s\S]*?^\]\);/m);
+const guardFnMatch    = src.match(/^function reservedTitleGuardWord\(restTokens\) \{[\s\S]*?^}/m);
+const runMainMatch    = src.match(/^async function runMain\(args\) \{[\s\S]*$/m);
+
+const missing = [];
+if (!gtdLabelsMatch)  missing.push('GTD_LABELS');
+if (!projectLabelMatch) missing.push('PROJECT_LABEL');
+if (!parseArgsMatch)  missing.push('parseArgs');
+if (!guardConstMatch) missing.push('RESERVED_TITLE_GUARD_COMMANDS');
+if (!guardFnMatch)    missing.push('reservedTitleGuardWord');
+if (!runMainMatch)    missing.push('runMain');
+if (missing.length) {
+  process.stderr.write('抽出失敗: ' + missing.join(',') + '\n');
+  process.exit(1);
+}
+
+// 抽出した定数・関数を1つの eval にまとめて実行する（direct eval の let/const は
+// 呼び出し元と別の字句スコープを持つため、分割 eval だと相互参照できない）
+const combined = [gtdLabelsMatch[0], projectLabelMatch[0], parseArgsMatch[0], guardConstMatch[0], guardFnMatch[0]].join('\n')
+  + '\nconst results = {};'
+  + "\nresults.fire_list    = reservedTitleGuardWord(['list'])    === 'list';"
+  + "\nresults.fire_help    = reservedTitleGuardWord(['help'])    === 'help';"
+  + "\nresults.fire_project = reservedTitleGuardWord(['project']) === 'project';"
+  + "\nresults.fire_counts  = reservedTitleGuardWord(['counts'])  === 'counts';"
+  // 非発火: 日本語単一トークン（摩擦ゼロ収集を維持。現行挙動）
+  + "\nresults.nofire_ja_single = reservedTitleGuardWord(['買い物']) === null;"
+  // 非発火: 複数トークン英語（現行挙動維持。1トークンのみが判定対象）
+  + "\nresults.nofire_en_multi  = reservedTitleGuardWord(['Buy','milk']) === null;"
+  // 非発火: 'add' / 'list' はそもそも GTD ラベル分岐に到達しない
+  //   (/todo add next list は case 'add' へ、/todo list next は case 'list' へ直行し、
+  //    reservedTitleGuardWord は呼ばれない。これが構造的な非発火保証)
+  + "\nresults.nofire_add_not_gtd_branch  = !GTD_LABELS.includes('add')  && 'add'  !== PROJECT_LABEL;"
+  + "\nresults.nofire_list_not_gtd_branch = !GTD_LABELS.includes('list') && 'list' !== PROJECT_LABEL;"
+  + '\nprocess.stdout.write(JSON.stringify(results));';
+eval(combined);
+
+// ドリフト検知: runMain の switch にある実コマンド名がすべて
+// RESERVED_TITLE_GUARD_COMMANDS のソースに含まれること（新コマンド追加時の追加漏れを検知）
+const caseLabels = [...runMainMatch[0].matchAll(/case\s*'([a-zA-Z0-9_-]+)'\s*:/g)].map(m => m[1]);
+const missingFromGuard = caseLabels.filter(l => !guardConstMatch[0].includes("'" + l + "'"));
+process.stderr.write('DRIFT_MISSING:' + JSON.stringify(missingFromGuard) + '\n');
+RESERVED_GUARD_TEST_EOF
+
+_G1646_STDOUT=$(node "$_G1646_TMP" "$ENGINE" 2>"$_G1646_TMP.stderr")
+_G1646_EXIT=$?
+_G1646_STDERR=$(cat "$_G1646_TMP.stderr" 2>/dev/null)
+rm -f "$_G1646_TMP" "$_G1646_TMP.stderr"
+
+if [ "$_G1646_EXIT" -ne 0 ]; then
+  printf "  ❌ 1646 単体テスト実行失敗: %s / %s\n" "$_G1646_STDOUT" "$_G1646_STDERR"; FAIL=$((FAIL+9))
+else
+  for key in fire_list fire_help fire_project fire_counts nofire_ja_single nofire_en_multi nofire_add_not_gtd_branch nofire_list_not_gtd_branch; do
+    if printf '%s' "$_G1646_STDOUT" | grep -q "\"$key\":true"; then
+      printf "  ✅ 1646: reservedTitleGuardWord 単体テスト [%s]\n" "$key"; PASS=$((PASS+1))
+    else
+      printf "  ❌ 1646: reservedTitleGuardWord 単体テスト [%s] 失敗: %s\n" "$key" "$_G1646_STDOUT"; FAIL=$((FAIL+1))
+    fi
+  done
+
+  # ドリフト検知: 空配列（[]）であること
+  if printf '%s' "$_G1646_STDERR" | grep -q 'DRIFT_MISSING:\[\]'; then
+    printf "  ✅ 1646: dispatcher コマンド名とガード対象の同期（ドリフトなし）\n"; PASS=$((PASS+1))
+  else
+    printf "  ❌ 1646: switch case が RESERVED_TITLE_GUARD_COMMANDS に未反映: %s\n" "$_G1646_STDERR"; FAIL=$((FAIL+1))
+  fi
+fi
 
 # ──────────────────────────────────────────
 # 結果サマリー

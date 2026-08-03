@@ -10,6 +10,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v2.3.0] - 2026-08-03
+
+### Added
+
+- 予約語タイトル誤爆ガード: `/todo <GTDラベル> <タイトル>`（`project` 含む暗黙add経路）でタイトルが単一トークンかつ `list`/`help`/`done`/`project`/`counts` 等の既知コマンド名と完全一致する場合、ゴミ Issue を作らずエラー終了し `/todo list <ラベル>` または `/todo add <ラベル> <タイトル>` を提案するようにした。`add` を明示した経路には影響しない（Issue #1646）
+
+### Fixed
+
+- `runBulk`（`bulk done`）がリカレンス再作成・`depends_on` 昇格処理を一切行わず、繰り返しタスクを一括完了すると周期チェーンが無言で途切れるデータ損失バグを修正。`runDone` の完了後処理（recur再作成 + depends_on昇格 + プロジェクト昇格候補ヒント）を共通関数 `postDoneProcessing` に抽出し、`runDone` と `runBulk`（`done`）の両方から呼び出すように統一。`bulk done` のサマリーに再作成件数を表示（例: `✅ 3件完了（うち繰り返し再作成: 1件）`）（Issue #1642）
+
+---
+
 ## [v2.2.1] - 2026-08-03
 
 ### Fixed
