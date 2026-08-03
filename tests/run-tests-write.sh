@@ -178,8 +178,10 @@ echo "§W1  runDone — スタブベース振る舞いテスト"
 # W1-1 正常系: recur再作成（期限超過キャッチアップ込み）。#1642回帰の実効テスト化。
 # POSTDONE_USES_CATCHUP（旧ソースgrep）の置換: nextDueCatchUp() の計算結果が
 # issues.create の body まで実際に伝播していることを確認する。
+# #1660修正後: fetchAllOpen（issues.listForRepo）がproject/dependsOn有無に関わらず
+# 常に呼ばれるようになるため空応答を1件用意する
 W1_LOG=$(mktemp /tmp/todo-test-w1-XXXXXX.jsonl)
-W1_RESP='{"issues.get":[{"data":{"number":301,"id":9301,"title":"Weekly Report","body":"due: 2026-03-01\nrecur: weekly\n","labels":[{"name":"🎯 next"}]}}],"issues.update":[{}],"issues.create":[{"data":{"number":9999}}]}'
+W1_RESP='{"issues.get":[{"data":{"number":301,"id":9301,"title":"Weekly Report","body":"due: 2026-03-01\nrecur: weekly\n","labels":[{"name":"🎯 next"}]}}],"issues.update":[{}],"issues.create":[{"data":{"number":9999}}],"issues.listForRepo":[{"data":[]}]}'
 W1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1_RESP" OCTOKIT_STUB_LOG_ENV="$W1_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
   node "$ENGINE" run done 301 2>&1); W1_EC=$?
@@ -214,8 +216,10 @@ echo "§W2  runBulk done — スタブベース振る舞いテスト"
 # W2-1 正常系: 複数Issue一括完了、うち1件がrecur再作成。
 # BULK_CALLS_POSTDONE（旧ソースgrep）の置換: bulk done がrecur再作成をスキップしないことを
 # 実際のAPI呼び出しログで確認する（#1642回帰の実効テスト化）。
+# #1660修正後: 各Issueのpostdone処理でfetchAllOpen（issues.listForRepo）が呼ばれるため、
+# 2件（Issueごとに1回）の空応答を用意する
 W2_LOG=$(mktemp /tmp/todo-test-w2-XXXXXX.jsonl)
-W2_RESP='{"issues.get":[{"data":{"number":401,"id":9401,"title":"Simple Task","body":"","labels":[{"name":"📥 inbox"}]}},{"data":{"number":402,"id":9402,"title":"Weekly Task 2","body":"due: 2026-04-01\nrecur: weekly\n","labels":[{"name":"🎯 next"}]}}],"issues.update":[{},{}],"issues.create":[{"data":{"number":8888}}]}'
+W2_RESP='{"issues.get":[{"data":{"number":401,"id":9401,"title":"Simple Task","body":"","labels":[{"name":"📥 inbox"}]}},{"data":{"number":402,"id":9402,"title":"Weekly Task 2","body":"due: 2026-04-01\nrecur: weekly\n","labels":[{"name":"🎯 next"}]}}],"issues.update":[{},{}],"issues.create":[{"data":{"number":8888}}],"issues.listForRepo":[{"data":[]},{"data":[]}]}'
 W2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W2_RESP" OCTOKIT_STUB_LOG_ENV="$W2_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
   node "$ENGINE" run bulk done 401 402 2>&1); W2_EC=$?
@@ -310,6 +314,22 @@ assert_exit_fail "runView use 異常系: 存在しないビュー → exit 1" "$
 assert_contains "runView use 異常系: エラーメッセージ" 'ビュー「nosuchview」は存在しません' "$VUSE_MISS_OUT"
 assert_eq "runView use 異常系: API呼び出しゼロ（存在チェックがfetchAllOpenより先行）" "0" "$(wc -l < "$VUSE_MISS_LOG" | tr -d ' ')"
 rm -f "$VUSE_MISS_LOG"
+
+# W3-3 異常系（Issue #1675回帰）: view save で複数の @ctx を指定 → 無言で握りつぶさずエラー終了する
+VCTX2_OUT=$(OCTOKIT_STUB_ENV="$STUB" TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run view save multictx next @home @errand p1 2>&1); VCTX2_EC=$?
+assert_exit_fail "runView save 異常系（#1675）: 複数@ctx指定 → exit 1" "$VCTX2_EC"
+assert_contains "runView save 異常系（#1675）: エラーメッセージ" "エラー: view save では @ctx は1つのみ指定できます" "$VCTX2_OUT"
+VCTX2_LIST_OUT=$(OCTOKIT_STUB_ENV="$STUB" TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run view list 2>&1)
+assert_not_contains "runView save 異常系（#1675）: エラー時はビューが保存されない" "multictx" "$VCTX2_LIST_OUT"
+
+# W3-4 正常系（Issue #1675回帰）: @ctx が1つのみなら従来通り保存される
+VCTX1_OUT=$(OCTOKIT_STUB_ENV="$STUB" TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run view save singlectx next @home p1 2>&1); VCTX1_EC=$?
+assert_exit_ok "runView save 正常系（#1675）: 単一@ctxはexit 0" "$VCTX1_EC"
+assert_contains "runView save 正常系（#1675）: 保存メッセージ" "ビュー「singlectx」を保存しました。" "$VCTX1_OUT"
+assert_contains "runView save 正常系（#1675）: フィルタ内容 [next, @home, p1]" "[next, @home, p1]" "$VCTX1_OUT"
 
 export HOME="$W3_REAL_HOME"
 if [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* ]]; then
@@ -477,6 +497,227 @@ W8_OUT=$(env -u TODO_REPO_OWNER -u TODO_REPO_NAME OCTOKIT_STUB_ENV="$STUB" \
 assert_exit_fail "1644: run api list-comments <N>（スタブ経由）→ exit 1（TODO_REPO_OWNER/NAME未設定エラー）" "$W8_EC"
 assert_not_contains "1644: 'run api ...' が『未知のコマンド』エラーにならない（スタブ経由でも再確認）" '未知のコマンド「api」' "$W8_OUT"
 assert_contains "1644: run api list-comments が apiMain まで到達している（スタブ経由）" 'TODO_REPO_OWNER' "$W8_OUT"
+
+# ──────────────────────────────────────────
+# §W9  api done-issue — スタブベース振る舞いテスト（Issue #1669）
+# ──────────────────────────────────────────
+echo ""
+echo "§W9  api done-issue — スタブベース振る舞いテスト（Web版 done() のrecur再作成バグ修正）"
+
+# 背景: Web版 GitHubIssueRepository.done() は旧実装で `api close-issue` を呼ぶだけだった。
+# close-issue は octokit.issues.update({state:'closed'}) のみで、CLIの runDone が呼ぶ
+# postDoneProcessing（recur再作成 + depends_on昇格）を一切経由しないため、Web版で
+# recurタスクを完了すると繰り返しチェーンが無言で途切れていた。
+# 新設した `api done-issue` が runDone と同じ後処理を行い、かつ callEngineJson が
+# パースできるJSON（{ok:true, recurLine, otherLines, newIssueNumber}）を返すことを確認する。
+
+# W9-1 正常系: recur設定ありのissueをdone-issueで閉じると次周期のissueが作成される（skipなし）
+# #1660修正後: recurのみでproject/dependsOnがなくても depends_on 昇格チェックのため
+# fetchAllOpen（issues.listForRepo）が呼ばれるようになるため、空応答を1件用意する。
+W9_1_LOG=$(mktemp /tmp/todo-test-w9-1-XXXXXX.jsonl)
+W9_1_RESP='{"issues.get":[{"data":{"number":900,"id":9900,"title":"Weekly Report","body":"due: 2026-04-05\nrecur: weekly\n","labels":[{"name":"🎯 next"}]}}],"issues.update":[{}],"issues.create":[{"data":{"number":9001}}],"issues.listForRepo":[{"data":[]}]}'
+W9_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W9_1_RESP" OCTOKIT_STUB_LOG_ENV="$W9_1_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" api done-issue 900 2>&1); W9_1_EC=$?
+assert_exit_ok "done-issue 正常系(recurあり): exit 0" "$W9_1_EC"
+assert_contains "done-issue 正常系: JSON応答に ok:true" '"ok":true' "$W9_1_OUT"
+assert_contains "done-issue 正常系: JSON応答に newIssueNumber（recur再作成先）" '"newIssueNumber":9001' "$W9_1_OUT"
+assert_contains "done-issue 正常系: recurLine に次周期の日付" '繰り返しタスク #9001 を 2026-04-12 で作成しました。' "$W9_1_OUT"
+assert_not_contains "done-issue 正常系: 期限超過スキップ表示が出ない（due=today、期限超過なし）" 'スキップしました' "$W9_1_OUT"
+assert_eq "done-issue 正常系: issues.get 呼び出し1回" "1" "$(log_count "$W9_1_LOG" issues.get)"
+assert_eq "done-issue 正常系: issues.update 呼び出し1回（close）" "1" "$(log_count "$W9_1_LOG" issues.update)"
+assert_contains "done-issue 正常系: issues.update が state closed" '"state":"closed"' "$(log_lines_for_method "$W9_1_LOG" issues.update)"
+assert_eq "done-issue 正常系: issues.create 呼び出し1回（recur再作成。#1669の直接検証）" "1" "$(log_count "$W9_1_LOG" issues.create)"
+assert_contains "done-issue 正常系: issues.create body に次周期のdue/recurが伝播" '"body":"due: 2026-04-12\nrecur: weekly\n"' "$(log_lines_for_method "$W9_1_LOG" issues.create)"
+rm -f "$W9_1_LOG"
+
+# W9-2 正常系: recur設定なしのissueは通常通りcloseのみでrecur再作成が起きない
+# #1660修正後: depends_on昇格チェックは完了Issue自身のproject/dependsOn有無にかかわらず
+# 常にfetchAllOpen（issues.listForRepo）を実行するようになったため、呼び出し回数は0→1に変わる
+# （他のオープンIssueがこの完了Issueに依存していないかを確認するための呼び出し）。
+W9_2_LOG=$(mktemp /tmp/todo-test-w9-2-XXXXXX.jsonl)
+W9_2_RESP='{"issues.get":[{"data":{"number":950,"id":9950,"title":"Simple Task","body":"","labels":[{"name":"📥 inbox"}]}}],"issues.update":[{}],"issues.listForRepo":[{"data":[]}]}'
+W9_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W9_2_RESP" OCTOKIT_STUB_LOG_ENV="$W9_2_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" api done-issue 950 2>&1); W9_2_EC=$?
+assert_exit_ok "done-issue 正常系(recurなし): exit 0" "$W9_2_EC"
+assert_contains "done-issue 正常系(recurなし): recurLine が null" '"recurLine":null' "$W9_2_OUT"
+assert_contains "done-issue 正常系(recurなし): newIssueNumber が null" '"newIssueNumber":null' "$W9_2_OUT"
+assert_eq "done-issue 正常系(recurなし): issues.update 呼び出し1回（closeのみ）" "1" "$(log_count "$W9_2_LOG" issues.update)"
+assert_eq "done-issue 正常系(recurなし): issues.create 呼び出しゼロ（recur再作成が起きない）" "0" "$(log_count "$W9_2_LOG" issues.create)"
+assert_eq "done-issue 正常系(recurなし): issues.listForRepo 呼び出し1回（#1660修正後: project/depends_onなしでも依存関係チェックのためfetchAllOpenされる）" "1" "$(log_count "$W9_2_LOG" issues.listForRepo)"
+rm -f "$W9_2_LOG"
+
+# W9-3 境界値: 期限超過issueのcatch-up skip挙動（nextDueCatchUpの既存挙動がdone-issue経由でも壊れていないか）
+# #1660修正後: fetchAllOpen が project/dependsOn 有無に関わらず呼ばれるため空応答を1件用意する
+W9_3_LOG=$(mktemp /tmp/todo-test-w9-3-XXXXXX.jsonl)
+W9_3_RESP='{"issues.get":[{"data":{"number":960,"id":9960,"title":"Overdue Weekly","body":"due: 2026-03-01\nrecur: weekly\n","labels":[{"name":"🎯 next"}]}}],"issues.update":[{}],"issues.create":[{"data":{"number":9002}}],"issues.listForRepo":[{"data":[]}]}'
+W9_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W9_3_RESP" OCTOKIT_STUB_LOG_ENV="$W9_3_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" api done-issue 960 2>&1); W9_3_EC=$?
+assert_exit_ok "done-issue 境界値(期限超過catchup): exit 0" "$W9_3_EC"
+assert_contains "done-issue 境界値: catchup後の日付（2026-04-12）で再作成" '繰り返しタスク #9002 を 2026-04-12 で作成しました。' "$W9_3_OUT"
+assert_contains "done-issue 境界値: 期限超過スキップ表示あり（nextDueCatchUp連携が壊れていない）" '期限超過のため過去の周期をスキップしました' "$W9_3_OUT"
+assert_eq "done-issue 境界値: issues.create 呼び出し1回" "1" "$(log_count "$W9_3_LOG" issues.create)"
+rm -f "$W9_3_LOG"
+
+# W9-4 境界値: depends_on昇格がdone-issue経由でも従来通り動くか（postDoneProcessing共通後処理の実効検証）
+W9_4_LOG=$(mktemp /tmp/todo-test-w9-4-XXXXXX.jsonl)
+W9_4_RESP='{"issues.get":[{"data":{"number":500,"id":9500,"title":"Depends Task","body":"depends_on: #10\n","labels":[{"name":"🎯 next"}]}}],"issues.update":[{}],"issues.listForRepo":[{"data":[{"number":501,"title":"Some other task","body":"depends_on: #500\n","labels":[{"name":"🌈 someday"}],"updated_at":""}]}],"issues.removeLabel":[{}],"issues.addLabels":[{}]}'
+W9_4_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W9_4_RESP" OCTOKIT_STUB_LOG_ENV="$W9_4_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" api done-issue 500 2>&1); W9_4_EC=$?
+assert_exit_ok "done-issue 境界値(depends_on昇格): exit 0" "$W9_4_EC"
+assert_contains "done-issue 境界値: #501が next に昇格したメッセージがotherLinesに含まれる" '#501 「Some other task」を next に昇格しました（#500 完了トリガー）' "$W9_4_OUT"
+assert_contains "done-issue 境界値: 昇格件数サマリー（1件）" '1件を next に昇格しました' "$W9_4_OUT"
+assert_eq "done-issue 境界値: issues.listForRepo 呼び出し1回（fetchAllOpen、project/depends_onどちらかがトリガー）" "1" "$(log_count "$W9_4_LOG" issues.listForRepo)"
+assert_eq "done-issue 境界値: issues.removeLabel 呼び出し1回（#501の旧someday除去）" "1" "$(log_count "$W9_4_LOG" issues.removeLabel)"
+assert_contains "done-issue 境界値: removeLabel対象が#501のsomeday" '"issue_number":501,"name":"🌈 someday"' "$(log_lines_for_method "$W9_4_LOG" issues.removeLabel)"
+assert_eq "done-issue 境界値: issues.addLabels 呼び出し1回（#501にnext付与）" "1" "$(log_count "$W9_4_LOG" issues.addLabels)"
+assert_contains "done-issue 境界値: addLabels対象が#501にnext" '"issue_number":501,"labels":["🎯 next"]' "$(log_lines_for_method "$W9_4_LOG" issues.addLabels)"
+rm -f "$W9_4_LOG"
+
+# W9-5 異常系: 番号なし → バリデーションエラー、API呼び出しゼロ（副作用なし確認）
+W9_5_LOG=$(mktemp /tmp/todo-test-w9-5-XXXXXX.jsonl)
+: > "$W9_5_LOG"
+W9_5_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W9_5_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" api done-issue 2>&1); W9_5_EC=$?
+assert_exit_fail "done-issue 異常系: 番号なし → exit 1" "$W9_5_EC"
+assert_contains "done-issue 異常系: エラーメッセージ" "Usage: api done-issue <number>" "$W9_5_OUT"
+assert_eq "done-issue 異常系: API呼び出しゼロ（バリデーション先行の確認）" "0" "$(wc -l < "$W9_5_LOG" | tr -d ' ')"
+rm -f "$W9_5_LOG"
+
+# W9-6 セキュリティ/異常系: 存在しないIssue番号 → GitHub 404エラーがそのまま伝播し、非0で終了する
+# （close-issue 等の既存 api サブコマンドと同じく特別なハンドリングを追加していないことの確認）
+W9_6_LOG=$(mktemp /tmp/todo-test-w9-6-XXXXXX.jsonl)
+W9_6_RESP='{"issues.get":[{"__throw":true,"status":404,"message":"Not Found"}]}'
+W9_6_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W9_6_RESP" OCTOKIT_STUB_LOG_ENV="$W9_6_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" api done-issue 999999 2>&1); W9_6_EC=$?
+assert_exit_fail "done-issue セキュリティ/異常系: 存在しないIssue番号 → exit 1" "$W9_6_EC"
+assert_contains "done-issue セキュリティ/異常系: GitHub APIエラーメッセージが伝播する" "Not Found" "$W9_6_OUT"
+assert_eq "done-issue セキュリティ/異常系: issues.update（close）は呼ばれない（404で後続処理が実行されない）" "0" "$(log_count "$W9_6_LOG" issues.update)"
+rm -f "$W9_6_LOG"
+
+# ──────────────────────────────────────────
+# §W10  postDoneProcessing — depends_on昇格ガードの独立修正（Issue #1660 バグ1）
+# ──────────────────────────────────────────
+echo ""
+echo "§W10  postDoneProcessing — depends_on昇格ガードの独立修正（#1299/#1275型の回帰確認）"
+
+# 背景: 旧実装は `if (issue.project || issue.dependsOn)` で depends_on 昇格ブロック全体を
+# ガードしていた。しかし depends_on 昇格は「他のオープンIssueがこの完了Issueに依存しているか」
+# を調べる処理であり、完了した Issue 自身が project/dependsOn を持つかどうかとは無関係。
+# 実例: #1275（project/depends_onどちらも本文になし）が完了しても、#1299
+#（depends_on: #1275）が本来 next へ自動昇格するはずが、このガードのせいでスキップされていた。
+# 修正後は issue.project/issue.dependsOn によるガードなしで常に fetchAllOpen を実行する。
+
+# W10-1 正常系: 完了Issueがproject/dependsOnどちらも持たなくても、それに依存する
+# 他のオープンIssueが正しくnextへ昇格すること（#1299/#1275と同型の回帰テスト）
+W10_1_LOG=$(mktemp /tmp/todo-test-w10-1-XXXXXX.jsonl)
+W10_1_RESP='{"issues.get":[{"data":{"number":700,"id":9700,"title":"Root Task (no project/dependsOn)","body":"","labels":[{"name":"📥 inbox"}]}}],"issues.update":[{}],"issues.listForRepo":[{"data":[{"number":701,"title":"Dependent Task","body":"depends_on: #700\n","labels":[{"name":"🌈 someday"}],"updated_at":""}]}],"issues.removeLabel":[{}],"issues.addLabels":[{}]}'
+W10_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W10_1_RESP" OCTOKIT_STUB_LOG_ENV="$W10_1_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" api done-issue 700 2>&1); W10_1_EC=$?
+assert_exit_ok "W10-1 正常系: exit 0" "$W10_1_EC"
+assert_contains "W10-1 正常系: project/dependsOnなしの完了Issueでも依存Issue(#701)がnextに昇格する" '#701 「Dependent Task」を next に昇格しました（#700 完了トリガー）' "$W10_1_OUT"
+assert_contains "W10-1 正常系: 昇格件数サマリー（1件）" '1件を next に昇格しました' "$W10_1_OUT"
+assert_eq "W10-1 正常系: issues.listForRepo 呼び出し1回（project/dependsOnなしでもfetchAllOpenされる）" "1" "$(log_count "$W10_1_LOG" issues.listForRepo)"
+assert_eq "W10-1 正常系: issues.addLabels 呼び出し1回（#701にnext付与）" "1" "$(log_count "$W10_1_LOG" issues.addLabels)"
+assert_contains "W10-1 正常系: addLabels対象が#701にnext" '"issue_number":701,"labels":["🎯 next"]' "$(log_lines_for_method "$W10_1_LOG" issues.addLabels)"
+rm -f "$W10_1_LOG"
+
+# W10-2 正常系: 完了Issueがprojectを持つ場合、depends_on昇格とプロジェクト次タスク
+# 昇格候補ヒントの両方が引き続き動作すること（既存挙動の回帰確認）
+W10_2_LOG=$(mktemp /tmp/todo-test-w10-2-XXXXXX.jsonl)
+W10_2_RESP='{"issues.get":[{"data":{"number":710,"id":9710,"title":"Project Root Task","body":"project: #300\n","labels":[{"name":"🎯 next"}]}},{"data":{"number":300,"title":"Project X"}}],"issues.update":[{}],"issues.listForRepo":[{"data":[{"number":711,"title":"Project Sibling Task","body":"project: #300\n","labels":[{"name":"🌈 someday"}],"updated_at":""},{"number":712,"title":"Depends On Root","body":"depends_on: #710\n","labels":[{"name":"📥 inbox"}],"updated_at":""}]}],"issues.removeLabel":[{}],"issues.addLabels":[{}]}'
+W10_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W10_2_RESP" OCTOKIT_STUB_LOG_ENV="$W10_2_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" api done-issue 710 2>&1); W10_2_EC=$?
+assert_exit_ok "W10-2 正常系: exit 0" "$W10_2_EC"
+assert_contains "W10-2 正常系: depends_on昇格が引き続き動作する（#712がnextに昇格）" '#712 「Depends On Root」を next に昇格しました（#710 完了トリガー）' "$W10_2_OUT"
+assert_contains "W10-2 正常系: プロジェクト次タスク昇格候補ヒントが引き続き表示される（プロジェクト#300言及）" '#300' "$W10_2_OUT"
+assert_contains "W10-2 正常系: 昇格候補ヒントに#711（同じproject配下、未昇格）が含まれる" '#711' "$W10_2_OUT"
+assert_eq "W10-2 正常系: issues.listForRepo 呼び出し1回（depends_on昇格とプロジェクトヒントで共有）" "1" "$(log_count "$W10_2_LOG" issues.listForRepo)"
+rm -f "$W10_2_LOG"
+
+# W10-3 境界値: 依存する側が既にnextの場合は昇格スキップされること（既存ロジックの確認）
+W10_3_LOG=$(mktemp /tmp/todo-test-w10-3-XXXXXX.jsonl)
+W10_3_RESP='{"issues.get":[{"data":{"number":720,"id":9720,"title":"Root Task 2","body":"","labels":[{"name":"📥 inbox"}]}}],"issues.update":[{}],"issues.listForRepo":[{"data":[{"number":721,"title":"Already Next Task","body":"depends_on: #720\n","labels":[{"name":"🎯 next"}],"updated_at":""}]}]}'
+W10_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W10_3_RESP" OCTOKIT_STUB_LOG_ENV="$W10_3_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" api done-issue 720 2>&1); W10_3_EC=$?
+assert_exit_ok "W10-3 境界値: exit 0" "$W10_3_EC"
+assert_not_contains "W10-3 境界値: 既にnextの#721は昇格メッセージが出ない" '#721' "$W10_3_OUT"
+assert_not_contains "W10-3 境界値: 昇格件数サマリーが出ない（0件のため）" '件を next に昇格しました' "$W10_3_OUT"
+assert_eq "W10-3 境界値: issues.addLabels 呼び出しゼロ（既にnextのためラベル変更なし）" "0" "$(log_count "$W10_3_LOG" issues.addLabels)"
+assert_eq "W10-3 境界値: issues.removeLabel 呼び出しゼロ（既にnextのためラベル変更なし）" "0" "$(log_count "$W10_3_LOG" issues.removeLabel)"
+rm -f "$W10_3_LOG"
+
+# ──────────────────────────────────────────
+# §W11  runAdd — parseArgs タグ判定の空白制約（Issue #1660 バグ2）
+# ──────────────────────────────────────────
+echo ""
+echo "§W11  runAdd — parseArgs タグ判定の空白制約（#タイトルが空になるバグの回帰確認）"
+
+# 背景: 旧実装は `tok.startsWith('#') && !/^#\d+$/.test(tok)` で「#で始まり#数字のみでない」
+# トークンを丸ごとタグとみなしていた。空白を含まない制約がないため、タイトル全体が1つの
+# シェル引数（スペースを含む1トークン）として渡され、それが「#」で始まる場合
+#（例: "#1299 depends-on強化について"）、丸ごとタグ扱いされ削除され、タイトルが空になる
+# 「エラー: タイトルが空です」バグが発生していた。
+
+# W11-1 正常系: スペースを含む「#1299 ...」がタイトル全体で1トークンの場合、
+# タグ扱いされずタイトルとして正しく保存されること
+W11_1_LOG=$(mktemp /tmp/todo-test-w11-1-XXXXXX.jsonl)
+# GET .../labels/{name} は既定優先度(p3)のensureLabel呼び出し分（runAddは優先度未指定時もp3ラベルをensureする）
+W11_1_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{}],"issues.create":[{"data":{"number":6001,"html_url":"https://github.com/test-owner/test-repo/issues/6001"}}]}'
+W11_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W11_1_RESP" OCTOKIT_STUB_LOG_ENV="$W11_1_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run add next "#1299 depends-on強化について" 2>&1); W11_1_EC=$?
+assert_exit_ok "W11-1 正常系: exit 0" "$W11_1_EC"
+assert_contains "W11-1 正常系: スペースを含む#始まりの文字列がタグ扱いされずタイトルとして保存される" 'タイトル: #1299 depends-on強化について' "$W11_1_OUT"
+assert_contains "W11-1 正常系: issues.create titleにタイトル全体がそのまま渡る" '"title":"#1299 depends-on強化について"' "$(log_lines_for_method "$W11_1_LOG" issues.create)"
+rm -f "$W11_1_LOG"
+
+# W11-2 正常系: 純粋な「#1299」（スペースなし単体）は従来通りタイトルの一部として扱われること
+# （既存動作の回帰確認。#42のようなIssue番号表記はもともと除外対象）
+W11_2_LOG=$(mktemp /tmp/todo-test-w11-2-XXXXXX.jsonl)
+# GET .../labels/{name} は既定優先度(p3)のensureLabel呼び出し分
+W11_2_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{}],"issues.create":[{"data":{"number":6002,"html_url":"https://github.com/test-owner/test-repo/issues/6002"}}]}'
+W11_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W11_2_RESP" OCTOKIT_STUB_LOG_ENV="$W11_2_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run add next '#1299' 参照 2>&1); W11_2_EC=$?
+assert_exit_ok "W11-2 正常系: exit 0" "$W11_2_EC"
+assert_contains "W11-2 正常系: 純粋な#数字トークン単体はタグ扱いされずタイトルに含まれる（既存動作の回帰確認）" 'タイトル: #1299 参照' "$W11_2_OUT"
+assert_contains "W11-2 正常系: issues.create titleに#1299が含まれる" '"title":"#1299 参照"' "$(log_lines_for_method "$W11_2_LOG" issues.create)"
+rm -f "$W11_2_LOG"
+
+# W11-3 正常系: 「#urgent」（スペースなし単体、genuineな単語タグ）は従来通りタグとして
+# 正しく認識されること（既存動作の回帰確認）
+W11_3_LOG=$(mktemp /tmp/todo-test-w11-3-XXXXXX.jsonl)
+# GET .../labels/{name} は #urgentタグ + 既定優先度(p3)の2回分のensureLabel呼び出し
+W11_3_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{},{}],"issues.create":[{"data":{"number":6003,"html_url":"https://github.com/test-owner/test-repo/issues/6003"}}]}'
+W11_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W11_3_RESP" OCTOKIT_STUB_LOG_ENV="$W11_3_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run add next '#urgent' 重要なタスク 2>&1); W11_3_EC=$?
+assert_exit_ok "W11-3 正常系: exit 0" "$W11_3_EC"
+assert_contains "W11-3 正常系: #urgent単体はタグとして認識される（既存動作の回帰確認）" 'ラベル: 🎯 next, #urgent' "$W11_3_OUT"
+assert_contains "W11-3 正常系: タイトルから#urgentが除去され残りがタイトルになる" 'タイトル: 重要なタスク' "$W11_3_OUT"
+assert_contains "W11-3 正常系: issues.create labelsに#urgentが含まれる（既定優先度p3も付与される）" '"labels":["🎯 next","#urgent","p3"]' "$(log_lines_for_method "$W11_3_LOG" issues.create)"
+rm -f "$W11_3_LOG"
+
+# W11-4 境界値: タイトル全体がタグ扱いされ得る内容のみの場合、意図通り
+# 「タイトルが空です」エラーになること（#urgent単体のみを渡すケース）
+W11_4_LOG=$(mktemp /tmp/todo-test-w11-4-XXXXXX.jsonl)
+: > "$W11_4_LOG"
+W11_4_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W11_4_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add next '#urgent' 2>&1); W11_4_EC=$?
+assert_exit_fail "W11-4 境界値: タグのみ指定 → exit 1" "$W11_4_EC"
+assert_contains "W11-4 境界値: エラーメッセージ「タイトルが空です」" "タイトルが空です" "$W11_4_OUT"
+assert_eq "W11-4 境界値: API呼び出しゼロ（タイトル検証がラベル作成より先行）" "0" "$(wc -l < "$W11_4_LOG" | tr -d ' ')"
+rm -f "$W11_4_LOG"
 
 # ──────────────────────────────────────────
 # 結果サマリー（run-tests.sh から集計加算するための機械可読な行）

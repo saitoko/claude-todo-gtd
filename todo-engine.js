@@ -36,6 +36,7 @@ const MESSAGES = {
     'error.time_format': 'エラー: 時間は 30m / 1h / 1h30m 形式で指定してください',
     'error.file_corrupt': 'エラー: ファイルが破損しています',
     'error.desc_required': 'エラー: 説明テキストが必要です',
+    'error.view_ctx_multiple': 'エラー: view save では @ctx は1つのみ指定できます',
     // 警告
     'warn.month_rollover': '⚠️ 注意: {day}日は翌月に存在しないため、{date} に繰り上がりました',
     // セクションヘッダー
@@ -210,6 +211,7 @@ const MESSAGES = {
     'error.time_format': 'Error: Time must be in 30m / 1h / 1h30m format',
     'error.file_corrupt': 'Error: File is corrupted',
     'error.desc_required': 'Error: Description text is required',
+    'error.view_ctx_multiple': 'Error: view save allows only one @ctx',
     'warn.month_rollover': '⚠️ Note: Day {day} does not exist in the next month, rolled to {date}',
     'section.next': '## ✅ Next Actions',
     'section.routine': '## 🔁 Routine',
@@ -1960,6 +1962,25 @@ async function apiMain(subArgs) {
         break;
       }
 
+      // Issue #1669: close-issue は close するだけで postDoneProcessing（recur再作成 +
+      // depends_on昇格）を一切呼ばないため、Web版の done() 経由では繰り返しタスクの
+      // 周期チェーンが無言で途切れていた。CLIの `run done`（runDone）と同じ後処理を
+      // api 層からも呼べるようにする専用サブコマンド。
+      case 'done-issue': {
+        const num = parseInt(subArgs[1]);
+        if (!num) { throw apiErr('Usage: api done-issue <number>'); }
+        const issue = await fetchAndParseIssue(octokit, owner, repo, num);
+        await octokit.issues.update({ owner, repo, issue_number: num, state: 'closed' });
+        const { recurLine, otherLines, newIssueNumber } = await postDoneProcessing(octokit, owner, repo, num, issue);
+        process.stdout.write(JSON.stringify({
+          ok: true,
+          recurLine: recurLine || null,
+          otherLines: otherLines || [],
+          newIssueNumber: newIssueNumber || null,
+        }));
+        break;
+      }
+
       case 'reopen-issue': {
         const num = parseInt(subArgs[1]);
         if (!num) { throw apiErr('Usage: api reopen-issue <number>'); }
@@ -2270,8 +2291,10 @@ function parseArgs(tokens) {
       result.labels.push(remaining[i+1]); remaining.splice(i, 2); continue;
     } else if (tok.startsWith('@')) {
       result.contexts.push(tok); remaining.splice(i, 1); continue;
-    } else if (tok.startsWith('#') && !/^#\d+$/.test(tok)) {
-      // #tag: '#' + 文字を含む → 普通のタグ（#42 のような Issue番号は除外）
+    } else if (tok.startsWith('#') && !tok.includes(' ') && !/^#\d+$/.test(tok)) {
+      // #tag: '#' + 文字を含む単語（空白を含まない） → 普通のタグ（#42 のような Issue番号は除外）
+      // #1660: 空白を含む制約がないと、タイトル全体が1トークンで渡され「#」始まりの場合
+      // （例: "#1299 depends-on強化について"）丸ごとタグ扱いされ、タイトルが空になってしまう
       result.tags.push(tok); remaining.splice(i, 1); continue;
     }
     i++;
@@ -2667,6 +2690,7 @@ async function fetchRecentClosed(octokit, owner, repo, limit, fields) {
 async function postDoneProcessing(octokit, owner, repo, num, issue) {
   const today = getToday();
   let recurLine = null;
+  let newIssueNumber = null;
   const otherLines = [];
 
   if (issue.recur) {
@@ -2694,12 +2718,16 @@ async function postDoneProcessing(octokit, owner, repo, num, issue) {
       owner, repo, title: issue.title,
       body, labels: issue.labels
     });
+    newIssueNumber = newIssue.number;
     recurLine = `繰り返しタスク #${newIssue.number} を ${nextDate} で作成しました。${nextActivate ? '（activate: '+nextActivate+'）' : ''}${skipped ? `\n⏭ 期限超過のため過去の周期をスキップしました（due基準: ${base} → 再作成: ${nextDate}）` : ''}`;
   }
 
   // depends_on 昇格チェックおよびプロジェクト昇格候補ヒント
-  // issue.project がない場合でも depends_on を持つ場合は fetchAllOpen を実行する
-  if (issue.project || issue.dependsOn) {
+  // #1660: depends_on 昇格は「完了した Issue を他のオープン Issue が依存先にしているか」を
+  // 判定する処理であり、完了した Issue 自身の project/dependsOn フィールドとは論理的に無関係。
+  // そのためガードなしで常に fetchAllOpen を実行し、依存関係を確認する
+  // （#1299 が #1275 完了後に昇格しなかった不具合の修正）。
+  {
     const allOpenIssues = await fetchAllOpen(octokit, owner, repo);
 
     // depends_on: #N 昇格トリガー — 完了した Issue を依存先とするオープン Issue を next に昇格
@@ -2763,7 +2791,7 @@ async function postDoneProcessing(octokit, owner, repo, num, issue) {
     } // end if (issue.project)
   }
 
-  return { recurLine, otherLines };
+  return { recurLine, otherLines, newIssueNumber };
 }
 
 async function runDone(octokit, owner, repo, tokens) {
@@ -3666,6 +3694,11 @@ async function runView(octokit, owner, repo, tokens) {
     validateName(name);
     const rest = tokens.slice(2);
     let gtd = '', ctx = '', pri = '';
+    const ctxTokens = rest.filter(tok => tok.startsWith('@'));
+    if (ctxTokens.length > 1) {
+      process.stderr.write(t('error.view_ctx_multiple')+'\n');
+      process.exit(1);
+    }
     for (const tok of rest) {
       if (GTD_LABELS.includes(tok) || tok === PROJECT_LABEL) gtd = tok;
       else if (/^p[123]$/.test(tok)) pri = tok;

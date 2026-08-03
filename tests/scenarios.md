@@ -1454,21 +1454,33 @@ POST /repos/{owner}/{repo}/issues
 
 ---
 
-## 41. runDone fetchAllOpen 最適化（B-1: project 非紐付けissueの done）
+## 41. runDone における fetchAllOpen 呼び出し（depends_on昇格・プロジェクト昇格ヒント）
 
-> B-1実装（段階1）: issue.project がない場合は fetchAllOpen をスキップする最適化の動作確認
+> Issue #1660 修正（バグ1）: 旧実装は `if (issue.project || issue.dependsOn)`
+>（完了する Issue **自身**の project/dependsOn の有無）で depends_on 昇格ブロック全体を
+> ガードしていた。しかし depends_on 昇格は「他のオープン Issue がこの完了 Issue に
+> 依存しているか」を調べる処理であり、完了した Issue 自身が project/dependsOn を
+> 持つかどうかとは論理的に無関係。実例: #1275（project も depends_on も本文になし）が
+> 完了しても、#1299（depends_on: #1275）が本来 next へ自動昇格するはずが、この
+> ガードのせいで昇格ブロック全体がスキップされ waiting のまま放置されていた。
+> 修正後は project/dependsOn の有無に関わらず、常に fetchAllOpen を実行して
+> depends_on 昇格チェックを行う（プロジェクト昇格候補ヒントは、完了した Issue 自身が
+> project を持つ場合のみ表示する仕様は変わらない。こちらは論理的に妥当なガードのため維持）。
+> かつて「B-1実装（段階1）」として project 非紐付け時に fetchAllOpen をスキップする
+> 最適化があったが、#1660 の修正でこの最適化は撤去された（正確性を優先）。
 
-### 41-1. プロジェクト非紐付け issue の done（fetchAllOpen スキップ確認）
+### 41-1. プロジェクト非紐付け issue の done（fetchAllOpen は常に実行される）
 
-前提: プロジェクト紐付けなし（body に `project:` 行がない）の next Issue が存在する。
+前提: プロジェクト紐付けなし（body に `project:` 行がない）、かつ依存元 Issue も
+存在しない next Issue が存在する。
 
 ```
 /todo done <番号>
 ```
 期待:
 - Issue がクローズされる（`✅ #N を完了しました。` が出力される）
-- depends_on 昇格チェックおよびプロジェクト昇格候補ヒントは表示されない
-- （API観点）fetchAllOpen が呼ばれないため、GitHub API 呼び出しは 2〜3回以内で完了する
+- 依存する Issue が存在しないため、depends_on 昇格メッセージ・プロジェクト昇格候補ヒントは表示されない
+- （API観点）fetchAllOpen は project の有無に関わらず常に呼ばれる（依存関係チェックのため）
 
 ### 41-2. プロジェクト紐付きあり issue の done（従来通り昇格候補ヒント表示）
 
@@ -1486,20 +1498,21 @@ POST /repos/{owner}/{repo}/issues
 - 昇格候補ヒントのヘッダー・アイテム・フッターが正常に出力される
 - （API観点）fetchAllOpen が呼ばれるため、GitHub API 呼び出しは 4回以上になる（fetchAllOpen 2ページ分含む）
 
-### 41-3. recur あり / プロジェクト非紐付け issue の done（fetchAllOpen スキップ確認）
+### 41-3. recur あり / プロジェクト非紐付け issue の done（fetchAllOpen は常に実行される）
 
-前提: `recur: weekly` + プロジェクト非紐付けの next Issue が存在する。
+前提: `recur: weekly` + プロジェクト非紐付け、かつ依存元Issueも存在しない next Issue が存在する。
 
 ```
 /todo done <番号>
 ```
 期待:
 - Issue がクローズされ、次回分 Issue（7日後 due）が自動作成される
-- depends_on 昇格チェックおよびプロジェクト昇格候補ヒントは表示されない
+- 依存する Issue が存在しないため、depends_on 昇格メッセージ・プロジェクト昇格候補ヒントは表示されない
+- （API観点）fetchAllOpen は project の有無に関わらず常に呼ばれる
 
-### 41-4. `--note` 付き done / プロジェクト非紐付け（fetchAllOpen スキップ確認）
+### 41-4. `--note` 付き done / プロジェクト非紐付け（fetchAllOpen は常に実行される）
 
-前提: プロジェクト非紐付けの next Issue。
+前提: プロジェクト非紐付け、かつ依存元Issueも存在しない next Issue。
 
 ```
 /todo done <番号> --note "作業完了メモ"
@@ -1507,12 +1520,9 @@ POST /repos/{owner}/{repo}/issues
 期待:
 - Issue がクローズされる
 - close 後に「作業完了メモ」というコメントが追加される
-- depends_on 昇格チェックは行われない（fetchAllOpen スキップ）
+- 依存する Issue が存在しないため depends_on 昇格メッセージは表示されない（fetchAllOpen 自体は実行される）
 
-### 41-5. depends_on を持つ issue の依存先完了（段階1リグレッション確認）
-
-> 段階1実装では issue.project がない場合に fetchAllOpen をスキップする。
-> depends_on を持つ issue は issue.project も持つ前提（本段階での制約）。
+### 41-5. depends_on を持つ issue の依存先完了（project ありの回帰確認）
 
 前提:
 - Issue #X（waiting）の body に `depends_on: #Y`、`project: #P` が含まれる（プロジェクト紐付けあり）
@@ -1526,29 +1536,26 @@ POST /repos/{owner}/{repo}/issues
 - Issue #X のGTDラベルが `waiting` から `next` に変更される（depends_on 昇格が動作する）
 - プロジェクト #P の昇格候補ヒントも表示される
 
-注記: Issue #X に `project:` がない場合（段階1の範囲外）は昇格しない。これは既知の制約であり、段階2で対応予定。
-
-### 41-6. depends_on あり / project なし issue の依存先完了（段階1既知制約確認）
+### 41-6. depends_on あり / project なし issue の依存先完了（#1660 バグ1 修正の直接確認: #1299/#1275と同型）
 
 前提:
 - Issue #X（waiting）の body に `depends_on: #Y` が含まれ、`project:` 行がない
-- Issue #Y（next）を完了する
+- Issue #Y（next、project も depends_on も本文になし）を完了する
 
 ```
 /todo done Y
 ```
 期待:
 - Issue #Y がクローズされる
-- Issue #X は昇格しない（段階1の既知制約: project なしの depends_on はスキップされる）
-- ✅ #Y を完了しました。のみ出力される（昇格メッセージなし）
+- Issue #X のGTDラベルが `waiting` から `next` に変更される（#1660 修正により、
+  完了する Issue #Y 自身が project/depends_on を持たなくても depends_on 昇格が動作するようになった）
+- `✅ #X 「...」を next に昇格しました（#Y 完了トリガー）` が出力される
+- `✅ 1件を next に昇格しました` が出力される
 
-注記: 段階2実装後はこのテストの期待値が変わる（昇格するようになる）。
+注記: #1660 修正前は「project なしの depends_on はスキップされる」という実害バグだった
+（#1299 が #1275 完了後に waiting のまま放置された事例で発覚）。本ケースはその回帰テスト。
 
 ### 41-7. 完了 issue が dependsOn を持ち（project なし）、別 issue がその issue に依存している場合の昇格
-
-> L2626 バグ修正（`if (issue.project || issue.dependsOn)`）の効果確認テスト。
-> 完了する Issue 自体が `depends_on` を持つ（何かに依存していた）場合、fetchAllOpen を実行して
-> その Issue に依存している別 Issue を昇格できるようになった。
 
 前提:
 - Issue #A（next）の body に `depends_on: #B` が含まれ、`project:` 行がない（完了する側）
@@ -1568,10 +1575,10 @@ POST /repos/{owner}/{repo}/issues
 
 ### 41-8. 完了 issue が dependsOn のみ（project なし）のとき、プロジェクトヒントが誤表示されないこと
 
-> L2654 副作用バグ修正の確認テスト。
-> `if (issue.project || issue.dependsOn)` でブロックに入った際、
-> `issue.project` が空のままプロジェクト昇格候補ヒントロジックが走ると
-> 全 Issue が候補として誤リストアップされる問題の修正確認。
+> `if (issue.project)` ガードにより、完了した Issue 自身に project が設定されていない場合は
+> プロジェクト昇格候補ヒントロジック自体がスキップされる（depends_on 昇格チェックとは
+> 独立したガードとして #1660 修正後も維持される。誤って全 Issue が候補としてリストアップ
+> される問題が起きないことの確認）。
 
 前提: 41-7 と同条件（Issue #A が dependsOn のみ、project なし）
 
@@ -1853,3 +1860,56 @@ const newBody = buildBody({ ...parsed, reviewedAt: today });
 ### 44-7. CLI `build-body` サブコマンドの後方互換
 
 `todo.sh` 等の shell ラッパから呼ばれる `node todo-engine.js build-body <due> <recur> <project> <estimate> <actual> <desc> <activate> <before> <reviewedAt> <dependsOn>` の positional 引数 API が引き続き動作すること。内部では新オブジェクト形式に変換される。
+
+## 45. parseArgs タグ判定の空白制約（Issue #1660 バグ2）
+
+> 旧実装は `tok.startsWith('#') && !/^#\d+$/.test(tok)`（「#」で始まり「#数字のみ」でない）
+> トークンを丸ごとタグとみなしていた。空白を含まない制約がなかったため、タイトル全体が
+> 1つのシェル引数（スペースを含む1トークン）として渡された場合、そのタイトルが「#」で
+> 始まり「#数字のみ」でなければ丸ごとタグ扱いされ `remaining`（→タイトル）から除去され、
+> 「エラー: タイトルが空です」になる実害バグがあった。
+> 実例: `bash ~/.claude/todo.sh add next "#1299 depends-on強化について"` のように、
+> タイトル全体を1つの引数として渡す（本プロジェクトの通常の呼び出し方）と発生していた。
+> 修正後は `tok.startsWith('#') && !tok.includes(' ') && !/^#\d+$/.test(tok)` とし、
+> 空白を含む文字列はタグ扱いされなくなった。
+
+### 45-1. スペースを含む「#数字 ...」がタイトル全体で1トークンの場合、タグ扱いされずタイトルとして保存される（バグ実例の回帰確認）
+
+```
+/todo add next "#1299 depends-on強化について"
+```
+
+期待:
+- `エラー: タイトルが空です。` にならない
+- タイトルが「#1299 depends-on強化について」としてそのまま保存される（タグとして除去されない）
+
+### 45-2. 純粋な「#数字」単体（スペースなし）は従来通りタイトルの一部として扱われる（既存動作の回帰確認）
+
+```
+/todo add next #1299 参照
+```
+
+期待:
+- タイトルは「#1299 参照」（`#1299` は Issue番号参照として `extra` に残る。43-8 と同種の既存動作）
+- `#1299` というラベルは作成・付与されない
+
+### 45-3. 「#urgent」（スペースなし単体、genuineな単語タグ）は従来通りタグとして認識される（既存動作の回帰確認）
+
+```
+/todo add next #urgent 重要なタスク
+```
+
+期待:
+- `#urgent` ラベルが付与される（タイトルには含まれない）
+- タイトルは「重要なタスク」
+
+### 45-4. タイトル全体がタグ扱いされ得る内容のみの場合、意図通り「タイトルが空です」エラーになる（境界値）
+
+```
+/todo add next #urgent
+```
+
+期待:
+- `#urgent` は空白を含まない単語単体のためタグ扱いされる
+- 残りのタイトルトークンが0件になり、`エラー: タイトルが空です。` が表示され終了コード1で終了する
+- （このケースはバグ修正の影響を受けない。空白を含まない genuine なタグのみ指定した場合は修正前後で変わらずエラーになるのが正しい）
