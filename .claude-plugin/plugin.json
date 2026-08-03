@@ -1,6 +1,6 @@
 {
   "name": "claude-todo-gtd",
-  "version": "2.5.0",
+  "version": "2.6.0",
   "description": "Turn GitHub Issues into a GTD inbox. Add tasks, triage inbox, run weekly reviews, and track projects — all through natural language. Works in CLI mode (todo.sh) or GitHub MCP with zero extra infrastructure.",
   "author": {
     "name": "Koichi Saito",

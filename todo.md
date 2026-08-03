@@ -120,6 +120,7 @@ MCP_MODEでは `bash ~/.claude/todo.sh` は呼び出さない。GitHub MCP ツ�
 | `search <キーワード>` | オープンIssueをタイトル・本文から検索 |
 | `edit <#> --activate <日付>` | フォローアップ日（自動昇格日）を設定。waiting タスクに活用（例: `bash ~/.claude/todo.sh edit 42 --activate 4/22`） |
 | `activate <#> <日付>` | `edit <#> --activate <日付>` の簡略記法 |
+| `edit <#> --resume-condition <テキスト>` | 再開条件（フリーテキスト）を設定。`promote` は activate 到来かつ resume_condition 設定済みの Issue を機械的に自動昇格せず、確認待ちとして通知のみ行う（`clear` でクリア。週次レビュー時に resume_condition が設定済みかつ activate 到来のタスクを一覧し、条件が満たされたか自分で確認してから `promote` または `edit --activate` で再設定して昇格させる運用） |
 | `review-someday <番号>` | somedayタスクの見直し日(reviewed_at)を今日に更新 |
 | `today` | 今日のタスク（期限超過＋今日期限） |
 | `eisenhower` | アイゼンハワーマトリクス（next タスクを重要×緊急の4象限で表示） |

@@ -10,6 +10,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v2.6.0] - 2026-08-04
+
+### Added
+
+- `resume_condition` フィールドを新設（`due:`/`activate:` と同じ行プレフィックス方式）。`edit --resume-condition <テキスト>`（`clear` でクリア）・`add --resume-condition <テキスト>` に対応。`promote` は activate 到来かつ resume_condition 設定済みの Issue を機械的に自動昇格せず、`⏸` の確認待ちメッセージを出力するのみに留める（resume_condition なしの既存挙動は完全維持）。JSON出力（`show`/`list`/`search --json`）・`schema` にも `resumeCondition` フィールドを追加。実際の条件充足判定はエンジン側に持ち込まず、週次レビュー時にユーザー自身が確認してから `promote` させる運用に委ねる設計（背景: activate 到来のみで機械的に next 昇格したタスクが、実質的な再開条件を満たさないまま昇格していた実例があった）
+
+### Known limitations
+
+- CLI `build-body` サブコマンド（後方互換のための固定位置引数API、10個）は `resume_condition` を受け取る引数を持たない。`buildBody`側はデフォルト空文字のため実害はないが、このAPI経由で`resume_condition`を設定することはできない（`edit --resume-condition`を使うこと）
+- リカレンスタスク完了時の再作成（`postDoneProcessing`）で `resume_condition` は次回分に引き継がれない（due/recur/project等の他フィールドと異なる挙動のため要注意）
+
+---
+
 ## [v2.5.0] - 2026-08-03
 
 ### Added

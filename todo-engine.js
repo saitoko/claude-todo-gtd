@@ -37,6 +37,7 @@ const MESSAGES = {
     'error.file_corrupt': 'エラー: ファイルが破損しています',
     'error.desc_required': 'エラー: 説明テキストが必要です',
     'error.view_ctx_multiple': 'エラー: view save では @ctx は1つのみ指定できます',
+    'error.resume_condition_newline': 'エラー: resume_condition に改行を含めることはできません（1行のみ）',
     // 警告
     'warn.month_rollover': '⚠️ 注意: {day}日は翌月に存在しないため、{date} に繰り上がりました',
     // セクションヘッダー
@@ -179,10 +180,13 @@ const MESSAGES = {
     'promote.promoted': '✅ #{num} 「{title}」を next に昇格しました（activate: {activate}）',
     'promote.no_targets': '昇格対象なし（activate日到来タスク: 0件）',
     'promote.summary': '✅ {n}件を next に昇格しました',
+    'promote.pending_review': '⏸ #{num} 「{title}」activate日到来ですが再開条件の確認が必要です: {condition}',
+    'promote.pending_summary': '⏸ {n}件が再開条件の確認待ちです（次回 /todo weekly-review で確認してください）',
     'help.promote': '/todo promote                   activate日到来タスクをNEXTに昇格',
     'help.activate': '  --activate <日付>             指定日にNEXTへ自動昇格（例: 2026-05-01）',
     'help.before': '  --before <期間>               dueのN日前にNEXTへ自動昇格（例: 14d, 2w）',
     'help.depends_on': '  --depends-on <#N>            指定タスク完了時にNEXTへ自動昇格',
+    'help.resume_condition': '  --resume-condition <テキスト>       再開条件を記述（promoteが自動昇格せず確認を促す）',
     'promote.promoted_depends': '✅ #{num} 「{title}」を next に昇格しました（#{dep} 完了トリガー）',
     'done.promote_hint_header': '💡 プロジェクト #{proj}「{title}」に昇格候補があります:',
     'done.promote_hint_item':   '  {i}. #{num}「{title}」({gtd})',
@@ -212,6 +216,7 @@ const MESSAGES = {
     'error.file_corrupt': 'Error: File is corrupted',
     'error.desc_required': 'Error: Description text is required',
     'error.view_ctx_multiple': 'Error: view save allows only one @ctx',
+    'error.resume_condition_newline': 'Error: resume_condition must not contain line breaks (single line only)',
     'warn.month_rollover': '⚠️ Note: Day {day} does not exist in the next month, rolled to {date}',
     'section.next': '## ✅ Next Actions',
     'section.routine': '## 🔁 Routine',
@@ -345,10 +350,13 @@ const MESSAGES = {
     'promote.promoted': '✅ #{num} "{title}" promoted to next (activate: {activate})',
     'promote.no_targets': 'No targets to promote (activate date arrived: 0)',
     'promote.summary': '✅ {n} tasks promoted to next',
+    'promote.pending_review': '⏸ #{num} "{title}" activate date arrived but resume condition needs review: {condition}',
+    'promote.pending_summary': '⏸ {n} task(s) awaiting resume condition review (check at next /todo weekly-review)',
     'help.promote': '/todo promote                   Promote tasks whose activate date has arrived',
     'help.activate': '  --activate <date>             Auto-promote to NEXT on specified date',
     'help.before': '  --before <duration>           Auto-promote N days before due (e.g. 14d, 2w)',
     'help.depends_on': '  --depends-on <#N>            Auto-promote to NEXT when specified task is completed',
+    'help.resume_condition': '  --resume-condition <text>          Describe resume condition (promote will skip and request review)',
     'promote.promoted_depends': '✅ #{num} "{title}" promoted to next (#{dep} completion trigger)',
     'done.promote_hint_header': '💡 Project #{proj} "{title}" has promotion candidates:',
     'done.promote_hint_item':   '  {i}. #{num} "{title}" ({gtd})',
@@ -494,7 +502,7 @@ function normalizeDue(raw, today) {
 // body を解析してオブジェクトで返す（parseBody の内部実装。全フィールドを一元管理）
 function parseBodyObj(body) {
   const lines = (body || '').split('\n');
-  let due = '', recur = '', project = '', estimate = '', actual = '', activate = '', before = '', reviewedAt = '', dependsOn = '', descLines = [];
+  let due = '', recur = '', project = '', estimate = '', actual = '', activate = '', before = '', reviewedAt = '', dependsOn = '', resumeCondition = '', descLines = [];
   for (const line of lines) {
     if (line.startsWith('due: ')) due = line.slice(5);
     else if (line.startsWith('recur: ')) recur = line.slice(7);
@@ -505,19 +513,21 @@ function parseBodyObj(body) {
     else if (line.startsWith('before: ')) before = line.slice(8);
     else if (line.startsWith('reviewed_at: ')) reviewedAt = line.slice(13);
     else if (line.startsWith('depends_on: #')) dependsOn = line.slice(13);
+    else if (line.startsWith('resume_condition: ')) resumeCondition = line.slice(18);
     else descLines.push(line);
   }
   while (descLines.length && descLines[0].trim() === '') descLines.shift();
-  return { due, recur, project, estimate, actual, activate, before, reviewedAt, dependsOn, desc: descLines.join('\n') };
+  return { due, recur, project, estimate, actual, activate, before, reviewedAt, dependsOn, resumeCondition, desc: descLines.join('\n') };
 }
 
 // parseBody: shell スクリプト向け外部 API（parse-body / extract-issue-fields サブコマンド）
 // parseBodyObj のラッパー。フィールド追加時は parseBodyObj のみ更新すればよい。
-// 出力フォーマット（KEY=VALUE\n...）は後方互換のため不変に保つ。
+// 出力フォーマット（KEY=VALUE\n...）は後方互換のため不変に保つ（既存キーの並び順・値は変更しない。
+// 新フィールドは末尾に追加する）。
 function parseBody(body) {
   const o = parseBodyObj(body);
   const descB64 = Buffer.from(o.desc, 'utf8').toString('base64');
-  return 'DUE='+o.due+'\nRECUR='+o.recur+'\nPROJECT='+o.project+'\nESTIMATE='+o.estimate+'\nACTUAL='+o.actual+'\nACTIVATE='+o.activate+'\nBEFORE='+o.before+'\nREVIEWED_AT='+o.reviewedAt+'\nDESC_B64='+descB64;
+  return 'DUE='+o.due+'\nRECUR='+o.recur+'\nPROJECT='+o.project+'\nESTIMATE='+o.estimate+'\nACTUAL='+o.actual+'\nACTIVATE='+o.activate+'\nBEFORE='+o.before+'\nREVIEWED_AT='+o.reviewedAt+'\nDESC_B64='+descB64+'\nRESUME_CONDITION='+o.resumeCondition;
 }
 
 // 1回の gh issue view --json title,labels,body で取得した JSON から
@@ -543,12 +553,13 @@ function extractIssueFields() {
 function buildBody(fields) {
   const {
     due = '', recur = '', project = '', estimate = '', actual = '',
-    desc = '', activate = '', before = '', reviewedAt = '', dependsOn = ''
+    desc = '', activate = '', before = '', reviewedAt = '', dependsOn = '', resumeCondition = ''
   } = fields || {};
   let body = '';
   const NL = '\n';
   if (due) body += 'due: '+due+NL;
   if (activate) body += 'activate: '+activate+NL;
+  if (resumeCondition) body += 'resume_condition: '+resumeCondition+NL;
   if (before) body += 'before: '+before+NL;
   if (dependsOn) body += 'depends_on: #'+dependsOn+NL;
   if (recur) body += 'recur: '+recur+NL;
@@ -693,6 +704,15 @@ function validateName(value) {
       process.stderr.write(t('error.name_invalid')+'\n');
       process.exit(1);
     }
+  }
+}
+
+// resume_condition バリデーション: 改行混入のみ禁止（行プレフィックス解析の破損防止）。
+// 文字種は制限しない（desc同様の自由記述のため）。
+function validateResumeCondition(value) {
+  if (/[\r\n]/.test(value)) {
+    process.stderr.write(t('error.resume_condition_newline')+'\n');
+    process.exit(1);
   }
 }
 
@@ -1164,10 +1184,11 @@ function help() {
   for (const k of ['show','schema','review','archive','link','promote','help']) { w(t('help.'+k)+'\n'); }
   w('```\n\n');
 
-  w('### activate / before オプション\n');
+  w('### activate / before / resume_condition オプション\n');
   w('```\n');
   w(t('help.activate')+'\n');
   w(t('help.before')+'\n');
+  w(t('help.resume_condition')+'\n');
   w('```\n');
   w('\n');
   w(t('help.desc_note')+'\n');
@@ -2244,7 +2265,8 @@ function parseArgs(tokens) {
   const result = {
     gtd: null, title: null, contexts: [], tags: [], due: null, desc: null,
     recur: null, project: null, priority: null, estimate: null, actual: null,
-    dueOffset: null, color: null, activate: null, before: null, dependsOn: null, note: null,
+    dueOffset: null, color: null, activate: null, before: null, dependsOn: null,
+    resumeCondition: null, note: null,
     body: null, bodyFile: null,
     labels: [], extra: []
   };
@@ -2281,6 +2303,8 @@ function parseArgs(tokens) {
       result.before = remaining[i+1]; remaining.splice(i, 2); continue;
     } else if (tok === '--depends-on' && i+1 < remaining.length) {
       result.dependsOn = remaining[i+1].replace(/^#/, ''); remaining.splice(i, 2); continue;
+    } else if (tok === '--resume-condition' && i+1 < remaining.length) {
+      result.resumeCondition = remaining[i+1]; remaining.splice(i, 2); continue;
     } else if (tok === '--note' && i+1 < remaining.length) {
       result.note = remaining[i+1]; remaining.splice(i, 2); continue;
     } else if (tok === '--body' && i+1 < remaining.length) {
@@ -2444,6 +2468,8 @@ async function runAdd(octokit, owner, repo, tokens) {
     estimateMin = parseTime(parsed.estimate);
     if (estimateMin === null) { process.stderr.write(t('error.time_format')+'\n'); process.exit(1); }
   }
+  // resume_condition バリデーション（改行混入のみ禁止）。ラベル作成等の副作用より前に検証する。
+  if (parsed.resumeCondition) validateResumeCondition(parsed.resumeCondition);
 
   const labels = [GTD_DISPLAY[gtd]];
   // コンテキストラベル作成
@@ -2528,6 +2554,7 @@ async function runAdd(octokit, owner, repo, tokens) {
     activate,
     before:    beforeStr,
     dependsOn: parsed.dependsOn || '',
+    resumeCondition: parsed.resumeCondition || '',
   });
   // メタデータ本文とユーザー本文を結合（両方ある場合は空行で区切る）
   const body = metaBody && userBody ? metaBody + '\n' + userBody
@@ -2922,6 +2949,7 @@ async function runEdit(octokit, owner, repo, tokens) {
 
   let due = issue.due, recur = issue.recur, project = issue.project, desc = issue.desc, estimate = issue.estimate;
   let activate = issue.activate || '', beforeStr = issue.before || '', dependsOn = issue.dependsOn || '';
+  let resumeCondition = issue.resumeCondition || '';
   let dueChanged = false;
 
   if (parsed.due !== null) {
@@ -3005,11 +3033,22 @@ async function runEdit(octokit, owner, repo, tokens) {
     }
   }
 
+  // resume_condition 編集
+  if (parsed.resumeCondition !== null) {
+    if (parsed.resumeCondition === 'clear') {
+      resumeCondition = ''; changed.push('resume_condition → クリア');
+    } else {
+      validateResumeCondition(parsed.resumeCondition);
+      resumeCondition = parsed.resumeCondition; changed.push('resume_condition → '+resumeCondition);
+    }
+  }
+
   const body = buildBody({
     ...issue,
     due, recur, project, estimate, desc, activate,
     before: beforeStr,
     dependsOn,
+    resumeCondition,
   });
   const updateParams = { owner, repo, issue_number: num, body };
 
@@ -3542,6 +3581,7 @@ function issueToJsonObj(rawIssue) {
     project: parsed.project ? parseInt(parsed.project) : null,
     activate: parsed.activate || null,
     dependsOn: parsed.dependsOn ? parseInt(parsed.dependsOn) : null,
+    resumeCondition: parsed.resumeCondition || null,
     desc: parsed.desc && parsed.desc.trim() ? parsed.desc.trim() : null,
     labels: lnames,
   };
@@ -3570,6 +3610,7 @@ function runSchema() {
       project:          { type: "integer | null",  description: "親プロジェクトの Issue 番号" },
       activate:         { type: "string | null",   description: "NEXT 自動昇格日 (YYYY-MM-DD)" },
       dependsOn:        { type: "integer | null",  description: "依存先の Issue 番号" },
+      resumeCondition:  { type: "string | null",   description: "再開条件（フリーテキスト）。promoteが自動昇格をスキップし確認を促す条件" },
       desc:             { type: "string | null",   description: "説明テキスト（body のメタフィールド除いた部分）" },
       labels:           { type: "string[]",        description: "全ラベル（GTD絵文字なし正規化済み）" }
     }
@@ -3646,6 +3687,7 @@ async function runShow(octokit, owner, repo, tokens) {
       project: issue.project || null,
       activate: issue.activate || null,
       dependsOn: issue.dependsOn || null,
+      resumeCondition: issue.resumeCondition || null,
       desc: (issue.desc && issue.desc.trim()) ? issue.desc.trim() : null,
       labels: issue.labels,
     };
@@ -3669,6 +3711,7 @@ async function runShow(octokit, owner, repo, tokens) {
   if (issue.project) lines.push(`- プロジェクト: #${issue.project}`);
   if (issue.activate) lines.push(`- activate: ${issue.activate}`);
   if (issue.dependsOn) lines.push(`- depends_on: #${issue.dependsOn}`);
+  if (issue.resumeCondition) lines.push(`- resume_condition: ${issue.resumeCondition}`);
   if (tags.length) lines.push(`- その他ラベル: ${tags.join(', ')}`);
 
   if (issue.desc && issue.desc.trim()) {
@@ -3875,6 +3918,7 @@ async function runPromote(octokit, owner, repo) {
   const allIssues = await fetchAllOpen(octokit, owner, repo);
   const nextLabel = GTD_DISPLAY['next'];
   let promoted = 0;
+  let pendingReview = 0;
 
   for (const raw of allIssues) {
     const parsed = parseBodyObj(raw.body || '');
@@ -3888,6 +3932,14 @@ async function runPromote(octokit, owner, repo) {
     // すでに next ならスキップ
     if (gtdLabel && normLabel(gtdLabel) === 'next') continue;
 
+    // resume_condition あり → 機械的自動昇格をスキップし、確認要求のみ出力する
+    // （Issue #1299由来の欠陥修正: activate到来のみで実質的な再開条件を無視して昇格していた）
+    if (parsed.resumeCondition) {
+      runOut(tpl('promote.pending_review', { num: raw.number, title: raw.title, condition: parsed.resumeCondition }));
+      pendingReview++;
+      continue;
+    }
+
     // GTDラベルをnextに切り替え
     if (gtdLabel) {
       await removeLabelIfPresent(octokit, owner, repo, raw.number, gtdLabel);
@@ -3897,10 +3949,11 @@ async function runPromote(octokit, owner, repo) {
     promoted++;
   }
 
-  if (promoted === 0) {
+  if (promoted === 0 && pendingReview === 0) {
     runOut(t('promote.no_targets'));
   } else {
-    runOut(tpl('promote.summary', { n: promoted }));
+    if (promoted > 0) runOut(tpl('promote.summary', { n: promoted }));
+    if (pendingReview > 0) runOut(tpl('promote.pending_summary', { n: pendingReview }));
   }
 }
 
