@@ -3188,23 +3188,23 @@ echo "--- Phase 1 レビュー修正テスト ---"
 # 🔴-3: runLabel null チェック — 引数なし呼び出しでクラッシュしない
 # （Issue #1648: GH_TOKEN=dummy → OCTOKIT_STUB_ENV に置換。実 @octokit/rest の実インストール
 #  に依存せず完結する。バリデーションエラーで即終了するため応答フィクスチャは不要）
-LABEL_ADD_NOOP=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" REPO_OWNER=test REPO_NAME=test \
+LABEL_ADD_NOOP=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" TODO_REPO_OWNER=test TODO_REPO_NAME=test \
   node "$ENGINE" run label add 2>&1); EC_LABEL_ADD=$?
 assert_exit_fail "/todo label add（引数なし）→ exit 1" "$EC_LABEL_ADD"
 assert_contains "/todo label add（引数なし）→ Usage 出力" "Usage" "$LABEL_ADD_NOOP"
 
-LABEL_DEL_NOOP=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" REPO_OWNER=test REPO_NAME=test \
+LABEL_DEL_NOOP=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" TODO_REPO_OWNER=test TODO_REPO_NAME=test \
   node "$ENGINE" run label delete 2>&1); EC_LABEL_DEL=$?
 assert_exit_fail "/todo label delete（引数なし）→ exit 1" "$EC_LABEL_DEL"
 assert_contains "/todo label delete（引数なし）→ Usage 出力" "Usage" "$LABEL_DEL_NOOP"
 
-LABEL_REN_ONE=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" REPO_OWNER=test REPO_NAME=test \
+LABEL_REN_ONE=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" TODO_REPO_OWNER=test TODO_REPO_NAME=test \
   node "$ENGINE" run label rename foo 2>&1); EC_LABEL_REN=$?
 assert_exit_fail "/todo label rename（引数1個）→ exit 1" "$EC_LABEL_REN"
 assert_contains "/todo label rename（引数1個）→ Usage 出力" "Usage" "$LABEL_REN_ONE"
 
 # 🔴-4: runView 引数なし呼び出しでクラッシュしない
-VIEW_NOOP=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" REPO_OWNER=test REPO_NAME=test \
+VIEW_NOOP=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" TODO_REPO_OWNER=test TODO_REPO_NAME=test \
   node "$ENGINE" run view 2>&1); EC_VIEW=$?
 assert_exit_fail "/todo view（引数なし）→ exit 1" "$EC_VIEW"
 assert_contains "/todo view（引数なし）→ Usage 出力" "Usage" "$VIEW_NOOP"
@@ -3340,17 +3340,17 @@ echo ""
 echo "▶ Issue #1644: tag rename 回帰テスト（エンジン直叩き。label rename と処理を共用）"
 
 # 1) 引数不足 → Usage エラー（label rename の既存挙動と同様）
-TAG_REN_NOOP=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" node "$ENGINE" run tag rename foo 2>&1); EC_TAG_REN_NOOP=$?
+TAG_REN_NOOP=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" TODO_REPO_OWNER=test TODO_REPO_NAME=test node "$ENGINE" run tag rename foo 2>&1); EC_TAG_REN_NOOP=$?
 assert_exit_fail "1644: /todo tag rename（引数1個）→ exit 1" "$EC_TAG_REN_NOOP"
 assert_contains "1644: /todo tag rename（引数1個）→ Usage 出力" "Usage" "$TAG_REN_NOOP"
 
 # 2) 不正文字を含む名前 → validateCtx まで到達してエラー（renameCtxLabel への委譲を実行経路で確認。実GitHub通信なし）
-TAG_REN_INVALID=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" node "$ENGINE" run tag rename 'a;b' newctx 2>&1); EC_TAG_REN_INVALID=$?
+TAG_REN_INVALID=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" TODO_REPO_OWNER=test TODO_REPO_NAME=test node "$ENGINE" run tag rename 'a;b' newctx 2>&1); EC_TAG_REN_INVALID=$?
 assert_exit_fail "1644: /todo tag rename 不正文字 → exit 1" "$EC_TAG_REN_INVALID"
 assert_contains "1644: /todo tag rename 不正文字エラー（label rename と同じ検証ロジックに到達）" "コンテキスト名に不正文字" "$TAG_REN_INVALID"
 
 # 3) label rename 側もリファクタ後に同じ検証が効くことを確認（runLabel → renameCtxLabel 委譲の回帰防止）
-LABEL_REN_INVALID=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" node "$ENGINE" run label rename 'a;b' newctx 2>&1); EC_LABEL_REN_INVALID=$?
+LABEL_REN_INVALID=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" TODO_REPO_OWNER=test TODO_REPO_NAME=test node "$ENGINE" run label rename 'a;b' newctx 2>&1); EC_LABEL_REN_INVALID=$?
 assert_exit_fail "1644: /todo label rename 不正文字 → exit 1（リファクタ後も検証が効く）" "$EC_LABEL_REN_INVALID"
 assert_contains "1644: /todo label rename 不正文字エラー" "コンテキスト名に不正文字" "$LABEL_REN_INVALID"
 
@@ -3366,30 +3366,30 @@ echo "▶ Issue #1646: 予約語タイトル誤爆ガード（エンジン直叩
 # initOctokit() はトークン文字列とローカルの @octokit/rest モジュール解決のみでネットワーク不要。
 # ガードは runAdd 内の ensureLabel/issues.create 等の実API呼び出しより前（GTD分岐の入口）で
 # 発火するため、この一連の呼び出しはネットワークアクセスなしで完結する。
-G1646_LIST=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" node "$ENGINE" run project list 2>&1); EC_1646_LIST=$?
+G1646_LIST=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" TODO_REPO_OWNER=test TODO_REPO_NAME=test node "$ENGINE" run project list 2>&1); EC_1646_LIST=$?
 assert_exit_fail "1646: /todo project list → exit 1（誤爆ガード発火）" "$EC_1646_LIST"
 assert_contains "1646: /todo project list → ガードメッセージに「list」を含む" '「list」はコマンド名です' "$G1646_LIST"
 assert_contains "1646: /todo project list → 一覧表示の誘導 (/todo list project)" '/todo list project' "$G1646_LIST"
 assert_contains "1646: /todo project list → add明示の誘導 (/todo add project list)" '/todo add project list' "$G1646_LIST"
 
-G1646_HELP=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" node "$ENGINE" run next help 2>&1); EC_1646_HELP=$?
+G1646_HELP=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" TODO_REPO_OWNER=test TODO_REPO_NAME=test node "$ENGINE" run next help 2>&1); EC_1646_HELP=$?
 assert_exit_fail "1646: /todo next help → exit 1（誤爆ガード発火）" "$EC_1646_HELP"
 assert_contains "1646: /todo next help → ガードメッセージに「help」を含む" '「help」はコマンド名です' "$G1646_HELP"
 
-G1646_DONE=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" node "$ENGINE" run waiting done 2>&1); EC_1646_DONE=$?
+G1646_DONE=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" TODO_REPO_OWNER=test TODO_REPO_NAME=test node "$ENGINE" run waiting done 2>&1); EC_1646_DONE=$?
 assert_exit_fail "1646: /todo waiting done → exit 1（誤爆ガード発火）" "$EC_1646_DONE"
 assert_contains "1646: /todo waiting done → ガードメッセージに「done」を含む" '「done」はコマンド名です' "$G1646_DONE"
 
-G1646_PROJECT=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" node "$ENGINE" run someday project 2>&1); EC_1646_PROJECT=$?
+G1646_PROJECT=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" TODO_REPO_OWNER=test TODO_REPO_NAME=test node "$ENGINE" run someday project 2>&1); EC_1646_PROJECT=$?
 assert_exit_fail "1646: /todo someday project → exit 1（誤爆ガード発火。project は switch外の手動追加分）" "$EC_1646_PROJECT"
 assert_contains "1646: /todo someday project → ガードメッセージに「project」を含む" '「project」はコマンド名です' "$G1646_PROJECT"
 
-G1646_COUNTS=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" node "$ENGINE" run inbox counts 2>&1); EC_1646_COUNTS=$?
+G1646_COUNTS=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" TODO_REPO_OWNER=test TODO_REPO_NAME=test node "$ENGINE" run inbox counts 2>&1); EC_1646_COUNTS=$?
 assert_exit_fail "1646: /todo inbox counts → exit 1（誤爆ガード発火。counts は todo.sh 層専用コマンドとして手動追加）" "$EC_1646_COUNTS"
 assert_contains "1646: /todo inbox counts → ガードメッセージに「counts」を含む" '「counts」はコマンド名です' "$G1646_COUNTS"
 
 # 大文字小文字を区別しない判定の確認
-G1646_UPPER=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" node "$ENGINE" run next LIST 2>&1); EC_1646_UPPER=$?
+G1646_UPPER=$(OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" TODO_REPO_OWNER=test TODO_REPO_NAME=test node "$ENGINE" run next LIST 2>&1); EC_1646_UPPER=$?
 assert_exit_fail "1646: /todo next LIST（大文字）→ exit 1（誤爆ガード発火・大小文字非依存）" "$EC_1646_UPPER"
 assert_contains "1646: /todo next LIST → ガードメッセージに元の大文字表記「LIST」を保持" '「LIST」はコマンド名です' "$G1646_UPPER"
 
@@ -3635,6 +3635,68 @@ assert_contains "renderIssueList: monthly:15 がコロンごと表示される�
 
 # show --json の recur コロン保持確認は Octokit スタブが必要なため
 # run-tests-write.sh §W13 に実装する（このファイルはGitHub非接続の純粋ユニットテストのみ）。
+
+# ──────────────────────────────────────────
+# Issue #1695: Web環境実行不能対応
+# TODO_REPO_OWNER/TODO_REPO_NAME 未設定ガード + GitHub REST 401検知のテスト
+# （tests/scenarios.md §46 T-22〜T-27）
+# ──────────────────────────────────────────
+echo ""
+echo "▶ Issue #1695: Web環境実行不能対応（TODO_REPO_OWNER/NAME未設定ガード・401検知）"
+
+# T-22: 両方未設定 → error.repo_not_configured が出力され、GitHub API は一度も呼ばれない
+T22_LOG=$(mktemp /tmp/todo-test-t22-XXXXXX.jsonl); : > "$T22_LOG"
+T22_OUT=$(env -u TODO_REPO_OWNER -u TODO_REPO_NAME OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" OCTOKIT_STUB_LOG_ENV="$T22_LOG" \
+  node "$ENGINE" run add next "test" 2>&1); T22_EC=$?
+assert_exit_fail "T-22: TODO_REPO_OWNER/NAME 両方未設定 → exit 1" "$T22_EC"
+assert_contains "T-22: error.repo_not_configured（TODO_REPO_OWNERを含む）" "TODO_REPO_OWNER / TODO_REPO_NAME が未設定です" "$T22_OUT"
+assert_contains "T-22: MCPフォールバックガイダンスが併記される" "GitHub MCPツール" "$T22_OUT"
+assert_eq "T-22: GitHub APIが一度も呼ばれない（ログ0行）" "0" "$(wc -l < "$T22_LOG" | tr -d ' ')"
+rm -f "$T22_LOG"
+
+# T-23: TODO_REPO_OWNER のみ未設定でも同様にガードが発火する
+T23_OUT=$(env -u TODO_REPO_OWNER OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add next "test" 2>&1); T23_EC=$?
+assert_exit_fail "T-23: TODO_REPO_OWNER のみ未設定 → exit 1" "$T23_EC"
+assert_contains "T-23: error.repo_not_configured が出力される" "TODO_REPO_OWNER / TODO_REPO_NAME が未設定です" "$T23_OUT"
+
+# T-24: help / schema は未設定でも新設ガードで弾かれない
+T24_HELP_OUT=$(env -u TODO_REPO_OWNER -u TODO_REPO_NAME OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" \
+  node "$ENGINE" run help 2>&1); T24_HELP_EC=$?
+assert_not_contains "T-24: /todo help は未設定でも error.repo_not_configured が出ない" "TODO_REPO_OWNER / TODO_REPO_NAME が未設定です" "$T24_HELP_OUT"
+
+T24_SCHEMA_OUT=$(env -u TODO_REPO_OWNER -u TODO_REPO_NAME OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" \
+  node "$ENGINE" run schema 2>&1); T24_SCHEMA_EC=$?
+assert_not_contains "T-24: /todo schema は未設定でも error.repo_not_configured が出ない" "TODO_REPO_OWNER / TODO_REPO_NAME が未設定です" "$T24_SCHEMA_OUT"
+
+# T-25: GitHub REST APIが401を返す場合 → error.gh_auth_rejected が出力され、生の Bad credentials が露出しない
+T25_RESP='{"issues.listForRepo":[{"__throw":true,"status":401,"message":"Bad credentials"}]}'
+T25_OUT=$(TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" OCTOKIT_STUB_RESPONSES_ENV="$T25_RESP" \
+  node "$ENGINE" run list 2>&1); T25_EC=$?
+assert_exit_fail "T-25: GitHub API 401 → exit 1" "$T25_EC"
+assert_contains "T-25: error.gh_auth_rejected（401）が出力される" "GitHub API 認証が拒否されました（401）" "$T25_OUT"
+assert_contains "T-25: MCPフォールバックガイダンスが併記される" "GitHub MCPツール" "$T25_OUT"
+assert_not_contains "T-25: 生の 'Error: Bad credentials' 形式が露出しない" "Error: Bad credentials" "$T25_OUT"
+
+# T-26: 401以外（404）では新設分岐に入らず従来通りの Error: <message> 形式を維持する
+T26_RESP='{"issues.listForRepo":[{"__throw":true,"status":404,"message":"Not Found"}]}'
+T26_OUT=$(TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" OCTOKIT_STUB_RESPONSES_ENV="$T26_RESP" \
+  node "$ENGINE" run list 2>&1); T26_EC=$?
+assert_exit_fail "T-26: GitHub API 404 → exit 1" "$T26_EC"
+assert_contains "T-26: 従来通り Error: Not Found 形式" "Error: Not Found" "$T26_OUT"
+assert_not_contains "T-26: error.gh_auth_rejected（401用メッセージ）は出ない" "認証が拒否されました" "$T26_OUT"
+
+# T-27: LANG_ENV=en で英語メッセージが出力される（未設定ガード・401検知の両方）
+T27A_OUT=$(env -u TODO_REPO_OWNER -u TODO_REPO_NAME LANG_ENV=en OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" \
+  node "$ENGINE" run add next "test" 2>&1); T27A_EC=$?
+assert_exit_fail "T-27a: en版 未設定ガード → exit 1" "$T27A_EC"
+assert_contains "T-27a: en版 error.repo_not_configured" "TODO_REPO_OWNER / TODO_REPO_NAME is not set" "$T27A_OUT"
+
+T27B_RESP='{"issues.listForRepo":[{"__throw":true,"status":401,"message":"Bad credentials"}]}'
+T27B_OUT=$(LANG_ENV=en TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" OCTOKIT_STUB_RESPONSES_ENV="$T27B_RESP" \
+  node "$ENGINE" run list 2>&1); T27B_EC=$?
+assert_exit_fail "T-27b: en版 401検知 → exit 1" "$T27B_EC"
+assert_contains "T-27b: en版 error.gh_auth_rejected" "GitHub API authentication was rejected (401)" "$T27B_OUT"
 
 # ──────────────────────────────────────────
 # 書き込み系ハンドラのスタブベーステスト（run-tests-write.sh、Issue #1648）

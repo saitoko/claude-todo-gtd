@@ -211,6 +211,10 @@ const MESSAGES = {
     'eisenhower.summary': '📊 Q1: {q1} / Q2: {q2} / Q3: {q3} / Q4: {q4}  合計 next: {total}',
     'eisenhower.unset': '## ⚠ 優先度未設定（{count}件）',
     'help.eisenhower': '/todo eisenhower                アイゼンハワーマトリクス（重要×緊急 4象限）',
+    // Web環境サポート（Issue #1695）
+    'error.repo_not_configured': 'エラー: TODO_REPO_OWNER / TODO_REPO_NAME が未設定です。\n  .env に以下を設定してください（例）:\n    TODO_REPO_OWNER=your-github-username\n    TODO_REPO_NAME=your-task-repo\n  .env が使えない環境（Webセッション等）では、環境変数として直接設定してください。',
+    'error.gh_auth_rejected': 'エラー: GitHub API 認証が拒否されました（401）。\n  この環境の GH_TOKEN は REST API の直接呼び出しに使えない可能性があります\n  （例: GitHubアクセスが MCP 経由のみに制限されているWebセッション等）。\n  gh auth token で取得したトークンを再設定するか、下記の代替手段を検討してください。',
+    'error.mcp_fallback_guidance': '  この環境で /todo が使えない場合、GitHub MCPツール（利用可能な場合）で\n  以下の仕様に厳密に合わせて手動でIssueを作成できます:\n    - ラベル: GTDカテゴリ（🎯 next / 🔁 routine / 📥 inbox / ⏳ waiting / 🌈 someday / 📁 project / 📎 reference のいずれか1つ）+ 優先度（p1/p2/p3）\n    - body: due: / activate: / resume_condition: / before: / depends_on: / recur: / project: / estimate: / actual: / reviewed_at: の順（該当するもののみ）+ 空行 + 本文\n  この手段は「GitHub Issue操作は /todo 経由」原則の例外的フォールバックです。\n  実行前にユーザーへの事前承認を得てください。',
   },
   en: {
     'error.ctx_invalid': 'Error: Context name contains invalid characters',
@@ -389,6 +393,10 @@ const MESSAGES = {
     'eisenhower.summary': '📊 Q1: {q1} / Q2: {q2} / Q3: {q3} / Q4: {q4}  Total next: {total}',
     'eisenhower.unset': '## ⚠ Priority Not Set ({count})',
     'help.eisenhower': '/todo eisenhower                Eisenhower Matrix (4 quadrants: urgent × important)',
+    // Web environment support (Issue #1695)
+    'error.repo_not_configured': 'Error: TODO_REPO_OWNER / TODO_REPO_NAME is not set.\n  Set the following in .env (example):\n    TODO_REPO_OWNER=your-github-username\n    TODO_REPO_NAME=your-task-repo\n  In environments where .env is unavailable (e.g. Web sessions), set them directly as environment variables.',
+    'error.gh_auth_rejected': 'Error: GitHub API authentication was rejected (401).\n  The GH_TOKEN in this environment may not be usable for direct REST API calls\n  (e.g. a Web session where GitHub access is restricted to MCP only).\n  Re-set the token obtained via `gh auth token`, or consider the fallback below.',
+    'error.mcp_fallback_guidance': '  If /todo cannot be used in this environment, you can manually create an Issue\n  with a GitHub MCP tool (if available), strictly following this spec:\n    - Labels: GTD category (one of 🎯 next / 🔁 routine / 📥 inbox / ⏳ waiting / 🌈 someday / 📁 project / 📎 reference) + priority (p1/p2/p3)\n    - Body order: due: / activate: / resume_condition: / before: / depends_on: / recur: / project: / estimate: / actual: / reviewed_at: (only applicable fields) + blank line + description\n  This is an exceptional fallback to the "GitHub Issue operations go through /todo" principle.\n  Get explicit user approval before doing this.',
   }
 };
 function t(key) { return (MESSAGES[LANG] || MESSAGES.ja)[key] || MESSAGES.ja[key] || key; }
@@ -2335,7 +2343,12 @@ switch (cmd) {
   // Octokit API
   case 'api':
     apiMain(args.slice(1)).catch(e => {
-      process.stderr.write('Error: '+(e.message||String(e))+'\n');
+      // GitHub REST APIの401（認証拒否）はWeb環境等でGH_TOKENが使えないケースを示唆する（Issue #1695）
+      if (e.status === 401) {
+        process.stderr.write(t('error.gh_auth_rejected') + '\n' + t('error.mcp_fallback_guidance') + '\n');
+      } else {
+        process.stderr.write('Error: '+(e.message||String(e))+'\n');
+      }
       process.exitCode = 1;
     });
     break;
@@ -2343,7 +2356,12 @@ switch (cmd) {
   // run サブコマンド（高レベルディスパッチャー）
   case 'run':
     runMain(args.slice(1)).catch(e => {
-      if (!e._msgWritten) process.stderr.write('Error: '+(e.message||String(e))+'\n');
+      // GitHub REST APIの401（認証拒否）はWeb環境等でGH_TOKENが使えないケースを示唆する（Issue #1695）
+      if (e.status === 401) {
+        process.stderr.write(t('error.gh_auth_rejected') + '\n' + t('error.mcp_fallback_guidance') + '\n');
+      } else if (!e._msgWritten) {
+        process.stderr.write('Error: '+(e.message||String(e))+'\n');
+      }
       process.exitCode = 1;
     });
     break;
@@ -4349,6 +4367,12 @@ function reservedTitleGuardWord(restTokens) {
 
 // runMain: コマンドディスパッチャー
 async function runMain(args) {
+  const cmd0 = args[0];
+  // TODO_REPO_OWNER/TODO_REPO_NAME 未設定ガード（Issue #1695）。
+  // help/schema はGitHub APIを使わないため、リポジトリ未設定でも動作させる。
+  if (cmd0 !== 'help' && cmd0 !== 'schema' && (!REPO_OWNER || !REPO_NAME)) {
+    throw apiErr(t('error.repo_not_configured') + '\n' + t('error.mcp_fallback_guidance'));
+  }
   const octokit = await initOctokit();
   const owner = REPO_OWNER, repo = REPO_NAME;
 
