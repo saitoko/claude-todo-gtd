@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- Web セッション等 `.env` が使えない環境で `TODO_REPO_OWNER`/`TODO_REPO_NAME` が未設定のまま実行すると、原因不明の `Not Found` エラーとして露出していた問題を修正（Issue #1695）。`runMain()` の入口で未設定を検知し、環境変数の設定例と GitHub MCP ツールによる手動フォールバック手順（ラベル・body 書式）を案内するようにした（`help`/`schema` は GitHub API を使わないため対象外）。あわせて GitHub REST API が 401（認証拒否）を返すケースも検知し、`Bad credentials` 等の生メッセージではなく再設定手順・フォールバック手順を案内する（`run` サブコマンド・`api` サブコマンドの両方）
 - `tag` / `bulk tag` で不正なラベル名が検証なく GitHub 上に新規作成される問題を修正。`bulk tag <nums...> -- @ctx` のように `--` を渡すと、`normalizeTagTokens` が `@`/`#` の付かないトークンをコンテキスト扱いして `@--` に正規化し、`validateCtx` はシェル危険文字（`FORBIDDEN_CHARS`）しか見ないため `-` が通過して `@--` ラベルが作成・付与されていた。出力は通常の成功メッセージと区別がつかず、静かに永続的な副作用が残っていた
 - `list` 系表示（`renderIssueList`）で `recur: weekly:sat` のようなコロン付き値が `weekly` に切り詰められて表示されるバグを修正。正規表現 `/^recur: (\w+)/m` はコロンにマッチしないため発生していた（`\S+` に変更。曜日・日付固定サフィックス機能の実装時に発見）
 

@@ -1913,3 +1913,66 @@ const newBody = buildBody({ ...parsed, reviewedAt: today });
 - `#urgent` は空白を含まない単語単体のためタグ扱いされる
 - 残りのタイトルトークンが0件になり、`エラー: タイトルが空です。` が表示され終了コード1で終了する
 - （このケースはバグ修正の影響を受けない。空白を含まない genuine なタグのみ指定した場合は修正前後で変わらずエラーになるのが正しい）
+
+## 46. Web環境実行不能対応（Issue #1695）
+
+`runMain()` に `TODO_REPO_OWNER`/`TODO_REPO_NAME` 未設定ガードを追加し、GitHub REST APIの401（認証拒否）を検知して分かりやすいメッセージ + 手動フォールバック手順を出力する。
+
+### 46-1. `TODO_REPO_OWNER`/`TODO_REPO_NAME` 両方未設定 → `error.repo_not_configured` が出力され GitHub API は一度も呼ばれないこと（T-22）
+
+```
+env -u TODO_REPO_OWNER -u TODO_REPO_NAME OCTOKIT_STUB_ENV=<stub> node todo-engine.js run add next "test"
+```
+
+期待:
+- exit 1
+- stderr に「TODO_REPO_OWNER / TODO_REPO_NAME が未設定です」が含まれる
+- stderr にMCPフォールバックのガイダンス（ラベル・body書式・事前承認要件）が含まれる
+- Octokitスタブのリクエストログが空（GitHub APIが一度も呼ばれない）
+
+### 46-2. `TODO_REPO_OWNER` のみ未設定 → 同様にガードが発火すること（T-23）
+
+```
+env -u TODO_REPO_OWNER OCTOKIT_STUB_ENV=<stub> TODO_REPO_NAME=test-repo node todo-engine.js run add next "test"
+```
+
+期待: T-22 と同じ（片方のみ未設定でも発火する）
+
+### 46-3. `/todo help` / `/todo schema` は未設定でも新設ガードで弾かれないこと（T-24）
+
+```
+env -u TODO_REPO_OWNER -u TODO_REPO_NAME OCTOKIT_STUB_ENV=<stub> node todo-engine.js run help
+env -u TODO_REPO_OWNER -u TODO_REPO_NAME OCTOKIT_STUB_ENV=<stub> node todo-engine.js run schema
+```
+
+期待: stderr に `error.repo_not_configured`（「TODO_REPO_OWNER / TODO_REPO_NAME が未設定です」）が出力されないこと（help/schema は新設ガードの対象外）。既存の GH_TOKEN 要件（本Issueのスコープ外の別問題）は変更しない。
+
+### 46-4. GitHub REST APIが401を返す場合 → `error.gh_auth_rejected` が出力され生の `Bad credentials` が露出しないこと（T-25）
+
+```
+TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo OCTOKIT_STUB_ENV=<stub> OCTOKIT_STUB_RESPONSES_ENV='{"issues.get":[{"__throw":true,"status":401,"message":"Bad credentials"}]}' node todo-engine.js run show 1
+```
+
+期待:
+- exit 1
+- stderr に「GitHub API 認証が拒否されました（401）」が含まれる
+- stderr にMCPフォールバックのガイダンスが含まれる
+- stderr に生の `Bad credentials` 文字列が単独で（ガイダンスに包まれずに）露出しないこと
+
+### 46-5. 401以外のエラー（404）では新設分岐に入らず従来通りの `Error: <message>` 形式を維持すること（T-26）
+
+```
+TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo OCTOKIT_STUB_ENV=<stub> OCTOKIT_STUB_RESPONSES_ENV='{"issues.get":[{"__throw":true,"status":404,"message":"Not Found"}]}' node todo-engine.js run show 999
+```
+
+期待: stderr が `Error: Not Found` 形式（`error.gh_auth_rejected` のメッセージは出力されない）
+
+### 46-6. `LANG_ENV=en` で 46-1・46-4 を再実行し英語メッセージが出力されること（T-27）
+
+期待:
+- 46-1 相当: stderr に `TODO_REPO_OWNER / TODO_REPO_NAME is not set` が含まれる
+- 46-4 相当: stderr に `GitHub API authentication was rejected (401)` が含まれる
+
+### 46-7. 正常系: `TODO_REPO_OWNER`/`TODO_REPO_NAME` 設定済みなら新設ガードは発火せず従来通り動作すること（リグレッション）
+
+既存929件のテストスイート全件が本変更後も引き続きPASSすることで確認する（`bash tests/run-tests.sh`）。
