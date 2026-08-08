@@ -1975,4 +1975,4 @@ TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo OCTOKIT_STUB_ENV=<stub> OCTO
 
 ### 46-7. 正常系: `TODO_REPO_OWNER`/`TODO_REPO_NAME` 設定済みなら新設ガードは発火せず従来通り動作すること（リグレッション）
 
-既存929件のテストスイート全件が本変更後も引き続きPASSすることで確認する（`bash tests/run-tests.sh`）。
+既存のテストスイート全件が本変更後も引き続きPASSすることで確認する（`bash tests/run-tests.sh`）。
