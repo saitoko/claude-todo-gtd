@@ -788,6 +788,87 @@ assert_eq "W12-5 正常系: createLabel が1回呼ばれる" "1" "$(log_count "$
 rm -f "$W12_5_LOG"
 
 # ──────────────────────────────────────────
+# §W13  recur 曜日・日付固定サフィックス — スタブベース振る舞いテスト（Issue #1676）
+# validateRecur/nextDue のユニットテストは run-tests.sh §41 で実施済み。
+# ここでは Octokit スタブが必要な経路（show --json / recur / edit --recur /
+# done でのpostDoneProcessing再作成 / 破損データに対する防御）のみを検証する。
+# ──────────────────────────────────────────
+echo ""
+echo "§W13  recur 曜日・日付固定サフィックス — スタブベース振る舞いテスト"
+
+# W13-1 正常系: run show --json で recur がコロンごと保持されて出力されること
+W13_1_LOG=$(mktemp /tmp/todo-test-w13-1-XXXXXX.jsonl)
+W13_1_RESP='{"issues.get":[{"data":{"number":1701,"id":97001,"title":"Weekly Review","body":"due: 2026-08-10\nrecur: weekly:sat\n","labels":[{"name":"🎯 next"}]}}]}'
+W13_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W13_1_RESP" OCTOKIT_STUB_LOG_ENV="$W13_1_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run show 1701 --json 2>&1); W13_1_EC=$?
+assert_exit_ok "W13-1 正常系: run show --json exit 0" "$W13_1_EC"
+assert_contains "W13-1 正常系: recur にコロンが保持される（renderIssueList回帰と対の確認）" '"recur": "weekly:sat"' "$W13_1_OUT"
+rm -f "$W13_1_LOG"
+
+# W13-2 正常系: run recur <#> weekly:sat が成功しbodyにコロン付きで保存されること
+W13_2_LOG=$(mktemp /tmp/todo-test-w13-2-XXXXXX.jsonl)
+W13_2_RESP='{"issues.get":[{"data":{"number":1702,"id":97002,"title":"Task","body":"","labels":[{"name":"🎯 next"}]}}],"issues.update":[{}]}'
+W13_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W13_2_RESP" OCTOKIT_STUB_LOG_ENV="$W13_2_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run recur 1702 weekly:sat 2>&1); W13_2_EC=$?
+assert_exit_ok "W13-2 正常系: run recur weekly:sat exit 0" "$W13_2_EC"
+assert_contains "W13-2 正常系: 成功メッセージ" "✅ #1702 の繰り返しを weekly:sat に設定しました。" "$W13_2_OUT"
+assert_contains "W13-2 正常系: issues.update body に recur: weekly:sat が保存される" '"body":"recur: weekly:sat\n"' "$(log_lines_for_method "$W13_2_LOG" issues.update)"
+rm -f "$W13_2_LOG"
+
+# W13-3 正常系: run edit <#> --recur monthly:15 が成功しbodyにコロン付きで保存されること
+W13_3_LOG=$(mktemp /tmp/todo-test-w13-3-XXXXXX.jsonl)
+W13_3_RESP='{"issues.get":[{"data":{"number":1703,"id":97003,"title":"Task","body":"","labels":[{"name":"🎯 next"}]}}],"issues.update":[{}]}'
+W13_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W13_3_RESP" OCTOKIT_STUB_LOG_ENV="$W13_3_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run edit 1703 --recur monthly:15 2>&1); W13_3_EC=$?
+assert_exit_ok "W13-3 正常系: run edit --recur monthly:15 exit 0" "$W13_3_EC"
+assert_contains "W13-3 正常系: 成功メッセージ" "recur → monthly:15" "$W13_3_OUT"
+assert_contains "W13-3 正常系: issues.update body に recur: monthly:15 が保存される" '"body":"recur: monthly:15\n"' "$(log_lines_for_method "$W13_3_LOG" issues.update)"
+rm -f "$W13_3_LOG"
+
+# W13-4 正常系: recur: weekly:sat の done → postDoneProcessing が厳密加算方式で
+# 次回due(2026-08-15)を計算し、recurがコロンごと次Issueに引き継がれること
+# （ユーザー承認済み検証例そのもの。期限超過なし=skippedメッセージが出ないことも確認）
+W13_4_LOG=$(mktemp /tmp/todo-test-w13-4-XXXXXX.jsonl)
+W13_4_RESP='{"issues.get":[{"data":{"number":1704,"id":97004,"title":"Weekly Review","body":"due: 2026-08-06\nrecur: weekly:sat\n","labels":[{"name":"🎯 next"}]}}],"issues.update":[{}],"issues.create":[{"data":{"number":9704}}],"issues.listForRepo":[{"data":[]}]}'
+W13_4_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W13_4_RESP" OCTOKIT_STUB_LOG_ENV="$W13_4_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-06 \
+  node "$ENGINE" run done 1704 2>&1); W13_4_EC=$?
+assert_exit_ok "W13-4 正常系(weekly:sat再作成): exit 0" "$W13_4_EC"
+assert_contains "W13-4 正常系: 次回due 2026-08-15（厳密加算・9日後）で再作成" "繰り返しタスク #9704 を 2026-08-15 で作成しました。" "$W13_4_OUT"
+assert_not_contains "W13-4 正常系: 期限超過ではないためskip表示なし" "期限超過のため過去の周期をスキップしました" "$W13_4_OUT"
+assert_contains "W13-4 正常系: issues.create body に recur: weekly:sat がコロンごと引き継がれる" '"body":"due: 2026-08-15\nrecur: weekly:sat\n"' "$(log_lines_for_method "$W13_4_LOG" issues.create)"
+rm -f "$W13_4_LOG"
+
+# W13-5 正常系: recur: monthly:31 の done → 1/31完了で対象日(31日)が2月に存在しないため
+# 2/28にクランプされ、recurの指定日(31)自体は保持されたまま次Issueに引き継がれること
+W13_5_LOG=$(mktemp /tmp/todo-test-w13-5-XXXXXX.jsonl)
+W13_5_RESP='{"issues.get":[{"data":{"number":1705,"id":97005,"title":"Month-end Task","body":"due: 2026-01-31\nrecur: monthly:31\n","labels":[{"name":"🎯 next"}]}}],"issues.update":[{}],"issues.create":[{"data":{"number":9705}}],"issues.listForRepo":[{"data":[]}]}'
+W13_5_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W13_5_RESP" OCTOKIT_STUB_LOG_ENV="$W13_5_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-01-31 \
+  node "$ENGINE" run done 1705 2>&1); W13_5_EC=$?
+assert_exit_ok "W13-5 正常系(monthly:31再作成・2月クランプ): exit 0" "$W13_5_EC"
+assert_contains "W13-5 正常系: 次回due 2026-02-28（31日が2月に存在せずクランプ）で再作成" "繰り返しタスク #9705 を 2026-02-28 で作成しました。" "$W13_5_OUT"
+assert_contains "W13-5 正常系: issues.create body に recur: monthly:31（指定日31は保持）がコロンごと引き継がれる" '"body":"due: 2026-02-28\nrecur: monthly:31\n"' "$(log_lines_for_method "$W13_5_LOG" issues.create)"
+rm -f "$W13_5_LOG"
+
+# W13-6 セキュリティ回帰: GitHub Issue本文を直接改ざんし、validateRecurを経由しない
+# 不正なrecur値（weekly:INVALID）が書き込まれた状態で done を実行した場合、
+# postDoneProcessing内のvalidateRecurが検知してexit 1し、周期再作成（issues.create）が
+# 行われないこと（既存の防御ラインが新パターンでも機能し続けることの回帰確認）
+W13_6_LOG=$(mktemp /tmp/todo-test-w13-6-XXXXXX.jsonl)
+W13_6_RESP='{"issues.get":[{"data":{"number":1706,"id":97006,"title":"Corrupted Recur Task","body":"due: 2026-08-06\nrecur: weekly:INVALID\n","labels":[{"name":"🎯 next"}]}}],"issues.update":[{}]}'
+W13_6_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W13_6_RESP" OCTOKIT_STUB_LOG_ENV="$W13_6_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-06 \
+  node "$ENGINE" run done 1706 2>&1); W13_6_EC=$?
+assert_exit_fail "W13-6 セキュリティ回帰: 不正recur(weekly:INVALID) → exit 1" "$W13_6_EC"
+assert_contains "W13-6 セキュリティ回帰: エラーメッセージ" "weekly の曜日サフィックス" "$W13_6_OUT"
+assert_eq "W13-6 セキュリティ回帰: issues.create 呼び出しゼロ（周期再作成が行われない）" "0" "$(log_count "$W13_6_LOG" issues.create)"
+rm -f "$W13_6_LOG"
+
+# ──────────────────────────────────────────
 # 結果サマリー（run-tests.sh から集計加算するための機械可読な行）
 # ──────────────────────────────────────────
 echo ""

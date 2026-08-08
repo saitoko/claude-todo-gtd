@@ -17,6 +17,9 @@ const GTD_DISPLAY = {
 const FORBIDDEN_CHARS = ';$`()\"\'' + String.fromCharCode(92) + '|&><{}';
 const MAX_OPEN_ISSUES_LIMIT = 200; // GitHub API ページネーション上限。これを超える場合は警告を出力
 const PRI_COLORS = { p1: 'B60205', p2: 'FBCA04', p3: '0075CA' };
+// recur の曜日固定サフィックス（weekly:sat 等）で使う曜日名→Date.getDay()数値の対応表。
+// キーの集合が「有効な曜日サフィックス一覧」を兼ねる（Issue #1676）
+const RECUR_WEEKDAY_TO_DOW = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
 
 // ─── i18n ───
 const LANG = process.env.LANG_ENV || 'ja';
@@ -32,7 +35,10 @@ const MESSAGES = {
     'label.created': '🆕 新規ラベル {name} を作成しました',
     'error.positive_int': 'エラー: 正の整数が必要です',
     'error.date_format': 'エラー: 不正な日付形式です',
-    'error.recur_invalid': 'エラー: recur は daily/weekly/monthly/weekdays のみ有効です',
+    'error.recur_invalid': 'エラー: recur は daily/weekly/monthly/weekdays、または weekly:<曜日>（mon〜sun）/ monthly:<日>（1〜31）のみ有効です',
+    'error.recur_suffix_not_allowed': 'エラー: daily/weekdays にコロン付きサフィックスは指定できません',
+    'error.recur_weekday_invalid': 'エラー: weekly の曜日サフィックスは mon/tue/wed/thu/fri/sat/sun（小文字英字3文字）のみ有効です',
+    'error.recur_monthday_invalid': 'エラー: monthly の日付サフィックスは 1〜31 の数字のみ有効です（例: monthly:15）',
     'error.color_invalid': 'エラー: カラーは6桁の16進数のみ有効です（例: FBCA04）',
     'error.priority_invalid': 'エラー: --priority は p1/p2/p3 のみ有効です',
     'error.name_empty': 'エラー: 名前が空です',
@@ -44,6 +50,7 @@ const MESSAGES = {
     'error.resume_condition_newline': 'エラー: resume_condition に改行を含めることはできません（1行のみ）',
     // 警告
     'warn.month_rollover': '⚠️ 注意: {day}日は翌月に存在しないため、{date} に繰り上がりました',
+    'warn.month_day_clamped': '⚠️ 注意: {month}月に{day}日は存在しないため、{date} にクランプされました',
     // セクションヘッダー
     'section.next': '## ✅ Next Actions（次のアクション）',
     'section.routine': '## 🔁 Routine（ルーティン）',
@@ -140,7 +147,7 @@ const MESSAGES = {
     'help.rename': '/todo rename <#> <新タイトル>    タイトル変更',
     'help.due': '/todo due <#> <日付|clear>       期日設定 / clear で削除',
     'help.desc': '/todo desc <#> <テキスト>       説明に追記（上書きは edit --desc）',
-    'help.recur': '/todo recur <#> <パターン|clear>  繰り返し設定（daily/weekly/monthly/weekdays）/ clear で解除',
+    'help.recur': '/todo recur <#> <パターン|clear>  繰り返し設定（daily/weekly/monthly/weekdays。weekly:<曜日> 例: weekly:sat、monthly:<日> 例: monthly:15 の固定サフィックスも可）/ clear で解除',
     'help.priority': '/todo priority <#> <p1-p3>      優先度設定',
     'help.search': '/todo search <キーワード> [--json] キーワード検索',
     'help.tag': '/todo tag <#> @ctx/#tag ...      コンテキスト・タグ追加',
@@ -215,7 +222,10 @@ const MESSAGES = {
     'label.created': '🆕 Created new label {name}',
     'error.positive_int': 'Error: A positive integer is required',
     'error.date_format': 'Error: Invalid date format',
-    'error.recur_invalid': 'Error: recur must be daily/weekly/monthly/weekdays',
+    'error.recur_invalid': 'Error: recur must be daily/weekly/monthly/weekdays, or weekly:<day> (mon-sun) / monthly:<day> (1-31)',
+    'error.recur_suffix_not_allowed': 'Error: daily/weekdays cannot have a colon suffix',
+    'error.recur_weekday_invalid': 'Error: weekly day suffix must be one of mon/tue/wed/thu/fri/sat/sun (lowercase 3-letter)',
+    'error.recur_monthday_invalid': 'Error: monthly day suffix must be a number between 1 and 31 (e.g. monthly:15)',
     'error.color_invalid': 'Error: Color must be a 6-digit hex code (e.g. FBCA04)',
     'error.priority_invalid': 'Error: --priority must be p1/p2/p3',
     'error.name_empty': 'Error: Name is empty',
@@ -226,6 +236,7 @@ const MESSAGES = {
     'error.view_ctx_multiple': 'Error: view save allows only one @ctx',
     'error.resume_condition_newline': 'Error: resume_condition must not contain line breaks (single line only)',
     'warn.month_rollover': '⚠️ Note: Day {day} does not exist in the next month, rolled to {date}',
+    'warn.month_day_clamped': '⚠️ Note: Day {day} does not exist in month {month}, clamped to {date}',
     'section.next': '## ✅ Next Actions',
     'section.routine': '## 🔁 Routine',
     'section.inbox': '## 📥 Inbox',
@@ -314,7 +325,7 @@ const MESSAGES = {
     'help.rename': '/todo rename <#> <new-title>    Rename',
     'help.due': '/todo due <#> <date|clear>       Set due date / clear to remove',
     'help.desc': '/todo desc <#> <text>           Append to description (use edit --desc to overwrite)',
-    'help.recur': '/todo recur <#> <pattern|clear>  Set recurrence (daily/weekly/monthly/weekdays) / clear to remove',
+    'help.recur': '/todo recur <#> <pattern|clear>  Set recurrence (daily/weekly/monthly/weekdays. Fixed-day suffixes also work: weekly:<day> e.g. weekly:sat, monthly:<day> e.g. monthly:15) / clear to remove',
     'help.priority': '/todo priority <#> <p1-p3>      Set priority',
     'help.search': '/todo search <keyword> [--json]  Search tasks',
     'help.tag': '/todo tag <#> @ctx/#tag ...      Add context/tag',
@@ -603,11 +614,72 @@ function priorityColor(pri) {
   return PRI_COLORS[pri] || 'UNKNOWN';
 }
 
+// recur パターン文字列を base（daily/weekly/monthly/weekdays）と
+// suffix（曜日・日付固定サフィックス。コロンなしなら null）に分割する。
+// 最初の ':' のみで分割するため、weekly:sat:mon のような多重コロンは
+// suffix='sat:mon' となり、呼び出し側のホワイトリスト照合で自然に拒否される。
+function splitRecurPattern(value) {
+  const idx = value.indexOf(':');
+  if (idx === -1) return { base: value, suffix: null };
+  return { base: value.slice(0, idx), suffix: value.slice(idx + 1) };
+}
+
+// weekly:<曜日> の次回due計算（厳密加算方式。Issue #1676、2026-08-08ユーザー承認済み仕様）。
+// 「必ず最低1周期分（7日）の間隔を空けてから、指定の曜日に合わせる」。
+// 基準日と同じ曜日が指定されていても、+7日した時点でその曜日と一致するため
+// 結果的にちょうど7日後になる（=既存の weekly と同じ間隔に収束する）。
+function nextDueWeeklyOnDow(baseDate, targetDow) {
+  const plus7 = addDays(baseDate, 7);
+  const dow = new Date(plus7+'T00:00:00').getDay(); // +7日は常に同じ曜日を保つ
+  const diff = (targetDow - dow + 7) % 7;
+  return diff === 0 ? plus7 : addDays(plus7, diff);
+}
+
+// monthly:<日> の次回due計算（厳密加算方式。weeklyと同じ「最低1周期空ける」論理を
+// 一貫適用する。Issue #1676、2026-08-08ユーザー承認済み仕様）。
+// 「基準日 + 1ヶ月」した日以降（その日を含む）で最初に対象日と一致する日を返す。
+// 対象日がその月に存在しない場合（2/30等）はその月の末日にクランプする
+// （指定日そのものは保持し続けるため、翌月以降は再び対象日を狙いズレは蓄積しない）。
+function nextDueMonthlyOnDay(baseDate, targetDay) {
+  const dt = new Date(baseDate+'T00:00:00');
+  const y = dt.getFullYear(), m = dt.getMonth(), baseDay = dt.getDate();
+
+  // アンカー（基準日+1ヶ月）。内部比較専用で、そのまま結果として返さないため
+  // クランプしても warn は出さない（addMonth()のような外部向け丸め表示ではない）
+  const anchorDaysInMonth = new Date(y, m+2, 0).getDate();
+  const anchorDate = new Date(y, m+1, Math.min(baseDay, anchorDaysInMonth));
+
+  // アンカー月内での対象日候補
+  const candidateDay = Math.min(targetDay, anchorDaysInMonth);
+  const candidate = new Date(y, m+1, candidateDay);
+
+  if (candidate >= anchorDate) {
+    if (candidateDay !== targetDay) {
+      process.stderr.write(tpl('warn.month_day_clamped', { day: targetDay, month: candidate.getMonth()+1, date: fmt(candidate) })+'\n');
+    }
+    return fmt(candidate);
+  }
+
+  // アンカー月の対象日はすでにアンカーより前 → 翌月へ
+  const nextDaysInMonth = new Date(y, m+3, 0).getDate();
+  const nextCandidateDay = Math.min(targetDay, nextDaysInMonth);
+  const nextCandidate = new Date(y, m+2, nextCandidateDay);
+  if (nextCandidateDay !== targetDay) {
+    process.stderr.write(tpl('warn.month_day_clamped', { day: targetDay, month: nextCandidate.getMonth()+1, date: fmt(nextCandidate) })+'\n');
+  }
+  return fmt(nextCandidate);
+}
+
 function nextDue(pattern, baseDate) {
-  switch (pattern) {
+  const { base, suffix } = splitRecurPattern(pattern);
+  switch (base) {
     case 'daily':    return addDays(baseDate, 1);
-    case 'weekly':   return addDays(baseDate, 7);
-    case 'monthly':  return addMonth(baseDate);
+    case 'weekly':
+      if (suffix === null) return addDays(baseDate, 7);
+      return nextDueWeeklyOnDow(baseDate, RECUR_WEEKDAY_TO_DOW[suffix]);
+    case 'monthly':
+      if (suffix === null) return addMonth(baseDate);
+      return nextDueMonthlyOnDay(baseDate, parseInt(suffix, 10));
     case 'weekdays': {
       let next = addDays(baseDate, 1);
       const dow = new Date(next+'T00:00:00').getDay(); // 0=Sun..6=Sat
@@ -698,10 +770,45 @@ function validateDue(value) {
   process.exit(1);
 }
 
+// recur バリデーション（Issue #1676: weekly:<曜日> / monthly:<日> の固定サフィックスに対応）。
+// 先頭の ':' のみで base/suffix に分割し、base のホワイトリスト判定 → suffix の
+// 許可可否・形式検証という順で分岐する。base 自体が不正なら常に error.recur_invalid。
 function validateRecur(value) {
-  if (['daily','weekly','monthly','weekdays'].includes(value)) return;
-  process.stderr.write(t('error.recur_invalid')+'\n');
-  process.exit(1);
+  const { base, suffix } = splitRecurPattern(value);
+
+  if (!['daily','weekly','monthly','weekdays'].includes(base)) {
+    process.stderr.write(t('error.recur_invalid')+'\n');
+    process.exit(1);
+  }
+
+  if (base === 'daily' || base === 'weekdays') {
+    if (suffix !== null) {
+      process.stderr.write(t('error.recur_suffix_not_allowed')+'\n');
+      process.exit(1);
+    }
+    return;
+  }
+
+  if (base === 'weekly') {
+    if (suffix === null) return; // 後方互換: サフィックスなしは既存挙動のまま
+    if (!Object.prototype.hasOwnProperty.call(RECUR_WEEKDAY_TO_DOW, suffix)) {
+      process.stderr.write(t('error.recur_weekday_invalid')+'\n');
+      process.exit(1);
+    }
+    return;
+  }
+
+  // base === 'monthly'
+  if (suffix === null) return; // 後方互換: サフィックスなしは既存挙動のまま
+  if (!/^\d{1,2}$/.test(suffix)) {
+    process.stderr.write(t('error.recur_monthday_invalid')+'\n');
+    process.exit(1);
+  }
+  const day = parseInt(suffix, 10);
+  if (day < 1 || day > 31) {
+    process.stderr.write(t('error.recur_monthday_invalid')+'\n');
+    process.exit(1);
+  }
 }
 
 function validateColor(value) {
@@ -789,7 +896,10 @@ function renderIssueList(issue, today) {
   const ctx = getCtx(lnames);
   const tags = getTags(lnames);
   const due = getDue(issue);
-  const recur = (issue.body||'').match(/^recur: (\w+)/m);
+  // \w+ はコロンにマッチしないため、weekly:sat のようなサフィックス付き値が
+  // weekly に切り詰められて表示されるバグがあった（Issue #1676 対応時に発見・修正）。
+  // recur の値は行末までの1トークン（空白を含まない）なので \S+ で全体を拾う。
+  const recur = (issue.body||'').match(/^recur: (\S+)/m);
   const proj = (issue.body||'').match(/^project: #(\d+)/m);
   const estMatch = (issue.body||'').match(/^estimate: (\d+)/m);
   let line = '  '+priIcon(getPri(lnames))+'#'+issue.number+'  '+issue.title;
@@ -3641,7 +3751,7 @@ function runSchema() {
       context:          { type: "string[]",        description: "コンテキストラベル (@home 等、@claude は除く)" },
       claude:           { type: "boolean",         description: "@claude ラベルの有無" },
       tags:             { type: "string[]",        description: "その他タグ (#blog 等)" },
-      recur:            { type: "string | null",   description: "繰り返し設定: daily / weekly / monthly / weekdays" },
+      recur:            { type: "string | null",   description: "繰り返し設定: daily / weekly / monthly / weekdays（weekly:<曜日> 例: weekly:sat、monthly:<日> 例: monthly:15 の固定サフィックスも可）" },
       project:          { type: "integer | null",  description: "親プロジェクトの Issue 番号" },
       activate:         { type: "string | null",   description: "NEXT 自動昇格日 (YYYY-MM-DD)" },
       dependsOn:        { type: "integer | null",  description: "依存先の Issue 番号" },

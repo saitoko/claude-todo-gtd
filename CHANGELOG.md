@@ -8,9 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `recur` に曜日・日付固定サフィックスを追加（Issue #1676）。`weekly:<曜日>`（例: `weekly:sat` = 毎週土曜固定）と `monthly:<日>`（例: `monthly:15` = 毎月15日固定）の2種類の構文を、`add --recur` / `edit --recur` / `recur <#>` / 完了時の周期再作成（`postDoneProcessing`）すべてで使用可能にする。次回due計算は「厳密加算」方式（必ず最低1周期分の間隔を空けてから対象の曜日・日付に合わせる。例: 完了日が土曜でも `weekly:sat` の次回は7日後の次の土曜になり、当日には戻らない）。`monthly:<日>` でその月に存在しない日（2/30等）を指定した場合はその月の末日にクランプし、指定日そのものは保持し続けるためズレは蓄積しない（例: `monthly:31` は2月なら28日/29日、3月は31日に自動復帰）。サフィックスなしの既存 `daily`/`weekly`/`monthly`/`weekdays` の挙動は完全に維持（後方互換）
+
 ### Fixed
 
 - `tag` / `bulk tag` で不正なラベル名が検証なく GitHub 上に新規作成される問題を修正。`bulk tag <nums...> -- @ctx` のように `--` を渡すと、`normalizeTagTokens` が `@`/`#` の付かないトークンをコンテキスト扱いして `@--` に正規化し、`validateCtx` はシェル危険文字（`FORBIDDEN_CHARS`）しか見ないため `-` が通過して `@--` ラベルが作成・付与されていた。出力は通常の成功メッセージと区別がつかず、静かに永続的な副作用が残っていた
+- `list` 系表示（`renderIssueList`）で `recur: weekly:sat` のようなコロン付き値が `weekly` に切り詰められて表示されるバグを修正。正規表現 `/^recur: (\w+)/m` はコロンにマッチしないため発生していた（`\S+` に変更。曜日・日付固定サフィックス機能の実装時に発見）
 
 ### Changed
 

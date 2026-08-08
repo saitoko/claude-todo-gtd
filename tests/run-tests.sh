@@ -3472,6 +3472,171 @@ else
 fi
 
 # ──────────────────────────────────────────
+# §41  recur 曜日・日付固定サフィックス（Issue #1676）
+# weekly:<曜日> / monthly:<日> の validateRecur・nextDue・renderIssueList を
+# 実エンジン経由で検証する。次回due計算は「厳密加算」方式（最低1周期を空けてから
+# 対象曜日/日付に合わせる。2026-08-08 ユーザー承認済み仕様）。
+# ──────────────────────────────────────────
+echo ""
+echo "§41  recur 曜日・日付固定サフィックス（Issue #1676）"
+
+# --- 正常系: validateRecur（weekly:<曜日> 全7曜日） ---
+for dow in mon tue wed thu fri sat sun; do
+  node "$ENGINE" validate recur "weekly:$dow" 2>/dev/null \
+    && { printf "  ✅ validateRecur: weekly:%s 許可\n" "$dow"; PASS=$((PASS+1)); } \
+    || { printf "  ❌ validateRecur: weekly:%s 許可されるべき\n" "$dow"; FAIL=$((FAIL+1)); }
+done
+
+# --- 正常系: validateRecur（monthly:<日> 範囲内） ---
+for d in 1 15 31; do
+  node "$ENGINE" validate recur "monthly:$d" 2>/dev/null \
+    && { printf "  ✅ validateRecur: monthly:%s 許可\n" "$d"; PASS=$((PASS+1)); } \
+    || { printf "  ❌ validateRecur: monthly:%s 許可されるべき\n" "$d"; FAIL=$((FAIL+1)); }
+done
+
+# --- 正常系: 先頭ゼロ許容（monthly:05） ---
+node "$ENGINE" validate recur "monthly:05" 2>/dev/null \
+  && { printf "  ✅ validateRecur: monthly:05（先頭ゼロ）許可\n"; PASS=$((PASS+1)); } \
+  || { printf "  ❌ validateRecur: monthly:05（先頭ゼロ）許可されるべき\n"; FAIL=$((FAIL+1)); }
+
+# --- 入力文字パターン: 拒否されるべきケース ---
+declare -a REJECT_CASES=(
+  "weekly:SAT"
+  "weekly:Sat"
+  "weekly:saturday"
+  "weekly:土"
+  "weekly:xyz"
+  "monthly:０５"
+  "weekly:"
+  "monthly:"
+  "weekly::sat"
+  "weekly:sat:mon"
+  "monthly:15:20"
+  "daily:mon"
+  "weekdays:sat"
+  " weekly:sat"
+  "weekly:sat "
+  "monthly:0"
+  "monthly:00"
+  "monthly:32"
+)
+for c in "${REJECT_CASES[@]}"; do
+  node "$ENGINE" validate recur "$c" 2>/dev/null \
+    && { printf "  ❌ validateRecur: [%s] は拒否されるべき\n" "$c"; FAIL=$((FAIL+1)); } \
+    || { printf "  ✅ validateRecur: [%s] 拒否\n" "$c"; PASS=$((PASS+1)); }
+done
+
+# --- セキュリティ: シェル特殊文字混入もホワイトリスト不一致として単純拒否 ---
+node "$ENGINE" validate recur 'weekly:`id`' 2>/dev/null \
+  && { printf "  ❌ validateRecur: バッククォート混入は拒否されるべき\n"; FAIL=$((FAIL+1)); } \
+  || { printf "  ✅ validateRecur: バッククォート混入を拒否\n"; PASS=$((PASS+1)); }
+node "$ENGINE" validate recur 'monthly:$(whoami)' 2>/dev/null \
+  && { printf "  ❌ validateRecur: コマンド置換混入は拒否されるべき\n"; FAIL=$((FAIL+1)); } \
+  || { printf "  ✅ validateRecur: コマンド置換混入を拒否\n"; PASS=$((PASS+1)); }
+
+# --- 後方互換: サフィックスなしの既存パターンは従来通り許可 ---
+for p in daily weekly monthly weekdays; do
+  node "$ENGINE" validate recur "$p" 2>/dev/null \
+    && { printf "  ✅ validateRecur: 後方互換 %s 許可\n" "$p"; PASS=$((PASS+1)); } \
+    || { printf "  ❌ validateRecur: 後方互換 %s 許可されるべき\n" "$p"; FAIL=$((FAIL+1)); }
+done
+
+# --- 正常系: nextDue（weekly:<曜日>、ユーザー承認済み「厳密加算」検証例） ---
+assert_eq "nextDue weekly:sat 2026-08-06(木)→2026-08-15(9日後)" \
+  "2026-08-15" "$(node "$ENGINE" next-due weekly:sat 2026-08-06)"
+assert_eq "nextDue weekly:sat 2026-08-08(土)→2026-08-15(7日後・ちょうど1周期)" \
+  "2026-08-15" "$(node "$ENGINE" next-due weekly:sat 2026-08-08)"
+
+# --- 境界値: weekly:sat 残り曜日の最短距離ロックオンではなく必ず7日以上先になること ---
+assert_eq "nextDue weekly:mon 2026-08-08(土・翌々日が月曜)→2026-08-17(9日後、7日未満にならない)" \
+  "2026-08-17" "$(node "$ENGINE" next-due weekly:mon 2026-08-08)"
+
+# --- 正常系: nextDue（monthly:<日>、ユーザー承認済み「厳密加算」検証例） ---
+assert_eq "nextDue monthly:15 2026-08-20(15日超過済み)→2026-10-15(1ヶ月スキップ)" \
+  "2026-10-15" "$(node "$ENGINE" next-due monthly:15 2026-08-20)"
+assert_eq "nextDue monthly:15 2026-08-10(15日未到来)→2026-09-15" \
+  "2026-09-15" "$(node "$ENGINE" next-due monthly:15 2026-08-10)"
+assert_eq "nextDue monthly:15 2026-08-15(基準日=対象日ちょうど)→2026-09-15(同日は含まず1ヶ月先)" \
+  "2026-09-15" "$(node "$ENGINE" next-due monthly:15 2026-08-15)"
+
+# --- 境界値: monthly:29/31 のクランプ ---
+MTHLY_29_STDERR=$(node "$ENGINE" next-due monthly:29 2026-01-29 2>&1 1>/dev/null)
+assert_eq "nextDue monthly:29 2026-01-29(平年)→2026-02-28クランプ" \
+  "2026-02-28" "$(node "$ENGINE" next-due monthly:29 2026-01-29 2>/dev/null)"
+assert_contains "nextDue monthly:29 2026-01-29(平年) クランプ警告あり" "クランプ" "$MTHLY_29_STDERR"
+
+MTHLY_29_LEAP_STDERR=$(node "$ENGINE" next-due monthly:29 2028-01-29 2>&1 1>/dev/null)
+assert_eq "nextDue monthly:29 2028-01-29(うるう年)→2028-02-29そのまま" \
+  "2028-02-29" "$(node "$ENGINE" next-due monthly:29 2028-01-29 2>/dev/null)"
+assert_eq "nextDue monthly:29 2028-01-29(うるう年) クランプ警告なし" "" "$MTHLY_29_LEAP_STDERR"
+
+assert_eq "nextDue monthly:31 2026-03-15→2026-04-30クランプ(4月は30日まで)" \
+  "2026-04-30" "$(node "$ENGINE" next-due monthly:31 2026-03-15 2>/dev/null)"
+assert_eq "nextDue monthly:31 2026-05-15→2026-06-30クランプ(6月は30日まで)" \
+  "2026-06-30" "$(node "$ENGINE" next-due monthly:31 2026-05-15 2>/dev/null)"
+assert_eq "nextDue monthly:31 2026-08-15→2026-09-30クランプ(9月は30日まで)" \
+  "2026-09-30" "$(node "$ENGINE" next-due monthly:31 2026-08-15 2>/dev/null)"
+assert_eq "nextDue monthly:31 2026-10-15→2026-11-30クランプ(11月は30日まで)" \
+  "2026-11-30" "$(node "$ENGINE" next-due monthly:31 2026-10-15 2>/dev/null)"
+
+# --- 境界値: 年またぎ（12月→翌年1月） ---
+assert_eq "nextDue monthly:15 2026-12-10(年またぎ)→2027-01-15" \
+  "2027-01-15" "$(node "$ENGINE" next-due monthly:15 2026-12-10 2>/dev/null)"
+
+# --- 境界値: monthly:1 / monthly:28（常に存在する日、クランプなし） ---
+# monthly:1 は基準日=対象日ちょうど（2026-08-01）のケース。厳密加算方式では
+# アンカー(基準日+1ヶ月=2026-09-01)とアンカー月内候補(2026-09-01)が一致するため、
+# 「その日を含む」仕様どおりアンカー月内で確定する（他の境界値と同じ >= 判定の確認）
+assert_eq "nextDue monthly:1 2026-08-01(基準日=対象日ちょうど)→2026-09-01" \
+  "2026-09-01" "$(node "$ENGINE" next-due monthly:1 2026-08-01 2>/dev/null)"
+assert_eq "nextDue monthly:28 2026-08-10→2026-09-28" \
+  "2026-09-28" "$(node "$ENGINE" next-due monthly:28 2026-08-10 2>/dev/null)"
+MTHLY_1_STDERR=$(node "$ENGINE" next-due monthly:1 2026-08-01 2>&1 1>/dev/null)
+assert_eq "nextDue monthly:1 クランプ警告なし（常に存在する日）" "" "$MTHLY_1_STDERR"
+
+# --- 後方互換: サフィックスなしの nextDue は従来どおり ---
+assert_eq "nextDue weekly(サフィックスなし)従来通り+7日" \
+  "2026-04-12" "$(node "$ENGINE" next-due weekly "$TEST_TODAY")"
+assert_eq "nextDue monthly(サフィックスなし)従来通りaddMonth" \
+  "2026-05-05" "$(node "$ENGINE" next-due monthly "$TEST_TODAY")"
+
+# --- catchup: 曜日・日付固定でも期限超過キャッチアップが正しく動くこと ---
+# nextDueCatchUp は「date <= today の間は繰り返す」実装のため、todayちょうどの
+# 土曜(2026-08-08)は「まだ来ていない」に含めず、次の土曜(2026-08-15)まで進む
+# （既存のnextDueCatchUpループの仕様。weekly:satでも動作が変わらないことの確認）
+CATCHUP_WEEKLY=$(node "$ENGINE" next-due-catchup weekly:sat 2020-01-01 2026-08-08 2>/dev/null)
+assert_contains "next-due-catchup weekly:sat 大幅超過→today(2026-08-08)は含まず次の土曜2026-08-15" \
+  '"nextDate":"2026-08-15"' "$CATCHUP_WEEKLY"
+assert_contains "next-due-catchup weekly:sat 大幅超過 skipped=true" '"skipped":true' "$CATCHUP_WEEKLY"
+
+CATCHUP_MONTHLY=$(node "$ENGINE" next-due-catchup monthly:31 2015-01-01 2026-08-08 2>/dev/null)
+assert_contains "next-due-catchup monthly:31 大幅超過→2026-08-08以降の直近末日" \
+  '"nextDate":"2026-08-31"' "$CATCHUP_MONTHLY"
+assert_contains "next-due-catchup monthly:31 大幅超過 skipped=true" '"skipped":true' "$CATCHUP_MONTHLY"
+
+# --- パフォーマンス: 10年超のcatchupが反復上限(3660)に達しないこと ---
+CATCHUP_PERF_STDOUT=$(node "$ENGINE" next-due-catchup weekly:sat 2015-01-01 2026-08-08 2>/dev/null)
+assert_not_contains "next-due-catchup weekly:sat 10年超でも反復上限メッセージなし" \
+  "反復上限" "$(node "$ENGINE" next-due-catchup weekly:sat 2015-01-01 2026-08-08 2>&1 1>/dev/null)"
+
+# --- 一覧表示 renderIssueList 回帰: \w+ → \S+ 修正でコロン以降も表示されること ---
+RECUR_SUFFIX_MOCK='[
+  {"number":501,"title":"weekly-review","body":"due: 2026-04-10\nrecur: weekly:sat","labels":[{"name":"🎯 next"}]}
+]'
+RECUR_SUFFIX_OUT=$(OPEN_ENV="$RECUR_SUFFIX_MOCK" TODAY_ENV="$TEST_TODAY" FILTER_GTD_ENV="next" node "$ENGINE" list-all)
+assert_contains "renderIssueList: weekly:sat がコロンごと表示される（旧バグ回帰）" "🔄weekly:sat" "$RECUR_SUFFIX_OUT"
+assert_not_contains "renderIssueList: weekly:sat が weekly に切り詰められない" "🔄weekly " "$RECUR_SUFFIX_OUT"
+
+RECUR_SUFFIX_MOCK2='[
+  {"number":502,"title":"monthly-report","body":"due: 2026-04-10\nrecur: monthly:15","labels":[{"name":"🎯 next"}]}
+]'
+RECUR_SUFFIX_OUT2=$(OPEN_ENV="$RECUR_SUFFIX_MOCK2" TODAY_ENV="$TEST_TODAY" FILTER_GTD_ENV="next" node "$ENGINE" list-all)
+assert_contains "renderIssueList: monthly:15 がコロンごと表示される（旧バグ回帰）" "🔄monthly:15" "$RECUR_SUFFIX_OUT2"
+
+# show --json の recur コロン保持確認は Octokit スタブが必要なため
+# run-tests-write.sh §W13 に実装する（このファイルはGitHub非接続の純粋ユニットテストのみ）。
+
+# ──────────────────────────────────────────
 # 書き込み系ハンドラのスタブベーステスト（run-tests-write.sh、Issue #1648）
 # 3,266行超に肥大化した本ファイルへの追記を避けるため別ファイルに分離し、
 # ここで子プロセスとして呼び出して結果を合算する。実行口は
