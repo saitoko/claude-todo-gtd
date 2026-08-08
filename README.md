@@ -247,7 +247,7 @@ GitHub Issues の本文にはユーザーが任意のテキストを書けるた
 3. コンテキスト名は不正文字をPOSIX `case` 文で検出
 4. Issue 番号は正の整数のみ許可
 5. 日付は `YYYY-MM-DD` または `M/D` 形式のみ許可
-6. recur パターンは 4 値のみ許可
+6. recur パターンは `daily` / `weekly` / `monthly` / `weekdays` と、`weekly:<曜日>` / `monthly:<日>` のサフィックス付き形式のみ許可
 7. カラーコードは 6 桁 16 進数のみ許可
 8. 優先度は `p1` / `p2` / `p3` のみ許可
 
