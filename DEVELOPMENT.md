@@ -38,7 +38,7 @@ cp workspaces/skill-dev/todo/scripts/todo-engine.js ~/.claude/todo-engine.js
 ## テスト
 
 - テストランナー: `bash workspaces/skill-dev/todo/tests/run-tests.sh`
-- 自動テスト総件数: **833件**（2026-08-03 時点。全件PASS）
+- 自動テスト総件数: **875件**（2026-08-03 時点。read-only系 run-tests.sh + 書き込み系 run-tests-write.sh の合算。全件PASS）
 - シナリオ一覧: `tests/scenarios.md`
 - 全件 PASS が品質ゲートの必須条件
 - 件数を更新する際は本ファイルの数値も合わせて更新する
@@ -147,6 +147,22 @@ if (issue.project || issue.dependsOn) {
 ```
 
 **対象ファイル:** `workspaces/skill-dev/todo/scripts/todo-engine.js`（`parseArgs()`）
+
+### 2026-08-03: `resume_condition` フィールド追加 — activate/promote 自動昇格に再開条件ゲートを追加（Issue #1299由来の欠陥修正）
+
+**症状:** `/todo promote`（`activate:` 日到来タスクを機械的に `next` へ昇格する処理）が、日付到来のみを判定基準にしており、Issue本文に書かれた実質的な再開条件（例: 「検索流入が回復したら」）を一切検証していなかった。実事故: #1299（Zenn→はてな送客強化）が、GSC実測では検索流入が依然ゼロ（未回復）のまま、`activate:` 到来のみで `next` に機械的昇格した。
+
+**原因:** `resume_condition:` という構造化フィールドが存在せず、本文の自由記述部分（`desc`）は `runPromote` から一切参照されていなかった。
+
+**修正:** `due:`/`activate:` と同じ行プレフィックス方式で `resume_condition:` フィールドを新設。`runPromote` は `resume_condition` が設定されている Issue を検出すると機械的な自動昇格をスキップし、`⏸` の確認待ちメッセージを出力するのみに留める（実際の条件充足判定はエンジン側に持ち込まず、週次レビュー時にユーザー自身が確認してから昇格させる運用に委ねる設計。詳細な設計判断の経緯は開発側リポジトリで管理）。
+
+**変更箇所:** `parseBodyObj`/`parseBody`/`buildBody`（body CRUD）、`parseArgs`（`--resume-condition` フラグ新設）、`validateResumeCondition`（新設・改行混入のみ禁止）、`runAdd`/`runEdit`（設定・クリア対応）、`runPromote`（本設計の核・スキップ分岐）、`issueToJsonObj`/`runSchema`/`runShow`（JSON出力・schema・人間可読表示）、`help()`。
+
+**実装時の修正点（設計書との差分）:** 設計書は `'resume_condition: '.length === 19` としていたが、実際は **18**（`node -e "console.log('resume_condition: '.length)"` で確認）。19でスライスすると先頭1文字が欠落する（round-tripテストで検出）。`slice(18)` が正しい。また、設計書の `runAdd` 差分案では `resume_condition` バリデーションを `metaBody` 構築直前（ラベル作成処理より後）に置く例を示していたが、これだとバリデーションエラー時にラベル作成の副作用（`ensureLabel` API呼び出し）が先に発生してしまう。他フィールドのバリデーション（`due`/`recur`/`project`/`estimate`等）と同じ位置（ラベル作成ループより前）に移動した。
+
+**対象ファイル:** `workspaces/skill-dev/todo/scripts/todo-engine.js`
+
+**テスト:** `tests/run-tests.sh`（buildBody/parseBodyObj 単体テスト・round-trip）+ `tests/run-tests-write.sh` §W12（10ケース・スタブベースCLI振る舞いテスト。add/edit/クリア/改行バリデーション/promoteスキップ/リグレッション/混在ケース/JSON出力）+ `tests/scenarios.md` §36-16〜36-21（手動シナリオ）。全875件PASS。
 
 ## 注意事項
 
