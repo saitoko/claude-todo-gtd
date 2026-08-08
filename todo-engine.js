@@ -26,6 +26,10 @@ const MESSAGES = {
     'error.ctx_invalid': 'エラー: コンテキスト名に不正文字が含まれています',
     'error.tag_invalid': 'エラー: タグ名に不正文字が含まれています',
     'error.tag_num_only': 'エラー: タグ名が数字のみです（Issue番号と混同されます）',
+    'error.ctx_symbol_only': 'エラー: コンテキスト名に文字・数字が含まれていません（記号のみの名前は使えません）',
+    'error.tag_symbol_only': 'エラー: タグ名に文字・数字が含まれていません（記号のみの名前は使えません）',
+    'error.option_like_token': 'エラー: "{token}" はオプション指定に見えます。ラベルとして扱えません（@ctx / #tag の形式で指定してください）',
+    'label.created': '🆕 新規ラベル {name} を作成しました',
     'error.positive_int': 'エラー: 正の整数が必要です',
     'error.date_format': 'エラー: 不正な日付形式です',
     'error.recur_invalid': 'エラー: recur は daily/weekly/monthly/weekdays のみ有効です',
@@ -205,6 +209,10 @@ const MESSAGES = {
     'error.ctx_invalid': 'Error: Context name contains invalid characters',
     'error.tag_invalid': 'Error: Tag name contains invalid characters',
     'error.tag_num_only': 'Error: Tag name must not be digits only (conflicts with Issue number)',
+    'error.ctx_symbol_only': 'Error: Context name must contain at least one letter or digit (symbol-only names are not allowed)',
+    'error.tag_symbol_only': 'Error: Tag name must contain at least one letter or digit (symbol-only names are not allowed)',
+    'error.option_like_token': 'Error: "{token}" looks like an option, not a label (use @ctx / #tag format)',
+    'label.created': '🆕 Created new label {name}',
     'error.positive_int': 'Error: A positive integer is required',
     'error.date_format': 'Error: Invalid date format',
     'error.recur_invalid': 'Error: recur must be daily/weekly/monthly/weekdays',
@@ -637,7 +645,17 @@ function nextDueCatchUp(pattern, base, today) {
 
 // ─── バリデーション関数 ───
 
+// 記号のみ・空文字のラベル名を弾くための判定（Issue #1686）
+// FORBIDDEN_CHARS はシェル的に危険な文字しか列挙していないため、'-' のように
+// 危険ではないが意味のない記号だけで構成された名前（'@--' 等）が検証を通り、
+// GitHub 上に不正ラベルとして新規作成されていた。
+const HAS_LETTER_OR_DIGIT = /[\p{L}\p{N}]/u;
+
 function validateCtx(value) {
+  if (!HAS_LETTER_OR_DIGIT.test(value)) {
+    process.stderr.write(t('error.ctx_symbol_only')+'\n');
+    process.exit(1);
+  }
   for (const c of value) {
     if (FORBIDDEN_CHARS.indexOf(c) >= 0 || c === ' ') {
       process.stderr.write(t('error.ctx_invalid')+'\n');
@@ -651,6 +669,10 @@ function validateTag(value) {
   // value は '#' プレフィックスを除いた部分
   if (/^\d+$/.test(value)) {
     process.stderr.write(t('error.tag_num_only')+'\n');
+    process.exit(1);
+  }
+  if (!HAS_LETTER_OR_DIGIT.test(value)) {
+    process.stderr.write(t('error.tag_symbol_only')+'\n');
     process.exit(1);
   }
   for (const c of value) {
@@ -2338,17 +2360,21 @@ function getToday() {
 // GET で存在確認 → 404 のときだけ createLabel を呼ぶ。
 // 422 をキャッチする方式は @octokit/plugin-request-log が先に console.error を出力するため採用しない。
 // TOCTOU 対策: GET と createLabel の間に別プロセスが作成した場合も 422 をサイレント化。
+// 戻り値: 新規作成したとき true / 既存だったとき false（Issue #1686: 呼び出し側で通知を出すため）
 async function ensureLabel(octokit, owner, repo, name, color, description) {
   try {
     await octokit.request('GET /repos/{owner}/{repo}/labels/{name}', { owner, repo, name });
     // 200: ラベル既存 → 何もしない
+    return false;
   } catch(e) {
     if (e.status !== 404) throw e; // 404 以外（401/403/500 等）は真のエラーとして伝播
     // 404: 存在しない → 作成（TOCTOU 競合時の 422 はサイレント化）
     try {
       await octokit.issues.createLabel({ owner, repo, name, color: color||'FBCA04', description: description||'' });
+      return true;
     } catch(ce) {
       if (ce.status !== 422) throw ce;
+      return false; // 競合で別プロセスが作成済み → 新規作成の通知は出さない
     }
   }
 }
@@ -3201,6 +3227,12 @@ function normalizeTagTokens(rawTokens) {
   return rawTokens.map(s => {
     if (s.startsWith('@')) return s;
     if (s.startsWith('#')) return s;
+    // '-' 始まりはオプション指定の渡し間違い（'--' 区切り等）とみなして拒否する。
+    // 以前はコンテキストとして '@--' に正規化され、不正ラベルが新規作成されていた（Issue #1686）
+    if (s.startsWith('-')) {
+      process.stderr.write(tpl('error.option_like_token', { token: s })+'\n');
+      process.exit(1);
+    }
     // '@' も '#' もない → コンテキストとして扱う（後方互換）
     return '@'+s;
   });
@@ -3233,13 +3265,16 @@ async function runTag(octokit, owner, repo, tokens) {
   const labelList = normalizeTagTokens(tokens.slice(1));
   if (!labelList.length) { process.stderr.write('Usage: run tag <number> @ctx/#tag ...\n'); process.exit(1); }
   for (const lbl of labelList) {
+    let created;
     if (lbl.startsWith('#')) {
       validateTag(lbl.slice(1));
-      await ensureLabel(octokit, owner, repo, lbl, '0075CA', 'タグ');
+      created = await ensureLabel(octokit, owner, repo, lbl, '0075CA', 'タグ');
     } else {
       validateCtx(lbl.slice(1));
-      await ensureLabel(octokit, owner, repo, lbl, 'FBCA04', 'コンテキスト');
+      created = await ensureLabel(octokit, owner, repo, lbl, 'FBCA04', 'コンテキスト');
     }
+    // 既存ラベルに無い名前は打ち間違いの可能性があるため明示する（Issue #1686）
+    if (created) runOut(tpl('label.created', { name: lbl }));
   }
   await octokit.issues.addLabels({ owner, repo, issue_number: num, labels: labelList });
   runOut(`✅ #${num} に ${labelList.join(' ')} を追加しました。`);
@@ -3853,8 +3888,11 @@ async function runBulk(octokit, owner, repo, tokens) {
     const labelList = normalizeTagTokens(rest);
     if (!labelList.length) { process.stderr.write('Usage: run bulk tag <nums...> @ctx/#tag ...\n'); process.exit(1); }
     for (const lbl of labelList) {
-      if (lbl.startsWith('#')) { validateTag(lbl.slice(1)); await ensureLabel(octokit, owner, repo, lbl, '0075CA', 'タグ'); }
-      else { validateCtx(lbl.slice(1)); await ensureLabel(octokit, owner, repo, lbl, 'FBCA04', 'コンテキスト'); }
+      let created;
+      if (lbl.startsWith('#')) { validateTag(lbl.slice(1)); created = await ensureLabel(octokit, owner, repo, lbl, '0075CA', 'タグ'); }
+      else { validateCtx(lbl.slice(1)); created = await ensureLabel(octokit, owner, repo, lbl, 'FBCA04', 'コンテキスト'); }
+      // 既存ラベルに無い名前は打ち間違いの可能性があるため明示する（Issue #1686）
+      if (created) runOut(tpl('label.created', { name: lbl }));
     }
     for (const num of nums) {
       try { await octokit.issues.addLabels({ owner, repo, issue_number: num, labels: labelList }); doneCount++; }

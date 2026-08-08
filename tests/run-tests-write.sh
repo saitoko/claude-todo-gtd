@@ -720,6 +720,74 @@ assert_eq "W11-4 境界値: API呼び出しゼロ（タイトル検証がラベ�
 rm -f "$W11_4_LOG"
 
 # ──────────────────────────────────────────
+# §W12  tag/bulk tag — 不正ラベル名の新規作成防止（Issue #1686）
+# ──────────────────────────────────────────
+echo ""
+echo "§W12  tag/bulk tag — 不正ラベル名が検証なく新規作成されるバグの回帰確認"
+
+# 背景: `bulk tag <nums...> -- @本業` のように '--' を渡すと、normalizeTagTokens が
+# '@' も '#' も付かないトークンをコンテキスト扱いして '@--' に正規化していた。
+# validateCtx は FORBIDDEN_CHARS（シェル的に危険な文字）しか見ないため '-' は通過し、
+# ensureLabel が '@--' ラベルを GitHub 上に新規作成して対象Issue全件に付与していた。
+# 出力は通常の成功メッセージと区別がつかず、静かに永続的な副作用が残るのが問題だった。
+
+# W12-1 境界値: '--' 区切りを渡すとオプション誤指定として拒否され、API に到達しないこと
+W12_1_LOG=$(mktemp /tmp/todo-test-w12-1-XXXXXX.jsonl)
+: > "$W12_1_LOG"
+W12_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W12_1_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run bulk tag 6101 6102 -- @本業 2>&1); W12_1_EC=$?
+assert_exit_fail "W12-1 境界値: bulk tag に '--' を渡す → exit 1" "$W12_1_EC"
+assert_contains "W12-1 境界値: オプション誤指定である旨のエラーメッセージ" "オプション指定に見えます" "$W12_1_OUT"
+assert_eq "W12-1 境界値: API呼び出しゼロ（ラベル作成・付与ともに発生しない）" "0" "$(wc -l < "$W12_1_LOG" | tr -d ' ')"
+rm -f "$W12_1_LOG"
+
+# W12-2 境界値: 記号のみのコンテキスト名（'@--'）が拒否されること
+W12_2_LOG=$(mktemp /tmp/todo-test-w12-2-XXXXXX.jsonl)
+: > "$W12_2_LOG"
+W12_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W12_2_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run tag 6103 '@--' 2>&1); W12_2_EC=$?
+assert_exit_fail "W12-2 境界値: 記号のみのコンテキスト名 → exit 1" "$W12_2_EC"
+assert_contains "W12-2 境界値: 記号のみを拒否するエラーメッセージ" "記号のみの名前は使えません" "$W12_2_OUT"
+assert_eq "W12-2 境界値: API呼び出しゼロ（ensureLabel より前に検証される）" "0" "$(wc -l < "$W12_2_LOG" | tr -d ' ')"
+rm -f "$W12_2_LOG"
+
+# W12-3 境界値: 記号のみのタグ名（'#--'）が拒否されること
+W12_3_LOG=$(mktemp /tmp/todo-test-w12-3-XXXXXX.jsonl)
+: > "$W12_3_LOG"
+W12_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W12_3_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run bulk tag 6104 '#--' 2>&1); W12_3_EC=$?
+assert_exit_fail "W12-3 境界値: 記号のみのタグ名 → exit 1" "$W12_3_EC"
+assert_contains "W12-3 境界値: 記号のみを拒否するエラーメッセージ" "記号のみの名前は使えません" "$W12_3_OUT"
+assert_eq "W12-3 境界値: API呼び出しゼロ" "0" "$(wc -l < "$W12_3_LOG" | tr -d ' ')"
+rm -f "$W12_3_LOG"
+
+# W12-4 正常系: 既存ラベル（GET 200）を付与したときは新規作成の通知を出さないこと
+W12_4_LOG=$(mktemp /tmp/todo-test-w12-4-XXXXXX.jsonl)
+W12_4_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{}],"issues.addLabels":[{}]}'
+W12_4_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W12_4_RESP" OCTOKIT_STUB_LOG_ENV="$W12_4_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run tag 6105 '@本業' 2>&1); W12_4_EC=$?
+assert_exit_ok "W12-4 正常系: 既存ラベル付与 → exit 0" "$W12_4_EC"
+assert_not_contains "W12-4 正常系: 既存ラベルでは新規作成の通知を出さない" "新規ラベル" "$W12_4_OUT"
+assert_eq "W12-4 正常系: createLabel 呼び出しゼロ（既存なので作成しない）" "0" "$(log_count "$W12_4_LOG" issues.createLabel)"
+rm -f "$W12_4_LOG"
+
+# W12-5 正常系: 未登録ラベル（GET 404）を付与したときは新規作成を明示すること
+# 打ち間違いが静かに新ラベル化されるのを、呼び出し側が出力で気づけるようにする
+W12_5_LOG=$(mktemp /tmp/todo-test-w12-5-XXXXXX.jsonl)
+W12_5_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{"__throw":true,"status":404,"message":"Not Found"}],"issues.createLabel":[{}],"issues.addLabels":[{}]}'
+W12_5_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W12_5_RESP" OCTOKIT_STUB_LOG_ENV="$W12_5_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run tag 6106 '@新設コンテキスト' 2>&1); W12_5_EC=$?
+assert_exit_ok "W12-5 正常系: 未登録ラベル付与 → exit 0" "$W12_5_EC"
+assert_contains "W12-5 正常系: 新規ラベル作成が出力で明示される" "新規ラベル @新設コンテキスト を作成しました" "$W12_5_OUT"
+assert_eq "W12-5 正常系: createLabel が1回呼ばれる" "1" "$(log_count "$W12_5_LOG" issues.createLabel)"
+rm -f "$W12_5_LOG"
+
+# ──────────────────────────────────────────
 # 結果サマリー（run-tests.sh から集計加算するための機械可読な行）
 # ──────────────────────────────────────────
 echo ""

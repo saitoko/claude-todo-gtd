@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `tag` / `bulk tag` で不正なラベル名が検証なく GitHub 上に新規作成される問題を修正。`bulk tag <nums...> -- @ctx` のように `--` を渡すと、`normalizeTagTokens` が `@`/`#` の付かないトークンをコンテキスト扱いして `@--` に正規化し、`validateCtx` はシェル危険文字（`FORBIDDEN_CHARS`）しか見ないため `-` が通過して `@--` ラベルが作成・付与されていた。出力は通常の成功メッセージと区別がつかず、静かに永続的な副作用が残っていた
+
+### Changed
+
+- `validateCtx` / `validateTag` に「文字または数字を1文字以上含むこと」の検証を追加。記号のみ・空文字のラベル名を拒否する
+- `normalizeTagTokens` が `-` 始まりのトークンをコンテキストへ正規化せず、オプション指定の誤りとしてエラーにするようになった
+- `ensureLabel` が「新規作成したか」を戻り値（boolean）で返すようになった。`tag` / `bulk tag` は未登録ラベルを作成したとき `🆕 新規ラベル <name> を作成しました` を出力する。打ち間違いによる新ラベル化を呼び出し側が出力で気づけるようにするため（TOCTOU 競合で 422 になった場合は既存扱いとし通知しない）
+
 ---
 
 ## [v2.6.0] - 2026-08-04
