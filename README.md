@@ -1,365 +1,401 @@
-# /todo — Claude Code GTD タスク管理スキル
+# /todo — Claude Code GTD Task Management Skill
 
-> 🌐 [English README](README_EN.md)
+> 🌐 [日本語 README はこちら](README.ja.md)
 
-GitHub Issues をバックエンドに使った、Claude Code 用の GTD（Getting Things Done）タスク管理スラッシュコマンド。
+A GTD (Getting Things Done) task management slash command for Claude Code, powered by GitHub Issues as the backend.
 
-`/todo` と打つだけで、タスクの追加・管理・レビューが全てターミナルから完結します。
+Just type `/todo` to add, manage, and review tasks entirely from the terminal.
 
-## 特徴
+## Features
 
-- **GTD メソッド準拠** — inbox / next / waiting / someday / project / reference の6カテゴリで仕分け
-- **40+ コマンド** — タスクCRUD、一括操作、週次レビュー、テンプレート、統計まで網羅
-- **多言語対応** — 日本語（デフォルト）と英語に対応。`LANG_ENV=en` で英語モード
-- **日本語ネイティブ** — `--due 明日`、`--due 来週金曜`、`--due 3日後` など日本語で日付指定可能
-- **英語日付対応** — `--due tomorrow`、`--due "next week"`、`--due "in 3 days"` など英語でも指定可能（言語設定に関係なく常に使用可）
-- **コンテキスト管理** — `@PC` `@会社` `@外出中` で場所・状況に応じたフィルタリング
-- **優先度** — p1（緊急）/ p2（重要）/ p3（通常）の3段階
-- **繰り返しタスク** — daily / weekly / monthly / weekdays の4パターン
-- **セキュリティ対策** — シェルインジェクション・プロンプトインジェクション対策を8ルールで実装
-- **425+ テスト** — ローカルユニットテスト + GitHub統合テストで品質を担保
-- **サーバー不要** — GitHub Issues API + ローカルファイルのみで動作
+- **GTD methodology** — 6 categories: inbox / next / waiting / someday / project / reference
+- **40+ commands** — Task CRUD, bulk operations, weekly review, templates, statistics, project audit, tickler file
+- **Multilingual** — Japanese (default) and English supported. Set `LANG_ENV=en` for English
+- **Flexible date input** — `--due tomorrow`, `--due "next friday"`, `--due "in 3 days"` (Japanese dates also work regardless of language setting)
+- **Context management** — `@PC` `@office` `@errands` for location/situation-based filtering
+- **Priority levels** — p1 (urgent) / p2 (important) / p3 (normal)
+- **Recurring tasks** — daily / weekly / monthly / weekdays
+- **Security** — Shell injection and prompt injection protection with 8 rules
+- **1,110+ tests** — Local unit tests + GitHub integration tests
+- **No server required** — GitHub Issues API + local files only
 
-## インストール
+## Installation
 
-### 前提条件
+### Plugin install (recommended)
 
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) がインストール済み
-- [GitHub CLI (`gh`)](https://cli.github.com/) がインストール・認証済み
-- Node.js（日付処理に使用）
+```bash
+claude plugin install claude-todo-gtd@claude-community
+```
 
-### 手順
+After installing, create a private GitHub repository to store your tasks and set the environment variables below (see step 3–4 of the manual install).
 
-1. ファイルをコピー:
+### Manual install
+
+#### Prerequisites
+
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed
+- [GitHub CLI (`gh`)](https://cli.github.com/) installed and authenticated
+- Node.js (used for date processing)
+
+#### Setup
+
+1. Copy the files:
 ```bash
 cp todo.md ~/.claude/commands/todo.md
 cp todo-engine.js ~/.claude/todo-engine.js
 cp todo.sh ~/.claude/todo.sh
 ```
 
-2. テンプレートDBを初期化:
+2. Initialize the template database:
 ```bash
 echo '{}' > ~/.claude/todo-templates.json
 ```
 
-3. GitHub リポジトリを用意（Issue を保存する場所）:
+3. Prepare a GitHub repository (to store Issues):
 ```bash
 gh repo create my-tasks --private
 ```
 
-4. 環境変数を設定（`.env` をプロジェクトルートに作成）:
+4. Configure environment variables (create `.env` in the project root):
 ```bash
 cp .env.example .env
-# .env を編集して以下を設定:
-# GH_TOKEN=your_github_token_here  （gh auth token で取得可能）
+# Edit .env and set the following:
+# GH_TOKEN=your_github_token_here  (get with: gh auth token)
 # TODO_REPO_OWNER=your-github-username
 # TODO_REPO_NAME=my-tasks
 ```
 
-> **Note:** `@octokit/rest`（GitHub API クライアント）は初回実行時に自動インストールされます。
+> **Note:** `@octokit/rest` (GitHub API client) is automatically installed on first run.
 
-5. Claude Code で `/todo` と入力して動作確認。
+5. Type `/todo` in Claude Code to verify.
 
-### 言語設定
+#### Language Configuration
 
-デフォルトは日本語です。英語で使用するには環境変数 `LANG_ENV` を設定してください:
+The default language is Japanese. To use English, set the `LANG_ENV` environment variable:
 
 ```bash
-# ~/.bashrc や ~/.zshrc に追加
+# Add to ~/.bashrc or ~/.zshrc
 export LANG_ENV=en
 ```
 
-または CLAUDE.md に記述:
+Or add it to your CLAUDE.md:
 ```markdown
-環境変数: LANG_ENV=en
+Environment variable: LANG_ENV=en
 ```
 
-> **Note:** 日付入力（`--due 明日` / `--due tomorrow`）は言語設定に関係なく、日本語・英語の両方が常に使用可能です。
+> **Note:** Date input (`--due tomorrow` / `--due 明日`) always accepts both Japanese and English, regardless of the language setting.
 
-## クイックスタート
+## Quick Start
+
+> **Note:** Titles starting with a Latin letter are treated as command lookups (to avoid accidentally creating "ghost" issues from typos), so use `add` explicitly when the title itself starts with an English word. Non-Latin titles (e.g. Japanese) can be captured directly without `add` for frictionless collection.
 
 ```bash
-# タスクを追加（inbox に入る）
-/todo 牛乳を買う
+# Add a task (goes to inbox) — use "add" because the title starts with an English word
+/todo add buy groceries
 
-# next アクションとして追加（期限・コンテキスト付き）
-/todo next 設計書を書く @PC --due 明日
+# Add as next action (with due date and context)
+/todo next write design doc @PC --due tomorrow
 
-# 優先度付きで追加
-/todo next 障害対応 --priority p1
+# Add with priority
+/todo next incident response --priority p1
 
-# 繰り返しタスクを追加
-/todo next 週次レポートを書く --due 来週月曜 --recur weekly
+# Add a recurring task
+/todo next write weekly report --due "next monday" --recur weekly
 
-# タスク一覧を表示
+# List all tasks
 /todo list
 
-# next アクションだけ表示
+# Show only next actions
 /todo list next
 
-# コンテキストでフィルタ
+# Filter by context
 /todo list @PC
 
-# タスクを完了
+# Complete a task
 /todo done 5
 
-# 週次レビューを開始
+# Start a weekly review
 /todo weekly-review
 ```
 
-## コマンド一覧
+## Date Input Patterns
 
-### タスク作成
+**English patterns:**
+
+| Input | Result |
+|-------|--------|
+| `today` | Today's date |
+| `tomorrow` | +1 day |
+| `day after tomorrow` | +2 days |
+| `next week` | +7 days |
+| `next month` | +1 month |
+| `this weekend` | Next Saturday |
+| `end of this month` | Last day of this month |
+| `end of next month` | Last day of next month |
+| `in N days` | +N days |
+| `in N weeks` | +N weeks |
+| `in N months` | +N months |
+| `next Monday` ~ `next Sunday` | Next specified weekday |
+
+**Japanese patterns:** 今日（today） / 明日（tomorrow） / 明後日（day after tomorrow） / 来週（next week） / 来月（next month） / 今週末（this weekend） / 今月末（end of this month） / 来月末（end of next month） / N日後（in N days） / N週間後（in N weeks） / Nヶ月後（in N months） / 来週月曜〜来週日曜（next Monday–Sunday）
+
+> **Note:** Japanese date patterns (e.g., `--due 明日`) also work regardless of language setting.
+
+## Commands
+
+### Create a Task
 
 ```
 /todo [GTD] <title> [@context...] [--due <date>] [--desc "<text>"]
       [--recur <pattern>] [--project <number>] [--priority <p1|p2|p3>]
 ```
 
-| オプション | 説明 | 例 |
-|-----------|------|-----|
-| GTD ラベル | inbox(省略時) / next / waiting / someday / project / reference | `/todo next タスク名` |
-| `@context` | コンテキスト（複数可） | `@PC @会社` |
-| `--due` | 期限（日本語対応） | `--due 明日`, `--due 4/10`, `--due 2026-04-10` |
-| `--desc` | 説明文 | `--desc "3章まで読む"` |
-| `--recur` | 繰り返し | `--recur weekly` |
-| `--project` | プロジェクト紐付け（GitHub sub-issue にも自動登録） | `--project 7` |
-| `--priority` | 優先度 | `--priority p1` |
-| `--estimate` | 見積時間 | `--estimate 2h`, `--estimate 30m` |
-| `--activate` | 昇格予定日（その日に next へ自動浮上） | `--activate 2026-05-01` |
-| `--before` | due の N 日前を activate として自動計算 | `--before 14d` |
-| `--depends-on` | 依存タスク完了時に next へ自動昇格 | `--depends-on 42` |
+| Option | Description | Example |
+|--------|-------------|---------|
+| GTD label | inbox (default) / next / waiting / someday / project / reference | `/todo next task name` |
+| `@context` | Context (multiple allowed) | `@PC @office` |
+| `--due` | Due date (Japanese also supported) | `--due tomorrow`, `--due 4/10`, `--due 2026-04-10` |
+| `--desc` | Description | `--desc "Read through chapter 3"` |
+| `--recur` | Recurrence | `--recur weekly` |
+| `--project` | Link to a project (also registers as a GitHub sub-issue) | `--project 7` |
+| `--priority` | Priority | `--priority p1` |
+| `--estimate` | Time estimate | `--estimate 2h`, `--estimate 30m` |
+| `--activate` | Scheduled promotion date (auto-promotes to next on that date) | `--activate 2026-05-01` |
+| `--before` | Auto-calculate `--activate` as N days before `--due` | `--before 14d` |
+| `--depends-on` | Auto-promote to next when the dependency task is completed | `--depends-on 42` |
 
-**日本語日付の対応パターン:** 今日 / 明日 / 明後日 / 来週 / 来月 / 今週末 / 今月末 / 来月末 / N日後 / N週間後 / Nヶ月後 / 来週月曜〜来週日曜
+### List & Search
 
-**English date patterns:** today / tomorrow / day after tomorrow / next week / next month / this weekend / end of this month / end of next month / in N days / in N weeks / in N months / next Monday〜next Sunday
+| Command | Description |
+|---------|-------------|
+| `/todo list` | List all tasks by GTD category |
+| `/todo list next` | Show next actions only |
+| `/todo list @PC` | Filter by context |
+| `/todo list p1` | Filter by priority |
+| `/todo list next @PC` | AND filter with multiple conditions |
+| `/todo list project 7` | Show tasks under a project |
+| `/todo search <keyword>` | Search open tasks by keyword |
+| `/todo stats` | Task statistics (by category, priority, due status, completion record) |
 
-### 一覧表示・検索
+### Status & Completion
 
-| コマンド | 説明 |
-|---------|------|
-| `/todo list` | 全タスクをGTDカテゴリ別に表示 |
-| `/todo list next` | next アクションのみ表示 |
-| `/todo list @PC` | コンテキストでフィルタ |
-| `/todo list p1` | 優先度でフィルタ |
-| `/todo list next @PC` | 複数条件のANDフィルタ |
-| `/todo list project 7` | プロジェクト配下のタスク表示 |
-| `/todo search <keyword>` | オープンタスクをキーワード検索 |
-| `/todo stats` | タスク統計（カテゴリ別・優先度別・期限状況・完了実績） |
+| Command | Description |
+|---------|-------------|
+| `/todo move <#> <GTD>` | Change GTD category |
+| `/todo done <#>` | Complete a task (recurring tasks auto-create the next occurrence; project next-task hints are shown) |
 
-### ステータス変更・完了
+### Edit
 
-| コマンド | 説明 |
-|---------|------|
-| `/todo move <#> <GTD>` | GTDカテゴリを変更 |
-| `/todo done <#>` | タスクを完了（繰り返しは自動で次回分を作成。プロジェクトの次タスク昇格候補も提示） |
+| Command | Description |
+|---------|-------------|
+| `/todo edit <#> [options]` | Update multiple fields at once (`--due` / `--priority` / `--estimate` / `--activate` / `--before` etc.) |
+| `/todo rename <#> <new title>` | Change title |
+| `/todo due <#> <date>` | Change due date |
+| `/todo desc <#> <text>` | Change description |
+| `/todo recur <#> <pattern\|clear>` | Set/clear recurrence |
+| `/todo priority <#> <p1\|p2\|p3\|clear>` | Set/clear priority |
+| `/todo link <#> <project#>` | Link to a project (also registers as a GitHub sub-issue) |
 
-### 編集
+### Context & Labels
 
-| コマンド | 説明 |
-|---------|------|
-| `/todo edit <#> [options]` | 複数フィールドを一括更新（`--due` / `--priority` / `--estimate` / `--activate` / `--before` 等） |
-| `/todo rename <#> <新タイトル>` | タイトル変更 |
-| `/todo due <#> <date>` | 期限変更 |
-| `/todo desc <#> <text>` | 説明変更 |
-| `/todo recur <#> <pattern\|clear>` | 繰り返し設定・解除 |
-| `/todo priority <#> <p1\|p2\|p3\|clear>` | 優先度設定・解除 |
-| `/todo link <#> <project#>` | プロジェクトに紐付け（GitHub sub-issue にも登録） |
+| Command | Description |
+|---------|-------------|
+| `/todo tag <#> @ctx1 @ctx2` | Add context |
+| `/todo untag <#> @ctx` | Remove context |
+| `/todo tag rename @old @new` | Bulk-rename a context across all tasks |
+| `/todo label list` | List all context labels |
+| `/todo label add @name [--color hex]` | Create a context label |
+| `/todo label delete @name` | Delete a context label |
 
-### コンテキスト・ラベル
+### Project Management
 
-| コマンド | 説明 |
-|---------|------|
-| `/todo tag <#> @ctx1 @ctx2` | コンテキストを追加 |
-| `/todo untag <#> @ctx` | コンテキストを削除 |
-| `/todo tag rename @old @new` | コンテキスト名を一括リネーム |
-| `/todo label list` | 全コンテキストラベル一覧 |
-| `/todo label add @name [--color hex]` | コンテキストラベル作成 |
-| `/todo label delete @name` | コンテキストラベル削除 |
+| Command | Description |
+|---------|-------------|
+| `/todo promote-project <#>` | Promote an existing issue to a project |
+| `/todo unlink <#>` | Remove a child issue's project link |
+| `/todo migrate sub-issue [--dry-run]` | Bulk-register issues with `project: #N` in the body as GitHub sub-issues (idempotent) |
+| `/todo weekly-project-audit` | Audit all projects — auto-detect missing next actions and stalled projects |
 
-### プロジェクト管理
+### Tickler File & Someday Management
 
-| コマンド | 説明 |
-|---------|------|
-| `/todo promote-project <#>` | 既存 Issue をプロジェクトに昇格 |
-| `/todo unlink <#>` | 子 Issue のプロジェクト紐付けを解除 |
-| `/todo migrate sub-issue [--dry-run]` | body `project: #N` の一括 sub-issue 登録（冪等） |
-| `/todo weekly-project-audit` | 全プロジェクト棚卸し（next 欠落・停滞を自動検出） |
+| Command | Description |
+|---------|-------------|
+| `/todo promote` | Bulk-promote tasks whose activate date has arrived to next |
+| `/todo review-someday <#>` | Record a review date for a someday task (⚠️ shown after 30+ days without review) |
 
-### チクラーファイル・Someday 管理
+### Bulk Operations
 
-| コマンド | 説明 |
-|---------|------|
-| `/todo promote` | activate 日到来タスクを next に一括昇格 |
-| `/todo review-someday <#>` | someday タスクの見直し日を記録（30日超で ⚠️ 表示） |
+| Command | Description |
+|---------|-------------|
+| `/todo bulk done <#> <#> ...` | Complete multiple tasks at once |
+| `/todo bulk move <#> <#> ... <GTD>` | Move multiple tasks at once |
+| `/todo bulk tag <#> <#> ... @ctx` | Add context to multiple tasks |
+| `/todo bulk untag <#> <#> ... @ctx` | Remove context from multiple tasks |
+| `/todo bulk priority <#> <#> ... <p>` | Change priority for multiple tasks at once |
 
-### 一括操作
+### Archive
 
-| コマンド | 説明 |
-|---------|------|
-| `/todo bulk done <#> <#> ...` | 複数タスクを一括完了 |
-| `/todo bulk move <#> <#> ... <GTD>` | 複数タスクを一括移動 |
-| `/todo bulk tag <#> <#> ... @ctx` | 複数タスクにコンテキスト追加 |
-| `/todo bulk untag <#> <#> ... @ctx` | 複数タスクからコンテキスト削除 |
-| `/todo bulk priority <#> <#> ... <p>` | 複数タスクの優先度を一括変更 |
+| Command | Description |
+|---------|-------------|
+| `/todo archive` | Show recently completed tasks (last 30) |
+| `/todo archive list <GTD\|@ctx>` | Show archived tasks with a filter |
+| `/todo archive search <keyword>` | Search completed tasks by keyword |
+| `/todo archive reopen <#>` | Reopen a completed task |
 
-### アーカイブ
+### Templates
 
-| コマンド | 説明 |
-|---------|------|
-| `/todo archive` | 完了タスク一覧（直近30件） |
-| `/todo archive list <GTD\|@ctx>` | フィルタ付きアーカイブ表示 |
-| `/todo archive search <keyword>` | 完了タスクをキーワード検索 |
-| `/todo archive reopen <#>` | 完了タスクを再オープン |
+| Command | Description |
+|---------|-------------|
+| `/todo template list` | List templates |
+| `/todo template show <name>` | Show template details |
+| `/todo template save <name> [options]` | Save a template (inline or interactively) |
+| `/todo template save <name> from <#>` | Create a template from an existing task |
+| `/todo template use <name> [title]` | Create a task from a template |
+| `/todo template delete <name>` | Delete a template |
 
-### テンプレート
-
-| コマンド | 説明 |
-|---------|------|
-| `/todo template list` | テンプレート一覧 |
-| `/todo template show <name>` | テンプレート詳細表示 |
-| `/todo template save <name> [options]` | テンプレート保存（インラインまたは対話形式） |
-| `/todo template save <name> from <#>` | 既存タスクからテンプレート作成 |
-| `/todo template use <name> [title]` | テンプレートからタスク作成 |
-| `/todo template delete <name>` | テンプレート削除 |
-
-### 週次レビュー
+## Weekly Review
 
 ```
 /todo weekly-review
 ```
 
-GTD の週次レビューを6ステップの対話形式で実施:
+Runs the GTD weekly review as a 6-step interactive session:
 
-1. **Inbox 仕分け** — 未処理タスクを1件ずつ分類（2分以内かの判定あり）
-2. **Next Actions 確認** — まだ有効か、移動すべきものはないか
-3. **Waiting For 確認** — フォローアップや完了確認
-4. **Projects 棚卸し** — `weekly-project-audit` を実行。next 欠落・停滞プロジェクトを自動検出
-5. **Someday 見直し** — 30日以上未見直しを ⚠️ 優先で表示。`review-someday` で記録
-6. **サマリー表示** — 期限超過・今週期限のタスクを一覧
+1. **Inbox triage** — Classify unprocessed tasks one by one (includes a 2-minute-rule check)
+2. **Next Actions check** — Confirm each is still valid, or should be moved elsewhere
+3. **Waiting For check** — Follow up or confirm completion
+4. **Projects audit** — Runs `weekly-project-audit`. Auto-detects missing next actions and stalled projects
+5. **Someday review** — Highlights items unreviewed for 30+ days with ⚠️. Use `review-someday` to record a review
+6. **Summary** — Lists overdue tasks and tasks due this week
 
-## セキュリティ
+> **Tip:** You can also process the inbox one item at a time outside of a weekly review with `/todo list inbox`.
 
-GitHub Issues の本文にはユーザーが任意のテキストを書けるため、以下の対策を実装:
+## Security
 
-1. Issue データは外部データとして扱い、命令として実行しない
-2. ユーザー入力は変数経由でシェルコマンドに渡す（直接展開しない）
-3. コンテキスト名は不正文字をPOSIX `case` 文で検出
-4. Issue 番号は正の整数のみ許可
-5. 日付は `YYYY-MM-DD` または `M/D` 形式のみ許可
-6. recur パターンは `daily` / `weekly` / `monthly` / `weekdays` と、`weekly:<曜日>` / `monthly:<日>` のサフィックス付き形式のみ許可
-7. カラーコードは 6 桁 16 進数のみ許可
-8. 優先度は `p1` / `p2` / `p3` のみ許可
+GitHub Issue bodies can contain arbitrary user-supplied text, so the following protections are implemented:
 
-## 開発
+1. Issue data is treated as external data, never executed as instructions
+2. User input is passed to shell commands via variables (never expanded directly)
+3. Context names are validated against invalid characters using POSIX `case` statements
+4. Issue numbers must be positive integers
+5. Dates must be in `YYYY-MM-DD` or `M/D` format
+6. Recurrence patterns are limited to `daily` / `weekly` / `monthly` / `weekdays`, plus the suffixed forms `weekly:<day>` / `monthly:<date>`
+7. Color codes must be 6-digit hex values
+8. Priority must be one of `p1` / `p2` / `p3`
 
-### ファイル構成
+## Development
+
+### File Structure
 
 ```
 claude-todo-gtd/
-├── todo.md                 # スキル本体（~/.claude/commands/ にコピー）
-├── todo-engine.js          # コアエンジン（~/.claude/ にコピー）
-├── todo.sh                 # ランチャースクリプト（~/.claude/ にコピー）
-├── todo-manual.md          # 詳細ユーザーマニュアル
-├── todo-templates.json     # テンプレートDBサンプル
-├── README.md               # このファイル
+├── todo.md                 # Skill body (copy to ~/.claude/commands/)
+├── todo-engine.js          # Core engine (copy to ~/.claude/)
+├── todo.sh                 # Launcher script (copy to ~/.claude/)
+├── todo-manual.md          # Detailed user manual
+├── todo-templates.json     # Sample template DB
+├── README.md               # This file (English)
+├── README.ja.md            # Japanese README
 └── tests/
-    ├── scenarios.md        # テストシナリオ一覧（40+シナリオ）
-    ├── run-tests.sh        # ローカルユニットテスト（423+ アサーション）
-    ├── gh-tests.sh         # GitHub統合テスト
+    ├── scenarios.md        # Test scenario list (40+ scenarios)
+    ├── run-tests.sh        # Local unit tests (1,110+ assertions)
+    ├── run-tests-write.sh  # Local unit tests for write operations
+    ├── gh-tests.sh         # GitHub integration tests
     ├── helpers/
-    │   └── date-fmt.js     # 日付フォーマット共通処理
-    └── fixtures/
-        └── sample-templates.json
+    │   └── date-fmt.js     # Shared date formatting helpers
+    ├── fixtures/
+    │   └── sample-templates.json
+    └── stubs/
+        └── octokit-stub.js # Stub for @octokit/rest, used to run unit tests without hitting the GitHub API
 ```
 
-### 開発フロー
+### Development Flow
 
-1. `todo.md` / `todo-engine.js` を編集
-2. `tests/run-tests.sh` でローカルテスト実行
-3. `tests/gh-tests.sh` でGitHub統合テスト実行
-4. 本番反映:
+1. Edit `todo.md` / `todo-engine.js`
+2. Run local tests with `tests/run-tests.sh`
+3. Run GitHub integration tests with `tests/gh-tests.sh`
+4. Deploy to production:
 ```bash
 cp todo.md ~/.claude/commands/todo.md
 cp todo-engine.js ~/.claude/todo-engine.js
 cp todo.sh ~/.claude/todo.sh
 ```
 
-### モバイル対応（SH_MODE / MCP_MODE）
+### Mobile Support (SH_MODE / MCP_MODE)
 
-`todo.sh` は実行環境を自動判定します:
-- **SH_MODE**（デフォルト）: ローカルの `todo-engine.js` を Node.js で実行
-- **MCP_MODE**: `~/.claude/todo.sh` が存在しない環境（iOS Claude Code 等）では GitHub MCP に直接マッピング
+`todo.sh` auto-detects its execution environment:
+- **SH_MODE** (default): Runs the local `todo-engine.js` with Node.js
+- **MCP_MODE**: In environments where `~/.claude/todo.sh` doesn't exist (e.g. Claude Code on iOS), maps directly to the GitHub MCP
 
-iOS Shortcuts から GitHub REST API を直接呼び出す場合は `tests/scenarios.md` のシナリオ 40 を参照してください。
+For calling the GitHub REST API directly from iOS Shortcuts, see scenario 40 in `tests/scenarios.md`.
 
-### テスト実行
+### Running Tests
 
 ```bash
-# ローカルユニットテスト
+# Local unit tests
 bash tests/run-tests.sh
 
-# GitHub統合テスト（実際にIssueを作成・操作）
+# GitHub integration tests (creates/manipulates real issues)
 bash tests/gh-tests.sh
 ```
 
-## 技術スタック
+## Tech Stack
 
-- **実行環境**: Claude Code カスタムスラッシュコマンド
-- **バックエンド**: GitHub Issues API（`gh` CLI経由）
-- **スクリプト**: Bash + Node.js（JSON処理・日付計算）
-- **テンプレート保存**: ローカルJSONファイル
+- **Runtime**: Claude Code custom slash command
+- **Backend**: GitHub Issues API (via `gh` CLI)
+- **Scripting**: Bash + Node.js (JSON processing, date calculations)
+- **Template storage**: Local JSON file
 
-## ライセンス
+## License
 
 MIT
 
-## Pro 機能
+## Pro Features
 
-基本機能（30+ コマンド）はすべて無料で利用できます。以下は生産性をさらに高めるための追加機能です。
+The core feature set (40+ commands) is entirely free. The following are additional features for boosting productivity further.
 
-### ダッシュボード
+### Dashboard
 
-今日やるべきことにフォーカスした俯瞰ビュー。
-
-```bash
-/todo dashboard   # または /todo dash
-```
-
-期限超過・今日やること・今週期限・Next Actions・完了実績をまとめて表示します。
-
-### デイリーレビュー
-
-朝の計画と夜の振り返りを対話形式で実施。
+An at-a-glance view focused on what to do today.
 
 ```bash
-/todo daily-review          # 時刻で自動判定（15時前→朝、15時以降→夜）
-/todo daily-review morning  # 朝の計画
-/todo daily-review evening  # 夜の振り返り
+/todo dashboard   # or /todo dash
 ```
 
-**Morning:** ダッシュボード → Inbox仕分け → 今日やるタスク選定 → 計画サマリー
-**Evening:** 完了実績 → 未完了タスク処理 → 明日の予定 → 一日のサマリー
+Shows overdue tasks, today's tasks, tasks due this week, next actions, and completion stats all in one view.
 
-### カスタムビュー
+### Daily Review
 
-よく使うフィルタ条件を名前付きで保存・呼び出し。
+An interactive morning-planning / evening-reflection routine.
 
 ```bash
-/todo view save 仕事 next @会社 p1   # ビューを保存
-/todo view 仕事                       # 保存したビューで表示
-/todo view list                       # ビュー一覧
-/todo view delete 仕事                # ビューを削除
+/todo daily-review          # Auto-detects morning/evening based on time (before 3pm → morning, after → evening)
+/todo daily-review morning  # Morning planning
+/todo daily-review evening  # Evening reflection
 ```
 
-### レポート出力
+**Morning:** Dashboard → Inbox triage → Pick today's tasks → Plan summary
+**Evening:** Completion stats → Handle incomplete tasks → Tomorrow's plan → Daily summary
 
-週次・月次の生産性レポートをMarkdownで出力。
+### Custom Views
+
+Save and recall frequently-used filter combinations by name.
 
 ```bash
-/todo report weekly    # 直近7日間
-/todo report monthly   # 直近30日間
-/todo report 14d       # 直近14日間
+/todo view save work next @office p1   # Save a view
+/todo view work                        # Show the saved view
+/todo view list                        # List views
+/todo view delete work                 # Delete a view
 ```
 
-完了サマリー、日別バーチャート、カテゴリ別・優先度別集計、完了タスク一覧を含みます。
+### Report Output
+
+Weekly/monthly productivity reports in Markdown.
+
+```bash
+/todo report weekly    # Last 7 days
+/todo report monthly   # Last 30 days
+/todo report 14d       # Last 14 days
+```
+
+Includes a completion summary, a daily bar chart, breakdowns by category and priority, and a list of completed tasks.
