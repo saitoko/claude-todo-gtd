@@ -1,18 +1,21 @@
 #!/bin/bash
 # GitHub接続テスト — ${TODO_REPO_OWNER}/${TODO_REPO_NAME}
-TODO_REPO_OWNER="${TODO_REPO_OWNER:-saitoko}"
-TODO_REPO_NAME="${TODO_REPO_NAME:-000-partner}"
+TODO_REPO_OWNER="${TODO_REPO_OWNER:-}"
+TODO_REPO_NAME="${TODO_REPO_NAME:-}"
 set -uo pipefail
 
 # ─── 環境変数チェック ───────────────────────────────────────
-# プレースホルダーのまま実行するとGitHub APIが404エラーを返し
+# 未設定・プレースホルダーのまま実行するとGitHub APIが404エラーを返し
 # 原因が分かりにくいため、実行前に明示的にエラー終了する。
-if [ "${TODO_REPO_OWNER}" = "your-github-username" ] || [ -z "${TODO_REPO_OWNER}" ]; then
-  echo "エラー: TODO_REPO_OWNER / TODO_REPO_NAME がプレースホルダのままです。" >&2
+# 個人アカウント名等の既定値にフォールバックしない（未設定は未設定のまま扱う）ことで、
+# このガードを確実に通過させる。
+if [ -z "${TODO_REPO_OWNER}" ] || [ -z "${TODO_REPO_NAME}" ] \
+  || [ "${TODO_REPO_OWNER}" = "your-github-username" ] || [ "${TODO_REPO_NAME}" = "your-task-repo" ]; then
+  echo "エラー: TODO_REPO_OWNER / TODO_REPO_NAME が未設定またはプレースホルダのままです。" >&2
   echo ".env を作成して自分の GitHub リポジトリを設定してから実行してください。" >&2
   echo "詳細は README の「セットアップ」セクションを参照。" >&2
   echo "" >&2
-  echo "ERROR: TODO_REPO_OWNER / TODO_REPO_NAME are still placeholders." >&2
+  echo "ERROR: TODO_REPO_OWNER / TODO_REPO_NAME are unset or still placeholders." >&2
   echo "Create a .env file with your GitHub repository settings before running." >&2
   echo "See the 'Setup' section in README for details." >&2
   exit 1

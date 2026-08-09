@@ -8,7 +8,8 @@
 # 実行方法は tests/run-tests.sh から1コマンド（bash tests/run-tests.sh）で
 # 呼び出される想定。単体では: bash tests/run-tests-write.sh
 #
-# 設計書: workspaces/skill-dev/todo/designs/2026-08-03_octokit-injection-seam.md
+# 設計背景: Octokit 注入シーム（GH_TOKEN・実 API 非依存でテストを実行する仕組み）の
+# 詳細設計は開発時の設計資料を参照（本リポジトリには含まれません）。
 
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -424,7 +425,7 @@ assert_eq "runEdit 異常系: issues.get のみ実行（1回）" "1" "$(log_coun
 assert_eq "runEdit 異常系: issues.update は呼ばれない（副作用なし）" "0" "$(log_count "$W5B_LOG" issues.update)"
 rm -f "$W5B_LOG"
 
-# W5-3 characterization（COO決定事項: runEdit の validate-before-mutate 順序バグは修正せず、
+# W5-3 characterization（既知の設計判断: runEdit の validate-before-mutate 順序バグは修正せず、
 # 現状挙動を記録するテストとして残す。修正は別Issue）:
 # --priority に不正値を指定すると、旧priorityラベルの削除（removeLabel）は実行されるが、
 # validatePriority() がその後にexit(1)するため、新ラベル追加(addLabels)も本体の
@@ -461,7 +462,7 @@ assert_eq "runPriority 正常系: 新p2追加" "1" "$(log_count "$W6_LOG" issues
 assert_contains "runPriority 正常系: 追加対象がp2" '"labels":["p2"]' "$(log_lines_for_method "$W6_LOG" issues.addLabels)"
 rm -f "$W6_LOG"
 
-# W6-2 異常系 characterization（COO決定事項・design §Phase1 優先順位6）:
+# W6-2 異常系 characterization（既知の設計判断・design §Phase1 優先順位6）:
 # 旧ラベル削除→validateの順序バグを修正せず、現状挙動として記録する。
 # 不正値指定時、removeLabel(旧priority) は実行されるが addLabels(新priority) は呼ばれない。
 W6C_LOG=$(mktemp /tmp/todo-test-w6c-XXXXXX.jsonl)
@@ -1063,7 +1064,7 @@ rm -f "$W14_4_LOG"
 
 # ──────────────────────────────────────────
 # §W15  closedAt のJST日付変換 — show/archive の表示ズレ修正（Issue #1748）
-# 実証: 2026-08-09 COO実機確認。closed_at=2026-08-08T23:32:23Z（実issue #1739）は
+# 実証: 2026-08-09 実環境で確認済み。closed_at=2026-08-08T23:32:23Z（実issue #1739）は
 # JSTでは2026-08-09 08:32だが、修正前は `.slice(0,10)` によりUTC日付の
 # 「2026-08-08」がそのまま表示されていた。
 # ──────────────────────────────────────────

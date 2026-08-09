@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # todo.sh — /todo スキルのラッパースクリプト
 # Usage: bash ~/.claude/todo.sh <command> [args...]
-#        bash workspaces/todo-dev/scripts/todo.sh <command> [args...]
+#        bash todo.sh <command> [args...]  (run directly from this repository)
 
 # プロジェクトルートの .env があれば読み込む（Cowork対応）
 # TODO_DOTENV 環境変数で .env パスを明示指定可能（カレントディレクトリ非依存）
