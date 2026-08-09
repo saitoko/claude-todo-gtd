@@ -1,16 +1,26 @@
 # todo スキル 開発ガイド
 
+`/todo` スキル本体（`todo.md` + `todo-engine.js`）にコントリビュートする方向けの開発ガイドです。
+バグ修正・機能追加の Pull Request を送る前にお読みください。
+
 ## ファイル構成
 
+このリポジトリを clone すると、次のような構成になっています。
+
 ```
-workspaces/skill-dev/todo/
-├── todo.md              ← スキル本体（編集対象）
-├── todo-templates.json  ← テンプレートストレージのサンプル
-├── DEVELOPMENT.md       ← このファイル
-├── scripts/
-│   └── todo-engine.js   ← エンジン本体（編集対象）
+claude-todo-gtd/
+├── todo.md                 ← スキル本体（編集対象。`~/.claude/commands/` にコピーして使う）
+├── todo-engine.js           ← エンジン本体（編集対象。`~/.claude/` にコピーして使う）
+├── todo.sh                  ← 起動用ラッパースクリプト（`~/.claude/` にコピーして使う）
+├── todo-manual.md            ← 詳細ユーザーマニュアル
+├── todo-templates.json       ← テンプレートストレージのサンプル
+├── DEVELOPMENT.md            ← このファイル
+├── README.md / README.ja.md  ← README（英語 / 日本語）
 └── tests/
-    ├── scenarios.md     ← テストシナリオ一覧
+    ├── scenarios.md         ← テストシナリオ一覧
+    ├── run-tests.sh         ← ローカル単体テスト（GitHubには接続しない）
+    ├── run-tests-write.sh   ← 書き込み系ハンドラのスタブベーステスト
+    ├── gh-tests.sh          ← GitHub 実接続テスト（実 Issue を作成・削除する）
     └── fixtures/
         └── sample-templates.json  ← テスト用テンプレートデータ
 ```
@@ -21,31 +31,34 @@ workspaces/skill-dev/todo/
 |---------|------|
 | スキル本体 | `~/.claude/commands/todo.md` |
 | エンジン | `~/.claude/todo-engine.js` |
+| ラッパースクリプト | `~/.claude/todo.sh` |
 | テンプレートDB | `~/.claude/todo-templates.json` |
 
 ## 開発フロー
 
-1. `workspaces/skill-dev/todo/todo.md` または `workspaces/skill-dev/todo/scripts/todo-engine.js` を編集する
-2. `tests/scenarios.md` のシナリオで動作確認する
-3. レビュー完了後、本番パスにコピーして反映する
+1. `todo.md` または `todo-engine.js` を編集する
+2. `bash tests/run-tests.sh` でローカルテスト（GitHub API には接続しない）を実行し、全件 PASS を確認する
+3. 実際の GitHub リポジトリで動作確認したい場合は、`.env` に自分の `TODO_REPO_OWNER`/`TODO_REPO_NAME` を設定した上で `bash tests/gh-tests.sh` を実行する（実 Issue を作成・クローズする点に注意）
+4. 動作確認後、本番パスにコピーして反映する
 
 ```bash
 # 本番への反映
-cp workspaces/skill-dev/todo/todo.md ~/.claude/commands/todo.md
-cp workspaces/skill-dev/todo/scripts/todo-engine.js ~/.claude/todo-engine.js
+cp todo.md ~/.claude/commands/todo.md
+cp todo-engine.js ~/.claude/todo-engine.js
+cp todo.sh ~/.claude/todo.sh
 ```
 
 ## テスト
 
-- テストランナー: `bash workspaces/skill-dev/todo/tests/run-tests.sh`
-- 自動テスト総件数: **875件**（2026-08-03 時点。read-only系 run-tests.sh + 書き込み系 run-tests-write.sh の合算。全件PASS）
+- テストランナー: `bash tests/run-tests.sh`（+ 書き込み系は `bash tests/run-tests-write.sh` として個別実行も可能。通常は `run-tests.sh` から自動的に呼び出される）
+- 自動テスト総件数: **1,110件以上**（read-only系 + 書き込み系の合算。全件PASSが目安）
 - シナリオ一覧: `tests/scenarios.md`
-- 全件 PASS が品質ゲートの必須条件
-- 件数を更新する際は本ファイルの数値も合わせて更新する
+- 全件 PASS が Pull Request マージの必須条件
+- 件数を更新する際は README.md の記載も合わせて更新する
 
 ## 改善アイデアの記録
 
-改善案は GitHub Issue #51「todo.md を開発するためのプロジェクト」に登録する。
+改善案・バグ報告は本リポジトリの GitHub Issues に登録してください。
 
 ## バグ修正履歴
 
@@ -98,9 +111,9 @@ function nextDueCatchUp(pattern, base, today) {
 
 周期スキップが発生した場合、`done` の完了メッセージに `⏭ 期限超過のため過去の周期をスキップしました（due基準: ... → 再作成: ...）` を追記する。テスト用に CLI サブコマンド `next-due-catchup <pattern> <base> <today>` を追加（`tests/run-tests.sh` §33 参照）。
 
-**対象ファイル:** `workspaces/skill-dev/todo/scripts/todo-engine.js`（`runDone()` および `nextDueCatchUp()`）
+**対象ファイル:** `todo-engine.js`（`runDone()` および `nextDueCatchUp()`）
 
-**既知の未解決事項（本修正のスコープ外）:** テストスイートに1件、本修正と無関係な既存FAIL（`§25 Report: 完了7件` — `assert_contains` の期待値パターン `**7件**` が BRE の repetition operator と衝突し `grep` がエラーを返す。`git stash` で本修正前のコードに戻しても再現するため、修正前から存在する既存バグ）。詳細は本作業のCOOへの報告を参照。
+**既知の未解決事項（本修正のスコープ外）:** テストスイートに1件、本修正と無関係な既存FAIL（`§25 Report: 完了7件` — `assert_contains` の期待値パターン `**7件**` が BRE の repetition operator と衝突し `grep` がエラーを返す。`git stash` で本修正前のコードに戻しても再現するため、修正前から存在する既存バグ）。
 
 ### 2026-08-03: depends_on 昇格が完了 Issue 自身の project/dependsOn 有無でスキップされる（#1660）
 
@@ -126,7 +139,7 @@ if (issue.project || issue.dependsOn) {
 }
 ```
 
-**対象ファイル:** `workspaces/skill-dev/todo/scripts/todo-engine.js`（`postDoneProcessing()`）
+**対象ファイル:** `todo-engine.js`（`postDoneProcessing()`）
 
 ### 2026-08-03: `#` 始まりのタイトルが丸ごとタグ扱いされ「タイトルが空です」エラーになる（#1660）
 
@@ -146,11 +159,11 @@ if (issue.project || issue.dependsOn) {
 } else if (tok.startsWith('#') && !tok.includes(' ') && !/^#\d+$/.test(tok)) {
 ```
 
-**対象ファイル:** `workspaces/skill-dev/todo/scripts/todo-engine.js`（`parseArgs()`）
+**対象ファイル:** `todo-engine.js`（`parseArgs()`）
 
 ### 2026-08-03: `resume_condition` フィールド追加 — activate/promote 自動昇格に再開条件ゲートを追加（Issue #1299由来の欠陥修正）
 
-**症状:** `/todo promote`（`activate:` 日到来タスクを機械的に `next` へ昇格する処理）が、日付到来のみを判定基準にしており、Issue本文に書かれた実質的な再開条件（例: 「検索流入が回復したら」）を一切検証していなかった。実事故: #1299（Zenn→はてな送客強化）が、GSC実測では検索流入が依然ゼロ（未回復）のまま、`activate:` 到来のみで `next` に機械的昇格した。
+**症状:** `/todo promote`（`activate:` 日到来タスクを機械的に `next` へ昇格する処理）が、日付到来のみを判定基準にしており、Issue本文に書かれた実質的な再開条件（例: 「検索流入が回復したら」）を一切検証していなかった。実事故: #1299（検索流入回復を待って再開するはずのタスク）が、実測では検索流入が依然ゼロ（未回復）のまま、`activate:` 到来のみで `next` に機械的昇格した。
 
 **原因:** `resume_condition:` という構造化フィールドが存在せず、本文の自由記述部分（`desc`）は `runPromote` から一切参照されていなかった。
 
@@ -160,14 +173,14 @@ if (issue.project || issue.dependsOn) {
 
 **実装時の修正点（設計書との差分）:** 設計書は `'resume_condition: '.length === 19` としていたが、実際は **18**（`node -e "console.log('resume_condition: '.length)"` で確認）。19でスライスすると先頭1文字が欠落する（round-tripテストで検出）。`slice(18)` が正しい。また、設計書の `runAdd` 差分案では `resume_condition` バリデーションを `metaBody` 構築直前（ラベル作成処理より後）に置く例を示していたが、これだとバリデーションエラー時にラベル作成の副作用（`ensureLabel` API呼び出し）が先に発生してしまう。他フィールドのバリデーション（`due`/`recur`/`project`/`estimate`等）と同じ位置（ラベル作成ループより前）に移動した。
 
-**対象ファイル:** `workspaces/skill-dev/todo/scripts/todo-engine.js`
+**対象ファイル:** `todo-engine.js`
 
 **テスト:** `tests/run-tests.sh`（buildBody/parseBodyObj 単体テスト・round-trip）+ `tests/run-tests-write.sh` §W12（10ケース・スタブベースCLI振る舞いテスト。add/edit/クリア/改行バリデーション/promoteスキップ/リグレッション/混在ケース/JSON出力）+ `tests/scenarios.md` §36-16〜36-21（手動シナリオ）。全875件PASS。
 
 ## 注意事項
 
-- **本番ファイル（`~/.claude/` 配下）を直接編集しないこと**。必ず `workspaces/skill-dev/todo/` を編集し、レビュー後にデプロイする
-- セキュリティルール（ファイル冒頭の7項目）は変更しないこと
+- **本番ファイル（`~/.claude/` 配下）を直接編集しないこと**。必ずこのリポジトリのファイルを編集し、動作確認後にコピーして反映する
+- セキュリティルール（`todo.md` 冒頭の7項目）は変更しないこと
 - `python3` は使用不可（`node` を使うこと）
 - `jq` は使用不可（`gh` の `-q` フラグか `node` を使うこと）
 - GNU/BSD 両対応の日付処理を維持すること
