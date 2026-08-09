@@ -79,6 +79,23 @@ assert_exit_fail() {
   fi
 }
 
+# assert_no_japanese: 出力に日本語文字（ひらがな/カタカナ/CJK統合漢字）が
+# 1文字も含まれないことを機械的に検証する（Issue #1653）。
+# Node の Unicode 正規表現を使う（bash/grep のロケール依存ブラケット展開を避けるため、
+# Windows Git Bash・macOS BSD grep でも挙動が変わらない）。
+assert_no_japanese() {
+  local desc="$1" actual="$2"
+  local has_ja
+  has_ja=$(TEXT="$actual" node -e "process.stdout.write(/[぀-ヿ㐀-鿿]/.test(process.env.TEXT || '') ? 'yes' : 'no')")
+  if [ "$has_ja" = "no" ]; then
+    printf "  ✅ %s\n" "$desc"; PASS=$((PASS+1))
+  else
+    printf "  ❌ %s\n" "$desc"
+    printf "     日本語文字が含まれている: [%s]\n" "$actual"
+    FAIL=$((FAIL+1))
+  fi
+}
+
 # 指定メソッドの JSONL 呼び出し件数を数える
 log_count() {
   local logfile="$1" method="$2"
@@ -1072,6 +1089,256 @@ assert_exit_ok "W15-2 正常系: runArchive list(境界またぎ) → exit 0" "$
 assert_contains "W15-2 正常系: archive list の日付がJST変換後（2026-08-09）" '✅2026-08-09' "$W15_2_OUT"
 assert_not_contains "W15-2 正常系: UTC日付（2026-08-08）のままでは表示されない" '✅2026-08-08' "$W15_2_OUT"
 rm -f "$W15_2_LOG"
+
+# ──────────────────────────────────────────
+# §W16  LANG_ENV=en 出力の日本語混入チェック（Issue #1653）
+# CLI改善: i18n収容。書き込み系ハンドラ（GitHub API を呼ぶ関数）が組み立てる
+# 成功メッセージ・エラーメッセージを LANG_ENV=en で実行し、
+# 「日本語文字が1文字も含まれないこと」を機械的に検証する（個別文言の逐一確認より
+# 書き漏らしの再発防止に効く）。あわせて主要語の英訳が含まれることも確認する。
+# ──────────────────────────────────────────
+echo ""
+echo "§W16  LANG_ENV=en 出力の日本語混入チェック（Issue #1653）"
+
+# 共通ヘルパー: LANG_ENV=en・スタブ応答つきで `run <args...>` を実行し、
+# 結果を LAST_OUT / LAST_EC に格納する（グローバル変数、直後にアサートする用途限定）
+run_stub_en() {
+  local resp="$1"; shift
+  LAST_OUT=$(LANG_ENV=en OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$resp" \
+    TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+    node "$ENGINE" run "$@" 2>&1); LAST_EC=$?
+}
+
+# W16-1: runAdd
+run_stub_en '{"GET /repos/{owner}/{repo}/labels/{name}":[{}],"issues.create":[{"data":{"number":20001,"html_url":"https://example.com/20001"}}]}' \
+  add "buy milk"
+assert_exit_ok "W16-1 runAdd(en): exit 0" "$LAST_EC"
+assert_contains "W16-1 runAdd(en): 英語の作成メッセージ" "created." "$LAST_OUT"
+assert_no_japanese "W16-1 runAdd(en): 出力に日本語が含まれない" "$LAST_OUT"
+
+# W16-2: runDone（recur再作成込み）
+W16_2_ISSUE='{"number":20100,"id":920100,"title":"weekly task","body":"due: 2026-04-01\nrecur: weekly\n","labels":[{"name":"🎯 next"}]}'
+run_stub_en "{\"issues.get\":[{\"data\":$W16_2_ISSUE}],\"issues.update\":[{}],\"issues.create\":[{\"data\":{\"number\":20101}}],\"issues.listForRepo\":[{\"data\":[]}]}" \
+  done 20100
+assert_exit_ok "W16-2 runDone(en, recur再作成): exit 0" "$LAST_EC"
+assert_contains "W16-2 runDone(en): completed." "completed." "$LAST_OUT"
+assert_contains "W16-2 runDone(en): Recurring task 再作成メッセージ" "Recurring task #20101 created for 2026-04-08" "$LAST_OUT"
+assert_no_japanese "W16-2 runDone(en): 出力に日本語が含まれない" "$LAST_OUT"
+
+# W16-3: runMove
+W16_3_ISSUE='{"number":20200,"labels":[{"name":"📥 inbox"}]}'
+run_stub_en "{\"issues.get\":[{\"data\":$W16_3_ISSUE}],\"issues.removeLabel\":[{}],\"issues.addLabels\":[{}]}" \
+  move 20200 next
+assert_exit_ok "W16-3 runMove(en): exit 0" "$LAST_EC"
+assert_contains "W16-3 runMove(en): moved to" "moved to" "$LAST_OUT"
+assert_no_japanese "W16-3 runMove(en): 出力に日本語が含まれない" "$LAST_OUT"
+
+# W16-4: runEdit（due/recur を clear）
+W16_4_ISSUE='{"number":20300,"body":"due: 2026-04-01\nrecur: weekly\n","labels":[]}'
+run_stub_en "{\"issues.get\":[{\"data\":$W16_4_ISSUE}],\"issues.update\":[{}]}" \
+  edit 20300 --due clear --recur clear
+assert_exit_ok "W16-4 runEdit(en): exit 0" "$LAST_EC"
+assert_contains "W16-4 runEdit(en): cleared 表記" "due → cleared, recur → cleared" "$LAST_OUT"
+assert_no_japanese "W16-4 runEdit(en): 出力に日本語が含まれない" "$LAST_OUT"
+
+# W16-5: runDue（clear / set）
+W16_5_ISSUE='{"number":20400,"body":"due: 2026-04-01\n","labels":[]}'
+run_stub_en "{\"issues.get\":[{\"data\":$W16_5_ISSUE}],\"issues.update\":[{}]}" \
+  due 20400 clear
+assert_exit_ok "W16-5a runDue clear(en): exit 0" "$LAST_EC"
+assert_contains "W16-5a runDue clear(en): due date cleared" "due date cleared" "$LAST_OUT"
+assert_no_japanese "W16-5a runDue clear(en): 出力に日本語が含まれない" "$LAST_OUT"
+
+run_stub_en "{\"issues.get\":[{\"data\":$W16_5_ISSUE}],\"issues.update\":[{}]}" \
+  due 20401 2026-05-01
+assert_exit_ok "W16-5b runDue set(en): exit 0" "$LAST_EC"
+assert_contains "W16-5b runDue set(en): due date set to" "due date set to 2026-05-01" "$LAST_OUT"
+assert_no_japanese "W16-5b runDue set(en): 出力に日本語が含まれない" "$LAST_OUT"
+
+# W16-6: runDesc
+W16_6_ISSUE='{"number":20500,"body":"","labels":[]}'
+run_stub_en "{\"issues.get\":[{\"data\":$W16_6_ISSUE}],\"issues.update\":[{}]}" \
+  desc 20500 "additional note"
+assert_exit_ok "W16-6 runDesc(en): exit 0" "$LAST_EC"
+assert_contains "W16-6 runDesc(en): description appended" "description appended" "$LAST_OUT"
+assert_no_japanese "W16-6 runDesc(en): 出力に日本語が含まれない" "$LAST_OUT"
+
+# W16-7: runRecur（set / clear）
+W16_7_ISSUE='{"number":20600,"body":"","labels":[]}'
+run_stub_en "{\"issues.get\":[{\"data\":$W16_7_ISSUE}],\"issues.update\":[{}]}" \
+  recur 20600 weekly:sat
+assert_exit_ok "W16-7a runRecur set(en): exit 0" "$LAST_EC"
+assert_contains "W16-7a runRecur set(en): recurrence set to" "recurrence set to weekly:sat" "$LAST_OUT"
+assert_no_japanese "W16-7a runRecur set(en): 出力に日本語が含まれない" "$LAST_OUT"
+
+run_stub_en "{\"issues.get\":[{\"data\":$W16_7_ISSUE}],\"issues.update\":[{}]}" \
+  recur 20601 clear
+assert_contains "W16-7b runRecur clear(en): recurrence cleared" "recurrence cleared" "$LAST_OUT"
+assert_no_japanese "W16-7b runRecur clear(en): 出力に日本語が含まれない" "$LAST_OUT"
+
+# W16-8: runLink 異常系（親がプロジェクトでない）
+W16_8_CHILD='{"number":20700,"body":"","labels":[]}'
+W16_8_PARENT='{"number":20701,"body":"","labels":[]}'
+run_stub_en "{\"issues.get\":[{\"data\":$W16_8_CHILD},{\"data\":$W16_8_PARENT}]}" \
+  link 20700 20701
+assert_exit_fail "W16-8 runLink 異常系(en): exit 1" "$LAST_EC"
+assert_contains "W16-8 runLink 異常系(en): is not a project" "is not a project" "$LAST_OUT"
+assert_no_japanese "W16-8 runLink 異常系(en): 出力に日本語が含まれない" "$LAST_OUT"
+
+# W16-9: runRename
+run_stub_en '{"issues.update":[{}]}' rename 20800 "New Title"
+assert_exit_ok "W16-9 runRename(en): exit 0" "$LAST_EC"
+assert_contains "W16-9 runRename(en): renamed to" 'renamed to "New Title"' "$LAST_OUT"
+assert_no_japanese "W16-9 runRename(en): 出力に日本語が含まれない" "$LAST_OUT"
+
+# W16-10: runPriority
+W16_10_ISSUE='{"number":20900,"labels":[]}'
+run_stub_en "{\"issues.get\":[{\"data\":$W16_10_ISSUE}],\"GET /repos/{owner}/{repo}/labels/{name}\":[{}],\"issues.addLabels\":[{}]}" \
+  priority 20900 p1
+assert_exit_ok "W16-10 runPriority(en): exit 0" "$LAST_EC"
+assert_contains "W16-10 runPriority(en): priority set to" "priority set to p1" "$LAST_OUT"
+assert_no_japanese "W16-10 runPriority(en): 出力に日本語が含まれない" "$LAST_OUT"
+
+# W16-11: tag rename（renameCtxLabel 経由）
+W16_11_LIST='[{"number":21000,"title":"t","body":"","labels":[{"name":"@oldctx"}]}]'
+run_stub_en "{\"GET /repos/{owner}/{repo}/labels/{name}\":[{}],\"issues.listForRepo\":[{\"data\":$W16_11_LIST}],\"issues.addLabels\":[{}],\"issues.removeLabel\":[{}],\"issues.deleteLabel\":[{}]}" \
+  tag rename oldctx newctx
+assert_exit_ok "W16-11 tag rename(en): exit 0" "$LAST_EC"
+assert_contains "W16-11 tag rename(en): Renamed ... Updated N issue(s)" "Renamed @oldctx to @newctx. Updated 1 issue(s)." "$LAST_OUT"
+assert_no_japanese "W16-11 tag rename(en): 出力に日本語が含まれない" "$LAST_OUT"
+
+# W16-12: runTag / runUntag
+run_stub_en '{"GET /repos/{owner}/{repo}/labels/{name}":[{}],"issues.addLabels":[{}]}' tag 21100 @home
+assert_exit_ok "W16-12a runTag(en): exit 0" "$LAST_EC"
+assert_contains "W16-12a runTag(en): Added ... to" "Added @home to #21100." "$LAST_OUT"
+assert_no_japanese "W16-12a runTag(en): 出力に日本語が含まれない" "$LAST_OUT"
+
+run_stub_en '{"issues.removeLabel":[{}]}' untag 21101 @home
+assert_contains "W16-12b runUntag(en): Removed ... from" "Removed @home from #21101." "$LAST_OUT"
+assert_no_japanese "W16-12b runUntag(en): 出力に日本語が含まれない" "$LAST_OUT"
+
+# W16-13: runLabel add / delete
+run_stub_en '{"GET /repos/{owner}/{repo}/labels/{name}":[{}]}' label add newctx
+assert_exit_ok "W16-13a runLabel add(en): exit 0" "$LAST_EC"
+assert_contains "W16-13a runLabel add(en): Label ... created" "Label @newctx created." "$LAST_OUT"
+assert_no_japanese "W16-13a runLabel add(en): 出力に日本語が含まれない" "$LAST_OUT"
+
+run_stub_en '{"issues.deleteLabel":[{}]}' label delete newctx
+assert_contains "W16-13b runLabel delete(en): Label ... deleted" "Label @newctx deleted." "$LAST_OUT"
+assert_no_japanese "W16-13b runLabel delete(en): 出力に日本語が含まれない" "$LAST_OUT"
+
+# W16-14: runSearch（0件 / N件）
+run_stub_en '{"search.issuesAndPullRequests":[{"data":{"items":[]}}]}' search zzz-no-hit
+assert_contains "W16-14a runSearch 0件(en)" "Search results: 0 (keyword: zzz-no-hit)" "$LAST_OUT"
+assert_no_japanese "W16-14a runSearch 0件(en): 出力に日本語が含まれない" "$LAST_OUT"
+
+W16_14B_ITEMS='[{"number":21200,"title":"hit","labels":[]}]'
+run_stub_en "{\"search.issuesAndPullRequests\":[{\"data\":{\"items\":$W16_14B_ITEMS}}]}" search hit
+assert_contains "W16-14b runSearch 1件(en)" "Search results: 1" "$LAST_OUT"
+assert_no_japanese "W16-14b runSearch 1件(en): 出力に日本語が含まれない" "$LAST_OUT"
+
+# W16-15: runArchive reopen
+run_stub_en '{"issues.update":[{}],"issues.addLabels":[{}]}' archive reopen 21300
+assert_contains "W16-15 runArchive reopen(en): returned to inbox" "returned to inbox." "$LAST_OUT"
+assert_no_japanese "W16-15 runArchive reopen(en): 出力に日本語が含まれない" "$LAST_OUT"
+
+# W16-16: runBulk（done/move/tag/untag/priority）
+W16_16_ISSUE='{"number":21400,"body":"","labels":[]}'
+run_stub_en "{\"issues.get\":[{\"data\":$W16_16_ISSUE}],\"issues.update\":[{}],\"issues.listForRepo\":[{\"data\":[]}]}" \
+  bulk done 21400
+assert_contains "W16-16a runBulk done(en): completed" "✅ 1 completed" "$LAST_OUT"
+assert_no_japanese "W16-16a runBulk done(en): 出力に日本語が含まれない" "$LAST_OUT"
+
+W16_16B_ISSUE='{"number":21401,"labels":[{"name":"⏳ waiting"}]}'
+run_stub_en "{\"issues.get\":[{\"data\":$W16_16B_ISSUE}],\"issues.addLabels\":[{}]}" \
+  bulk move 21401 waiting
+assert_contains "W16-16b runBulk move(en): Moved ... to" "Moved 1 to ⏳ waiting" "$LAST_OUT"
+assert_no_japanese "W16-16b runBulk move(en): 出力に日本語が含まれない" "$LAST_OUT"
+
+run_stub_en '{"GET /repos/{owner}/{repo}/labels/{name}":[{}],"issues.addLabels":[{}]}' \
+  bulk tag 21402 @office
+assert_contains "W16-16c runBulk tag(en): Added ... to" "Added @office to 1" "$LAST_OUT"
+assert_no_japanese "W16-16c runBulk tag(en): 出力に日本語が含まれない" "$LAST_OUT"
+
+run_stub_en '{"issues.removeLabel":[{}]}' bulk untag 21403 @office
+assert_contains "W16-16d runBulk untag(en): Removed ... from" "Removed @office from 1" "$LAST_OUT"
+assert_no_japanese "W16-16d runBulk untag(en): 出力に日本語が含まれない" "$LAST_OUT"
+
+W16_16E_ISSUE='{"number":21404,"labels":[]}'
+run_stub_en "{\"GET /repos/{owner}/{repo}/labels/{name}\":[{}],\"issues.get\":[{\"data\":$W16_16E_ISSUE}],\"issues.addLabels\":[{}]}" \
+  bulk priority 21404 p2
+assert_contains "W16-16e runBulk priority(en): Set priority ... for" "Set priority to p2 for 1" "$LAST_OUT"
+assert_no_japanese "W16-16e runBulk priority(en): 出力に日本語が含まれない" "$LAST_OUT"
+
+# W16-17: runReviewSomeday
+W16_17_ISSUE='{"number":21500,"body":"","labels":[{"name":"🌈 someday"}]}'
+run_stub_en "{\"issues.get\":[{\"data\":$W16_17_ISSUE}],\"issues.update\":[{}]}" \
+  review-someday 21500
+assert_contains "W16-17 runReviewSomeday(en): reviewed_at updated to" "reviewed_at updated to" "$LAST_OUT"
+assert_no_japanese "W16-17 runReviewSomeday(en): 出力に日本語が含まれない" "$LAST_OUT"
+
+# W16-18: runPromoteProject / runUnlink
+W16_18_ISSUE='{"number":21600,"title":"some task","body":"","labels":[]}'
+run_stub_en "{\"issues.get\":[{\"data\":$W16_18_ISSUE}],\"GET /repos/{owner}/{repo}/labels/{name}\":[{}],\"issues.addLabels\":[{}]}" \
+  promote-project 21600
+assert_contains "W16-18a runPromoteProject(en): promoted to project" "promoted to project." "$LAST_OUT"
+assert_contains "W16-18a runPromoteProject(en): hint" "To add the first Next Action" "$LAST_OUT"
+assert_no_japanese "W16-18a runPromoteProject(en): 出力に日本語が含まれない" "$LAST_OUT"
+
+W16_18B_ISSUE='{"number":21700,"id":921700,"body":"project: #21600\n","labels":[]}'
+run_stub_en "{\"issues.get\":[{\"data\":$W16_18B_ISSUE}],\"DELETE /repos/{owner}/{repo}/issues/{issue_number}/sub_issue\":[{}],\"issues.update\":[{}]}" \
+  unlink 21700
+assert_contains "W16-18b runUnlink(en): project link removed" "project link removed." "$LAST_OUT"
+assert_no_japanese "W16-18b runUnlink(en): 出力に日本語が含まれない" "$LAST_OUT"
+
+# W16-19: runWeeklyProjectAudit
+W16_19_LIST='[{"number":21800,"title":"proj","updated_at":"2026-01-01T00:00:00Z","labels":[{"name":"📁 project"}]}]'
+run_stub_en "{\"issues.listForRepo\":[{\"data\":$W16_19_LIST}],\"GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"data\":[]}],\"issues.update\":[{}]}" \
+  weekly-project-audit
+assert_exit_ok "W16-19 runWeeklyProjectAudit(en): exit 0" "$LAST_EC"
+assert_no_japanese "W16-19 runWeeklyProjectAudit(en): 出力に日本語が含まれない" "$LAST_OUT"
+
+# W16-20: runMigrateSubIssue（dry-run / 本実行）
+W16_20_LIST='[{"number":21900,"title":"child","body":"project: #21901\n","labels":[]}]'
+run_stub_en "{\"issues.listForRepo\":[{\"data\":$W16_20_LIST}]}" migrate sub-issue --dry-run
+assert_contains "W16-20a migrate dry-run(en): header" "migrate sub-issue --dry-run" "$LAST_OUT"
+assert_no_japanese "W16-20a migrate dry-run(en): 出力に日本語が含まれない" "$LAST_OUT"
+
+W16_20B_PARENT='{"number":21901,"labels":[{"name":"📁 project"}]}'
+run_stub_en "{\"issues.listForRepo\":[{\"data\":$W16_20_LIST}],\"issues.get\":[{\"data\":$W16_20B_PARENT}],\"POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{}]}" \
+  migrate sub-issue
+assert_contains "W16-20b migrate 本実行(en): complete" "migrate sub-issue complete: 1 registered / 0 skipped / 0 errors" "$LAST_OUT"
+assert_no_japanese "W16-20b migrate 本実行(en): 出力に日本語が含まれない" "$LAST_OUT"
+
+# W16-21: runShow（plain出力、recur/project/tags/desc 全フィールド）
+W16_21_ISSUE='{"number":22000,"title":"rich task","body":"due: 2026-05-01\nrecur: weekly\nproject: #999\nestimate: 90\nsome free-text description\n","labels":[{"name":"🎯 next"},{"name":"@home"},{"name":"#blog"},{"name":"p1"}],"state":"closed","closed_at":"2026-05-02T00:00:00Z"}'
+run_stub_en "{\"issues.get\":[{\"data\":$W16_21_ISSUE}]}" show 22000
+assert_exit_ok "W16-21 runShow(en, closed+recur+project+tags+desc): exit 0" "$LAST_EC"
+assert_contains "W16-21 runShow(en): Status line" "- Status: ✅ Done" "$LAST_OUT"
+assert_contains "W16-21 runShow(en): GTD Category line" "- GTD Category:" "$LAST_OUT"
+assert_contains "W16-21 runShow(en): Recur line" "- Recur: weekly" "$LAST_OUT"
+assert_contains "W16-21 runShow(en): Project line" "- Project: #999" "$LAST_OUT"
+assert_contains "W16-21 runShow(en): Other Labels line" "- Other Labels: #blog" "$LAST_OUT"
+assert_contains "W16-21 runShow(en): Description header" "### Description" "$LAST_OUT"
+assert_no_japanese "W16-21 runShow(en): 出力に日本語が含まれない" "$LAST_OUT"
+
+# W16-22: 未知のコマンド（実機確認 #1653 の再現）— exit 1・英語エラー・日本語混入なし
+run_stub_en '{}' done-count
+assert_exit_fail "W16-22 未知のコマンド(en): exit 1" "$LAST_EC"
+assert_contains "W16-22 未知のコマンド(en): Unknown command" 'Unknown command "done-count"' "$LAST_OUT"
+assert_no_japanese "W16-22 未知のコマンド(en): 出力に日本語が含まれない" "$LAST_OUT"
+
+# W16-23: 予約語ガード（GTDキーワード + コマンド名のタイトル誤爆）
+run_stub_en '{}' next list
+assert_exit_fail "W16-23 予約語ガード(en): exit 1" "$LAST_EC"
+assert_contains "W16-23 予約語ガード(en): is a command name" '"list" is a command name.' "$LAST_OUT"
+assert_no_japanese "W16-23 予約語ガード(en): 出力に日本語が含まれない" "$LAST_OUT"
+
+# W16-24: runSchema（--json 用スキーマ説明文の英語化）
+SCHEMA_EN_OUT=$(LANG_ENV=en OCTOKIT_STUB_ENV="$STUB" TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run schema 2>&1)
+assert_contains "W16-24 runSchema(en): description が英語化されている" "Output schema for --json flagged commands" "$SCHEMA_EN_OUT"
+assert_no_japanese "W16-24 runSchema(en): 出力に日本語が含まれない" "$SCHEMA_EN_OUT"
 
 # ──────────────────────────────────────────
 # 結果サマリー（run-tests.sh から集計加算するための機械可読な行）
