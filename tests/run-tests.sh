@@ -3081,6 +3081,7 @@ const issue = {
   estimate: '120', actual: '60', desc: '元の説明',
   activate: '2026-05-15', before: '4d',
   reviewedAt: '2026-05-10', dependsOn: '99',
+  resumeCondition: 'GSCインプレッションが月100件を超えたら',
 };
 const updatedDesc = buildBody(Object.assign({}, issue, { desc: 'new desc' }));
 eq('差分更新 desc: due 行保持',         true, /^due: 2026-05-19$/m.test(updatedDesc));
@@ -3092,6 +3093,7 @@ eq('差分更新 desc: activate 行保持',    true, /^activate: 2026-05-15$/m.t
 eq('差分更新 desc: before 行保持',      true, /^before: 4d$/m.test(updatedDesc));
 eq('差分更新 desc: reviewed_at 行保持', true, /^reviewed_at: 2026-05-10$/m.test(updatedDesc));
 eq('差分更新 desc: depends_on 行保持',  true, /^depends_on: #99$/m.test(updatedDesc));
+eq('差分更新 desc: resume_condition 行保持', true, /^resume_condition: GSCインプレッションが月100件を超えたら$/m.test(updatedDesc));
 eq('差分更新 desc: 新しい desc が反映', true, /new desc/.test(updatedDesc));
 eq('差分更新 desc: 古い desc は含まない', false, /元の説明/.test(updatedDesc));
 
@@ -3100,11 +3102,19 @@ const cleared = buildBody(Object.assign({}, issue, { due: '' }));
 eq('due クリア: due 行が消える',      false, /^due:/m.test(cleared));
 eq('due クリア: recur 行は保持',      true,  /^recur: weekly$/m.test(cleared));
 eq('due クリア: depends_on 行は保持', true,  /^depends_on: #99$/m.test(cleared));
+eq('due クリア: resume_condition 行は保持', true, /^resume_condition:/m.test(cleared));
+
+// T5b: resume_condition のみクリア（他フィールドは保持）
+const resumeCleared = buildBody(Object.assign({}, issue, { resumeCondition: '' }));
+eq('resume_condition クリア: resume_condition 行が消える', false, /^resume_condition:/m.test(resumeCleared));
+eq('resume_condition クリア: activate 行は保持',           true,  /^activate: 2026-05-15$/m.test(resumeCleared));
+eq('resume_condition クリア: before 行は保持',             true,  /^before: 4d$/m.test(resumeCleared));
 
 // T6: round-trip — parseBodyObj → buildBody → parseBodyObj が同一フィールド
 const originalBody =
   'due: 2026-05-19\n' +
   'activate: 2026-05-15\n' +
+  'resume_condition: GSCインプレッションが月100件を超えたら\n' +
   'before: 4d\n' +
   'depends_on: #99\n' +
   'recur: weekly\n' +
@@ -3129,6 +3139,7 @@ eq('round-trip parse-build-parse: activate',   parsed.activate,   reparsed.activ
 eq('round-trip parse-build-parse: before',     parsed.before,     reparsed.before);
 eq('round-trip parse-build-parse: reviewedAt', parsed.reviewedAt, reparsed.reviewedAt);
 eq('round-trip parse-build-parse: dependsOn',  parsed.dependsOn,  reparsed.dependsOn);
+eq('round-trip parse-build-parse: resumeCondition', parsed.resumeCondition, reparsed.resumeCondition);
 eq('round-trip parse-build-parse: desc',       parsed.desc,       reparsed.desc);
 
 // T8: reviewedAt のみ更新（runReviewSomeday パターン）
@@ -3697,6 +3708,64 @@ T27B_OUT=$(LANG_ENV=en TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo OCTOK
   node "$ENGINE" run list 2>&1); T27B_EC=$?
 assert_exit_fail "T-27b: en版 401検知 → exit 1" "$T27B_EC"
 assert_contains "T-27b: en版 error.gh_auth_rejected" "GitHub API authentication was rejected (401)" "$T27B_OUT"
+
+# ──────────────────────────────────────────
+# §42  JST日付変換 — closedAt/updatedAt のUTCズレ修正（Issue #1748）
+# closed_at/updated_at はGitHub APIがUTC（末尾Z）で返す。従来は `.slice(0,10)` で
+# そのままUTC日付として扱っていたため、JST 0〜9時台に完了したタスクが前日扱いに
+# なっていた。境界値（UTC 15:00〜23:59 = JST 翌日 00:00〜08:59）で新旧の差が
+# 出ることを確認する。TEST_TODAY2 と実証タイムスタンプは実機確認（2026-08-09、
+# Issue本文の #1739/#1730/#1724）をそのまま使用。
+# ──────────────────────────────────────────
+echo ""
+echo "§42  JST日付変換 — closedAt/updatedAt のUTCズレ修正（Issue #1748）"
+
+TEST_TODAY2="2026-08-09"
+
+# done-count: 境界をまたぐ4パターン
+#   - 08-08T23:32:23Z（実証 #1739）→ JST 08-09 08:32 → 今日扱いになるべき
+#   - 08-08T15:37:07Z（実証 #1724）→ JST 08-09 00:37 → 今日扱いになるべき
+#   - 08-08T14:59:59Z（境界の1秒前）→ JST 08-08 23:59:59 → 前日のまま
+#   - 08-08T15:00:00Z（境界ちょうど）→ JST 08-09 00:00:00 → 今日扱いになるべき
+DC2_CLOSED='[
+  {"number":1739,"closedAt":"2026-08-08T23:32:23Z"},
+  {"number":1724,"closedAt":"2026-08-08T15:37:07Z"},
+  {"number":9001,"closedAt":"2026-08-08T14:59:59Z"},
+  {"number":9002,"closedAt":"2026-08-08T15:00:00Z"}
+]'
+DC2_RESULT=$(CLOSED_ENV="$DC2_CLOSED" TODAY_ENV="$TEST_TODAY2" node "$ENGINE" done-count)
+assert_eq "§42 done-count: 境界またぎ4件中3件がJSTで今日=3" "3" "$DC2_RESULT"
+
+# dashboard: 「✅ 今日: N件完了」— #1746/#1741/#1740 はUTC日付が既に08-09なので
+# 旧実装でも一致するが、#1739/#1730/#1724 は23時台・15時台UTC(08-08)で旧実装だと
+# 前日扱いで漏れる（#1721は14:15 UTC=JST08-08 23:15で本当に前日、含めない）。
+# 旧実装なら3件（1746/1741/1740のみ）、修正後は6件になる。
+DASH2_CLOSED='[
+  {"number":1746,"closedAt":"2026-08-09T00:53:34Z"},
+  {"number":1741,"closedAt":"2026-08-09T00:20:25Z"},
+  {"number":1740,"closedAt":"2026-08-09T00:29:24Z"},
+  {"number":1739,"closedAt":"2026-08-08T23:32:23Z"},
+  {"number":1730,"closedAt":"2026-08-08T23:48:53Z"},
+  {"number":1724,"closedAt":"2026-08-08T15:37:07Z"},
+  {"number":1721,"closedAt":"2026-08-08T14:15:42Z"}
+]'
+DASH2_OUT=$(OPEN_ENV='[]' TODAY_ENV="$TEST_TODAY2" CLOSED_ENV="$DASH2_CLOSED" node "$ENGINE" dashboard)
+assert_contains "§42 dashboard: 今日 6件完了（境界またぎ含め正しくJST集計）" "今日: 6件完了" "$DASH2_OUT"
+
+# report: 直近リストの表示日付・日次バケットがJST基準になる
+RPT2_CLOSED='[{"number":1739,"closedAt":"2026-08-08T23:32:23Z","title":"境界またぎ","labels":[]}]'
+RPT2_OUT=$(OPEN_ENV='[]' TODAY_ENV="$TEST_TODAY2" DAYS_ENV="7" CLOSED_ENV="$RPT2_CLOSED" node "$ENGINE" report)
+assert_contains "§42 report: 直近リストの日付がJST変換後（2026-08-09）" "#1739  境界またぎ  (2026-08-09)" "$RPT2_OUT"
+assert_not_contains "§42 report: UTC日付（2026-08-08）のままでは表示されない" "#1739  境界またぎ  (2026-08-08)" "$RPT2_OUT"
+
+# list-all: プロジェクトの停滞判定（daysBetween に渡す起点日）がJST基準になる
+# updated_at=2026-07-10T23:30:00Z → UTC日付は07-10（today比30日=停滞判定の閾値）だが
+# JST日付は07-11（today比29日=非停滞）。旧実装なら誤って「停滞30日以上」と判定する。
+LIST_PROJ_STALE_MOCK='[
+  {"number":700,"title":"proj-boundary","updated_at":"2026-07-10T23:30:00Z","labels":[{"name":"📁 project"}]}
+]'
+LIST_PROJ_STALE_OUT=$(OPEN_ENV="$LIST_PROJ_STALE_MOCK" TODAY_ENV="$TEST_TODAY2" node "$ENGINE" list-all)
+assert_not_contains "§42 list-all: JST基準では29日でまだ停滞判定されない" "停滞30日以上" "$LIST_PROJ_STALE_OUT"
 
 # ──────────────────────────────────────────
 # 書き込み系ハンドラのスタブベーステスト（run-tests-write.sh、Issue #1648）
