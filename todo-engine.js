@@ -1105,7 +1105,7 @@ function listAll() {
     const waitingCount = childIssues.filter(i => getLnames(i).includes('waiting')).length;
     const hasNext = nextCount > 0;
     const updatedAt = issue.updated_at || '';
-    const isStale = updatedAt ? daysBetween(updatedAt.slice(0,10), today) >= 30 : false;
+    const isStale = updatedAt ? daysBetween(toJstDateStr(updatedAt), today) >= 30 : false;
     if (!hasNext) noNextCount++;
     if (isStale) staleCount++;
     return { issue, nextCount, waitingCount, hasNext, isStale };
@@ -1404,7 +1404,7 @@ function renderToday() {
     const em = (i.body||'').match(/^estimate: (\d+)/m);
     if (em) estTotal += parseInt(em[1]);
   }
-  const todayClosed = closed.filter(i => i.closedAt && i.closedAt.slice(0,10) === todayStr).length;
+  const todayClosed = closed.filter(i => i.closedAt && toJstDateStr(i.closedAt) === todayStr).length;
 
   w('---\n');
   const parts = [tpl('today.summary', {total: cnt(allTasks.length)})];
@@ -1530,7 +1530,7 @@ function dashboard() {
   dueThisWeek.sort(sortByPriDue); nextActions.sort(sortByPriDue); routineToday.sort(sortByPriDue);
 
   const d7ago = new Date(today); d7ago.setDate(d7ago.getDate()-7);
-  const todayClosed = closed.filter(i => i.closedAt && i.closedAt.slice(0,10) === today).length;
+  const todayClosed = closed.filter(i => i.closedAt && toJstDateStr(i.closedAt) === today).length;
   const weekClosed = closed.filter(i => i.closedAt && new Date(i.closedAt) >= d7ago).length;
 
   w('# 📋 Dashboard — '+today+'\n\n');
@@ -1607,7 +1607,7 @@ function report() {
 
   const periodClosed = closed.filter(i => {
     if (!i.closedAt) return false;
-    const d = i.closedAt.slice(0,10);
+    const d = toJstDateStr(i.closedAt);
     return d >= startStr && d <= today;
   });
 
@@ -1618,7 +1618,7 @@ function report() {
     dailyCounts[d.toISOString().slice(0,10)] = 0;
   }
   for (const issue of periodClosed) {
-    const d = issue.closedAt.slice(0,10);
+    const d = toJstDateStr(issue.closedAt);
     if (dailyCounts[d] !== undefined) dailyCounts[d]++;
   }
 
@@ -1723,7 +1723,7 @@ function report() {
   w(tpl('report.recent_list', {n: cnt(Math.min(periodClosed.length,10))})+'\n\n');
   const recent = periodClosed.sort((a,b) => b.closedAt.localeCompare(a.closedAt)).slice(0,10);
   if (recent.length) {
-    for (const i of recent) { w('  ✅ #'+i.number+'  '+i.title+'  ('+i.closedAt.slice(0,10)+')\n'); }
+    for (const i of recent) { w('  ✅ #'+i.number+'  '+i.title+'  ('+toJstDateStr(i.closedAt)+')\n'); }
   } else { w('  '+t('report.no_completed')+'\n'); }
   w('\n');
 }
@@ -1731,12 +1731,7 @@ function report() {
 function doneCount() {
   const closed = JSON.parse(process.env.CLOSED_ENV || '[]');
   const today = process.env.TODAY_ENV;
-  const cnt = closed.filter(i => {
-    if (!i.closedAt) return false;
-    const dt = new Date(i.closedAt);
-    const s = [dt.getFullYear(), String(dt.getMonth()+1).padStart(2,'0'), String(dt.getDate()).padStart(2,'0')].join('-');
-    return s === today;
-  }).length;
+  const cnt = closed.filter(i => i.closedAt && toJstDateStr(i.closedAt) === today).length;
   process.stdout.write(String(cnt));
 }
 
@@ -2484,6 +2479,20 @@ function getToday() {
   return [d.getFullYear(), String(d.getMonth()+1).padStart(2,'0'), String(d.getDate()).padStart(2,'0')].join('-');
 }
 
+// GitHub API が返す UTC ISO8601 タイムスタンプ（closedAt/updated_at 等、末尾 'Z'）を
+// ローカルタイム基準の日付文字列（YYYY-MM-DD）に変換する。
+// getToday() と同様、実行環境のローカルタイムが JST であることを前提とする
+// （global-rules.md「日付・時刻はJST基準」運用、doneCount() の既存実装と同じ変換方式）。
+// `.slice(0,10)` で直接日付化すると UTC 基準になり、JST 0〜9時台に完了したタスクが
+// 前日扱いになる（Issue #1748）。表示・集計で closedAt/updatedAt を日付化する箇所は
+// 必ずこのヘルパーを経由すること。
+function toJstDateStr(isoString) {
+  if (!isoString) return '';
+  const d = new Date(isoString);
+  if (isNaN(d.getTime())) return '';
+  return [d.getFullYear(), String(d.getMonth()+1).padStart(2,'0'), String(d.getDate()).padStart(2,'0')].join('-');
+}
+
 // ラベルが存在しなければ作成する（Issue #1326: existence check で 422 ノイズを抑止）
 // GET で存在確認 → 404 のときだけ createLabel を呼ぶ。
 // 422 をキャッチする方式は @octokit/plugin-request-log が先に console.error を出力するため採用しない。
@@ -2514,7 +2523,7 @@ async function fetchAndParseIssue(octokit, owner, repo, num) {
   const parsed = parseBodyObj(i.body || '');
   return {
     number: i.number, id: i.id, title: i.title, body: i.body || '',
-    labels: lnames, ...parsed
+    labels: lnames, state: i.state, closedAt: i.closed_at || null, ...parsed
   };
 }
 
@@ -3486,14 +3495,14 @@ async function runArchive(octokit, owner, repo, tokens) {
       items = closed.filter(i => i.labels && i.labels.some(l => l.name === filter));
     }
     if (!items.length) { runOut('（完了タスクなし）'); return; }
-    for (const i of items) runOut(`  #${i.number}  ${i.title||''}  ✅${i.closedAt ? i.closedAt.slice(0,10) : ''}`);
+    for (const i of items) runOut(`  #${i.number}  ${i.title||''}  ✅${toJstDateStr(i.closedAt)}`);
     runOut(`${items.length}件`);
   } else if (sub === 'search') {
     const keyword = tokens.slice(1).join(' ');
     if (!keyword) { process.stderr.write('Usage: run archive search <keyword>\n'); process.exit(1); }
     const q = `${keyword} in:title repo:${owner}/${repo} is:issue is:closed`;
     const { data } = await octokit.search.issuesAndPullRequests({ q, per_page: 30 });
-    for (const i of data.items) runOut(`  #${i.number}  ${i.title}  ✅${i.closed_at ? i.closed_at.slice(0,10) : ''}`);
+    for (const i of data.items) runOut(`  #${i.number}  ${i.title}  ✅${toJstDateStr(i.closed_at)}`);
     runOut(`検索結果: ${data.items.length}件`);
   } else if (sub === 'reopen') {
     const num = parseInt(tokens[1]);
@@ -3761,6 +3770,8 @@ function runSchema() {
     fields: {
       number:           { type: "integer",        description: "Issue番号" },
       title:            { type: "string",          description: "タイトル" },
+      state:            { type: "string",          description: "Issue の状態: open / closed（show のみ）" },
+      closedAt:         { type: "string | null",   description: "クローズ日時 (ISO8601)。open の場合は null（show のみ）" },
       gtd:              { type: "string | null",   description: "GTDカテゴリ: next / inbox / waiting / someday / routine / reference / project" },
       priority:         { type: "string | null",   description: "優先度: p1 / p2 / p3" },
       due:              { type: "string | null",   description: "期日 (YYYY-MM-DD)" },
@@ -3838,6 +3849,8 @@ async function runShow(octokit, owner, repo, tokens) {
     const obj = {
       number: issue.number,
       title: issue.title,
+      state: issue.state || 'open',
+      closedAt: issue.closedAt || null,
       gtd: gtdLabel || null,
       priority: priLabel || null,
       due: issue.due || null,
@@ -3862,13 +3875,19 @@ async function runShow(octokit, owner, repo, tokens) {
   const lines = [
     `## #${issue.number} ${issue.title}`,
     '',
+  ];
+  if (issue.state === 'closed') {
+    const closedDate = toJstDateStr(issue.closedAt);
+    lines.push(`- 状態: ✅ 完了${closedDate ? `（${closedDate}）` : ''}`);
+  }
+  lines.push(
     `- GTDカテゴリ: ${gtdDisplay}`,
     `- 優先度: ${priDisplay}`,
     `- 期日: ${issue.due || '（なし）'}`,
     `- 見積もり: ${estDisplay}`,
     `- コンテキスト: ${ctxDisplay}`,
     `- @claude: ${isClaudeTask ? 'あり' : 'なし'}`,
-  ];
+  );
 
   if (issue.recur) lines.push(`- 繰り返し: ${issue.recur}`);
   if (issue.project) lines.push(`- プロジェクト: #${issue.project}`);
@@ -4233,7 +4252,7 @@ async function runWeeklyProjectAudit(octokit, owner, repo) {
 
     // 停滞判定（親 Issue の updated_at から今日まで 30 日以上）
     const updatedAt = proj.updated_at || '';
-    const daysSinceUpdate = updatedAt ? daysBetween(updatedAt.slice(0, 10), today) : 0;
+    const daysSinceUpdate = updatedAt ? daysBetween(toJstDateStr(updatedAt), today) : 0;
     const isStale = daysSinceUpdate >= 30;
     const hasNext = nextCount > 0;
 

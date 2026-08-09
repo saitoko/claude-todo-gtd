@@ -1132,6 +1132,53 @@ before と activate が設定済みの Issue に対して:
 
 `0w` でも同様に拒否されること。
 
+### 36-16. `--resume-condition` 付きで add（正常系）
+```
+/todo inbox 送客強化タスク --activate 2026-08-10 --resume-condition "検索流入が回復したら"
+```
+期待: Issue が作成され、body に `activate: 2026-08-10` と `resume_condition: 検索流入が回復したら` が
+（この順で）含まれる。
+
+### 36-17. edit で `--resume-condition` を後付け（正常系）
+既存の Issue（activate 設定済み）に対して:
+```
+/todo edit <番号> --resume-condition "example.comの検索流入が観測できるレベルに育ったとき"
+```
+期待: body に `resume_condition: example.comの検索流入が観測できるレベルに育ったとき` が追加される。
+完了メッセージに「resume_condition → example.comの検索流入が観測できるレベルに育ったとき」が含まれる。
+
+### 36-18. edit で `--resume-condition clear`（正常系）
+resume_condition が設定済みの Issue に対して:
+```
+/todo edit <番号> --resume-condition clear
+```
+期待: body から `resume_condition:` 行のみが除去される（`activate:` 等の他フィールドは保持）。
+完了メッセージに「resume_condition → クリア」が含まれる。
+
+### 36-19. `--resume-condition` に改行を含む値でエラー終了（異常系）
+```
+/todo inbox テスト --resume-condition $'1行目\n2行目'
+```
+期待: stderr に「エラー: resume_condition に改行を含めることはできません（1行のみ）」が出力され、
+プロセスが終了コード1で終了する。Issue は作成されない。edit でも同様。
+
+### 36-20. promote で resume_condition あり・activate 到来 → 昇格スキップ・確認待ち通知（本修正の核）
+resume_condition と activate（本日以前）の両方が設定済みの Issue がある状態で:
+```
+/todo promote
+```
+期待: 対象 Issue の GTD ラベルは変更されない（次に昇格しない）。
+「⏸ #<番号> 「<タイトル>」activate日到来ですが再開条件の確認が必要です: <resume_condition>」と
+「⏸ 1件が再開条件の確認待ちです（次回 /todo weekly-review で確認してください）」が表示される。
+「✅ ... を next に昇格しました」の機械的昇格メッセージは出力されない。
+
+### 36-21. promote で resume_condition なしの既存タスクは従来通り機械的昇格される（リグレッション）
+resume_condition を持たない Issue と、resume_condition を持つ Issue が両方 activate 到来の状態で
+`/todo promote` を実行:
+期待: resume_condition を持たない Issue のみ従来通り next に機械的昇格され、
+resume_condition を持つ Issue は 36-20 のとおり確認待ちとして扱われる（両者は独立して判定される）。
+昇格サマリーと確認待ちサマリーの両方が表示される。
+
 ---
 
 ## 37. Someday reviewed_at（Issue #435）
@@ -1688,6 +1735,40 @@ POST /repos/{owner}/{repo}/issues
 ```
 
 期待: `Usage: /todo show <Issue番号>` が stderr に出力され、終了コード1で終了する（`/^\d+$/.test('0')` は通るが、`parseInt('0')` = 0 で GitHub API が 404 または 422 を返す）。
+
+### 42-11. closed Issue を show（正常系・Issue #1746）
+
+前提: `/todo done` で close 済み（GTDラベルは保持されたまま）の Issue #N が存在する。
+
+```
+/todo show <N>
+```
+
+期待:
+- `- 状態: ✅ 完了（YYYY-MM-DD）` の行が `GTDカテゴリ` 行より前に表示される（クローズ日はISO8601日時の先頭10文字）
+- `- GTDカテゴリ:` 等それ以外の項目は open 時と同様に表示される（ラベルは保持されているため）
+
+補足: この運用の `/todo done` は GTD ラベルを保持したまま close するため、ラベルだけでは open/closed を判別できない。この状態行がその判別手段になる。
+
+### 42-12. open Issue を show（状態行なし・冗長回避・正常系）
+
+前提: open な Issue #N が存在する。
+
+```
+/todo show <N>
+```
+
+期待: `- 状態:` の行は表示されない（open 時は毎回見る出力のため冗長にしない設計判断）。
+
+### 42-13. show --json の state / closedAt（正常系）
+
+```
+/todo show <N> --json
+```
+
+期待:
+- closed の場合: `"state": "closed"` と `"closedAt": "<ISO8601日時>"` が出力される
+- open の場合: `"state": "open"` と `"closedAt": null` が出力される
 
 ### 42-10. help に show コマンドが含まれること
 

@@ -869,6 +869,211 @@ assert_eq "W13-6 セキュリティ回帰: issues.create 呼び出しゼロ（�
 rm -f "$W13_6_LOG"
 
 # ──────────────────────────────────────────
+# §W12  resume_condition — add/edit/promote スタブベース振る舞いテスト
+# ──────────────────────────────────────────
+echo ""
+echo "§W12  resume_condition — add/edit/promote スタブベース振る舞いテスト"
+echo "  （Issue #1299由来の欠陥修正: activate到来のみで実質的な再開条件を無視して昇格していた）"
+
+# W12-1 正常系: runAdd --resume-condition で新規Issue body に resume_condition が反映される
+W12_1_LOG=$(mktemp /tmp/todo-test-w12-1-XXXXXX.jsonl)
+W12_1_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{}],"issues.create":[{"data":{"number":7001,"html_url":"https://github.com/test-owner/test-repo/issues/7001"}}]}'
+W12_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W12_1_RESP" OCTOKIT_STUB_LOG_ENV="$W12_1_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-03 \
+  node "$ENGINE" run add inbox 送客強化タスク --activate 2026-08-10 --resume-condition "検索流入が回復したら" 2>&1); W12_1_EC=$?
+assert_exit_ok "W12-1 正常系: runAdd --resume-condition → exit 0" "$W12_1_EC"
+assert_contains "W12-1 正常系: issues.create body に resume_condition が反映" '"body":"activate: 2026-08-10\nresume_condition: 検索流入が回復したら\n"' "$(log_lines_for_method "$W12_1_LOG" issues.create)"
+rm -f "$W12_1_LOG"
+
+# W12-2 異常系: runAdd --resume-condition に改行を含む値 → validateResumeCondition でエラー終了、issues.createは呼ばれない
+W12_2_LOG=$(mktemp /tmp/todo-test-w12-2-XXXXXX.jsonl)
+: > "$W12_2_LOG"
+W12_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W12_2_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-03 \
+  node "$ENGINE" run add inbox 改行テスト --resume-condition $'line1\nline2' 2>&1); W12_2_EC=$?
+assert_exit_fail "W12-2 異常系: --resume-condition に改行混入 → exit 1" "$W12_2_EC"
+assert_contains "W12-2 異常系: エラーメッセージ" "resume_condition に改行を含めることはできません" "$W12_2_OUT"
+assert_eq "W12-2 異常系: issues.create は呼ばれない（副作用なし）" "0" "$(log_count "$W12_2_LOG" issues.create)"
+rm -f "$W12_2_LOG"
+
+# W12-3 正常系: runEdit --resume-condition で既存Issueに再開条件を後付け
+W12_3_LOG=$(mktemp /tmp/todo-test-w12-3-XXXXXX.jsonl)
+W12_3_RESP='{"issues.get":[{"data":{"number":1299,"id":91299,"title":"サンプルタスク","body":"activate: 2026-07-15\n","labels":[{"name":"🌈 someday"}]}}],"issues.update":[{}]}'
+W12_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W12_3_RESP" OCTOKIT_STUB_LOG_ENV="$W12_3_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-03 \
+  node "$ENGINE" run edit 1299 --resume-condition "example.comの検索流入が観測できるレベルに育ったとき" 2>&1); W12_3_EC=$?
+assert_exit_ok "W12-3 正常系: runEdit --resume-condition → exit 0" "$W12_3_EC"
+assert_contains "W12-3 正常系: changedメッセージに resume_condition → が含まれる" "resume_condition → example.comの検索流入が観測できるレベルに育ったとき" "$W12_3_OUT"
+assert_contains "W12-3 正常系: issues.update body に resume_condition 行が反映" '"body":"activate: 2026-07-15\nresume_condition: example.comの検索流入が観測できるレベルに育ったとき\n"' "$(log_lines_for_method "$W12_3_LOG" issues.update)"
+rm -f "$W12_3_LOG"
+
+# W12-4 正常系: runEdit --resume-condition clear で再開条件を除去（activate等の他フィールドは保持）
+W12_4_LOG=$(mktemp /tmp/todo-test-w12-4-XXXXXX.jsonl)
+W12_4_RESP='{"issues.get":[{"data":{"number":1299,"id":91299,"title":"サンプルタスク","body":"activate: 2026-07-15\nresume_condition: 検索流入が回復したら\n","labels":[{"name":"🌈 someday"}]}}],"issues.update":[{}]}'
+W12_4_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W12_4_RESP" OCTOKIT_STUB_LOG_ENV="$W12_4_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-03 \
+  node "$ENGINE" run edit 1299 --resume-condition clear 2>&1); W12_4_EC=$?
+assert_exit_ok "W12-4 正常系: runEdit --resume-condition clear → exit 0" "$W12_4_EC"
+assert_contains "W12-4 正常系: changedメッセージ「resume_condition → クリア」" "resume_condition → クリア" "$W12_4_OUT"
+assert_contains "W12-4 正常系: issues.update body から resume_condition 行が消え activate は保持" '"body":"activate: 2026-07-15\n"' "$(log_lines_for_method "$W12_4_LOG" issues.update)"
+rm -f "$W12_4_LOG"
+
+# W12-5 異常系: runEdit --resume-condition に改行を含む値 → エラー終了、issues.updateは呼ばれない
+W12_5_LOG=$(mktemp /tmp/todo-test-w12-5-XXXXXX.jsonl)
+W12_5_RESP='{"issues.get":[{"data":{"number":1300,"id":91300,"title":"Task","body":"","labels":[{"name":"📥 inbox"}]}}]}'
+W12_5_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W12_5_RESP" OCTOKIT_STUB_LOG_ENV="$W12_5_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-03 \
+  node "$ENGINE" run edit 1300 --resume-condition $'line1\nline2' 2>&1); W12_5_EC=$?
+assert_exit_fail "W12-5 異常系: runEdit --resume-condition に改行混入 → exit 1" "$W12_5_EC"
+assert_contains "W12-5 異常系: エラーメッセージ" "resume_condition に改行を含めることはできません" "$W12_5_OUT"
+assert_eq "W12-5 異常系: issues.update は呼ばれない（副作用なし）" "0" "$(log_count "$W12_5_LOG" issues.update)"
+rm -f "$W12_5_LOG"
+
+# W12-6 正常系（本設計の核）: resume_condition あり + activate到来 → 機械的自動昇格をスキップし
+# 確認待ちメッセージのみ出力する。addLabels/removeLabelは一切呼ばれない（Issue #1299の再現・修正確認）
+W12_6_LOG=$(mktemp /tmp/todo-test-w12-6-XXXXXX.jsonl)
+W12_6_RESP='{"issues.listForRepo":[{"data":[{"number":1299,"title":"サンプルタスク","body":"activate: 2026-07-15\nresume_condition: example.comの検索流入が観測できるレベルに育ったとき\n","labels":[{"name":"📥 inbox"}],"updated_at":""}]}]}'
+W12_6_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W12_6_RESP" OCTOKIT_STUB_LOG_ENV="$W12_6_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-03 \
+  node "$ENGINE" run promote 2>&1); W12_6_EC=$?
+assert_exit_ok "W12-6 正常系(核心): runPromote resume_condition あり → exit 0" "$W12_6_EC"
+assert_contains "W12-6 正常系: pending_reviewメッセージに#1299・タイトル・条件文が含まれる" '⏸ #1299 「サンプルタスク」activate日到来ですが再開条件の確認が必要です: example.comの検索流入が観測できるレベルに育ったとき' "$W12_6_OUT"
+assert_contains "W12-6 正常系: pending_summaryメッセージ（1件）" '⏸ 1件が再開条件の確認待ちです' "$W12_6_OUT"
+assert_not_contains "W12-6 正常系: 機械的昇格メッセージ（promote.promoted）は出ない" 'を next に昇格しました' "$W12_6_OUT"
+assert_eq "W12-6 正常系: issues.addLabels は一切呼ばれない（自動昇格をスキップした実効検証）" "0" "$(log_count "$W12_6_LOG" issues.addLabels)"
+assert_eq "W12-6 正常系: issues.removeLabel は一切呼ばれない（GTDラベルを変更していない実効検証）" "0" "$(log_count "$W12_6_LOG" issues.removeLabel)"
+rm -f "$W12_6_LOG"
+
+# W12-7 リグレッション: resume_condition なし + activate到来 → 既存どおり機械的にnextへ昇格する
+# （resume_condition機能追加による既存挙動への影響がないことの確認）
+W12_7_LOG=$(mktemp /tmp/todo-test-w12-7-XXXXXX.jsonl)
+W12_7_RESP='{"issues.listForRepo":[{"data":[{"number":1301,"title":"通常のチクラータスク","body":"activate: 2026-07-15\n","labels":[{"name":"📥 inbox"}],"updated_at":""}]}],"issues.removeLabel":[{}],"issues.addLabels":[{}]}'
+W12_7_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W12_7_RESP" OCTOKIT_STUB_LOG_ENV="$W12_7_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-03 \
+  node "$ENGINE" run promote 2>&1); W12_7_EC=$?
+assert_exit_ok "W12-7 リグレッション: runPromote resume_condition なし → exit 0" "$W12_7_EC"
+assert_contains "W12-7 リグレッション: 従来通りの昇格メッセージが出る" '#1301 「通常のチクラータスク」を next に昇格しました（activate: 2026-07-15）' "$W12_7_OUT"
+assert_contains "W12-7 リグレッション: 昇格件数サマリー（1件）" '✅ 1件を next に昇格しました' "$W12_7_OUT"
+assert_eq "W12-7 リグレッション: issues.addLabels 呼び出し1回（従来通りnext付与）" "1" "$(log_count "$W12_7_LOG" issues.addLabels)"
+rm -f "$W12_7_LOG"
+
+# W12-8 境界値: resume_condition あり + 昇格(promoted)なしの混在 → サマリーに両方の件数が表示される
+W12_8_LOG=$(mktemp /tmp/todo-test-w12-8-XXXXXX.jsonl)
+W12_8_RESP='{"issues.listForRepo":[{"data":[{"number":1299,"title":"Pending Task","body":"activate: 2026-07-15\nresume_condition: 検索流入が回復したら\n","labels":[{"name":"📥 inbox"}],"updated_at":""},{"number":1301,"title":"Normal Task","body":"activate: 2026-07-15\n","labels":[{"name":"📥 inbox"}],"updated_at":""}]}],"issues.removeLabel":[{}],"issues.addLabels":[{}]}'
+W12_8_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W12_8_RESP" OCTOKIT_STUB_LOG_ENV="$W12_8_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-03 \
+  node "$ENGINE" run promote 2>&1); W12_8_EC=$?
+assert_exit_ok "W12-8 境界値: 混在ケース → exit 0" "$W12_8_EC"
+assert_contains "W12-8 境界値: #1299 は確認待ち" '⏸ #1299' "$W12_8_OUT"
+assert_contains "W12-8 境界値: #1301 は昇格" '#1301 「Normal Task」を next に昇格しました' "$W12_8_OUT"
+assert_contains "W12-8 境界値: 昇格サマリー（1件）" '✅ 1件を next に昇格しました' "$W12_8_OUT"
+assert_contains "W12-8 境界値: 確認待ちサマリー（1件）" '⏸ 1件が再開条件の確認待ちです' "$W12_8_OUT"
+assert_eq "W12-8 境界値: issues.addLabels 呼び出し1回（#1301のみ、#1299はスキップ）" "1" "$(log_count "$W12_8_LOG" issues.addLabels)"
+assert_contains "W12-8 境界値: addLabels対象が#1301のみ" '"issue_number":1301' "$(log_lines_for_method "$W12_8_LOG" issues.addLabels)"
+rm -f "$W12_8_LOG"
+
+# W12-9 境界値: resume_condition あり + activate未到来（未来日） → 既存の「activate未到来はpromote対象外」
+# 動作がresume_condition追加後も維持されること（新規エラーにしない・pending扱いにもしない）
+W12_9_LOG=$(mktemp /tmp/todo-test-w12-9-XXXXXX.jsonl)
+W12_9_RESP='{"issues.listForRepo":[{"data":[{"number":1400,"title":"Future Task","body":"activate: 2099-01-01\nresume_condition: 何かの条件\n","labels":[{"name":"📥 inbox"}],"updated_at":""}]}]}'
+W12_9_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W12_9_RESP" OCTOKIT_STUB_LOG_ENV="$W12_9_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-03 \
+  node "$ENGINE" run promote 2>&1); W12_9_EC=$?
+assert_exit_ok "W12-9 境界値: activate未到来 → exit 0" "$W12_9_EC"
+assert_contains "W12-9 境界値: 昇格対象なしメッセージ（未到来のため走査対象外）" '昇格対象なし（activate日到来タスク: 0件）' "$W12_9_OUT"
+assert_not_contains "W12-9 境界値: #1400 への言及がない（走査対象外）" '#1400' "$W12_9_OUT"
+rm -f "$W12_9_LOG"
+
+# W12-10 正常系: runShow --json に resumeCondition フィールドが含まれる
+W12_10_LOG=$(mktemp /tmp/todo-test-w12-10-XXXXXX.jsonl)
+W12_10_RESP='{"issues.get":[{"data":{"number":1299,"id":91299,"title":"サンプルタスク","body":"activate: 2026-07-15\nresume_condition: example.comの検索流入が観測できるレベルに育ったとき\n","labels":[{"name":"🌈 someday"}]}}]}'
+W12_10_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W12_10_RESP" OCTOKIT_STUB_LOG_ENV="$W12_10_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run show 1299 --json 2>&1); W12_10_EC=$?
+assert_exit_ok "W12-10 正常系: runShow --json → exit 0" "$W12_10_EC"
+assert_contains "W12-10 正常系: JSON応答に resumeCondition フィールドが含まれる" '"resumeCondition": "example.comの検索流入が観測できるレベルに育ったとき"' "$W12_10_OUT"
+rm -f "$W12_10_LOG"
+
+# ──────────────────────────────────────────
+# §W14  show の state/closedAt 表示 — スタブベース振る舞いテスト（Issue #1746）
+# GTDラベルを保持したまま close する運用のため、ラベルだけでは open/closed を
+# 判別できない。show 出力に state（open/closed）と closedAt を追加する。
+# ──────────────────────────────────────────
+echo ""
+echo "§W14  show の state/closedAt 表示 — スタブベース振る舞いテスト（Issue #1746）"
+
+# W14-1 正常系: closed Issue を show（人間向け出力）→ 状態行が表示され完了日が入る
+W14_1_LOG=$(mktemp /tmp/todo-test-w14-1-XXXXXX.jsonl)
+W14_1_RESP='{"issues.get":[{"data":{"number":1740,"id":91740,"title":"完了済みタスク","body":"","labels":[{"name":"🎯 next"}],"state":"closed","closed_at":"2026-08-09T09:29:00Z"}}]}'
+W14_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W14_1_RESP" OCTOKIT_STUB_LOG_ENV="$W14_1_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run show 1740 2>&1); W14_1_EC=$?
+assert_exit_ok "W14-1 正常系: runShow(closed) → exit 0" "$W14_1_EC"
+assert_contains "W14-1 正常系: 状態行に完了・クローズ日が表示される" '- 状態: ✅ 完了（2026-08-09）' "$W14_1_OUT"
+rm -f "$W14_1_LOG"
+
+# W14-2 正常系: open Issue を show（人間向け出力）→ 状態行は表示されない（冗長回避）
+W14_2_LOG=$(mktemp /tmp/todo-test-w14-2-XXXXXX.jsonl)
+W14_2_RESP='{"issues.get":[{"data":{"number":1746,"id":91746,"title":"未完了タスク","body":"","labels":[{"name":"🎯 next"}],"state":"open","closed_at":null}}]}'
+W14_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W14_2_RESP" OCTOKIT_STUB_LOG_ENV="$W14_2_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run show 1746 2>&1); W14_2_EC=$?
+assert_exit_ok "W14-2 正常系: runShow(open) → exit 0" "$W14_2_EC"
+assert_not_contains "W14-2 正常系: open では状態行が表示されない（冗長回避）" '- 状態:' "$W14_2_OUT"
+rm -f "$W14_2_LOG"
+
+# W14-3 正常系: closed Issue を show --json → state:"closed" と closedAt が含まれる
+W14_3_LOG=$(mktemp /tmp/todo-test-w14-3-XXXXXX.jsonl)
+W14_3_RESP='{"issues.get":[{"data":{"number":1740,"id":91740,"title":"完了済みタスク","body":"","labels":[{"name":"🎯 next"}],"state":"closed","closed_at":"2026-08-09T09:29:00Z"}}]}'
+W14_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W14_3_RESP" OCTOKIT_STUB_LOG_ENV="$W14_3_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run show 1740 --json 2>&1); W14_3_EC=$?
+assert_exit_ok "W14-3 正常系: runShow --json(closed) → exit 0" "$W14_3_EC"
+assert_contains "W14-3 正常系: JSON応答に state:closed が含まれる" '"state": "closed"' "$W14_3_OUT"
+assert_contains "W14-3 正常系: JSON応答に closedAt が含まれる" '"closedAt": "2026-08-09T09:29:00Z"' "$W14_3_OUT"
+rm -f "$W14_3_LOG"
+
+# W14-4 正常系: open Issue を show --json → state:"open"、closedAt は null
+W14_4_LOG=$(mktemp /tmp/todo-test-w14-4-XXXXXX.jsonl)
+W14_4_RESP='{"issues.get":[{"data":{"number":1746,"id":91746,"title":"未完了タスク","body":"","labels":[{"name":"🎯 next"}],"state":"open","closed_at":null}}]}'
+W14_4_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W14_4_RESP" OCTOKIT_STUB_LOG_ENV="$W14_4_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run show 1746 --json 2>&1); W14_4_EC=$?
+assert_exit_ok "W14-4 正常系: runShow --json(open) → exit 0" "$W14_4_EC"
+assert_contains "W14-4 正常系: JSON応答に state:open が含まれる" '"state": "open"' "$W14_4_OUT"
+assert_contains "W14-4 正常系: JSON応答に closedAt:null が含まれる" '"closedAt": null' "$W14_4_OUT"
+rm -f "$W14_4_LOG"
+
+# ──────────────────────────────────────────
+# §W15  closedAt のJST日付変換 — show/archive の表示ズレ修正（Issue #1748）
+# 実証: 2026-08-09 COO実機確認。closed_at=2026-08-08T23:32:23Z（実issue #1739）は
+# JSTでは2026-08-09 08:32だが、修正前は `.slice(0,10)` によりUTC日付の
+# 「2026-08-08」がそのまま表示されていた。
+# ──────────────────────────────────────────
+
+# W15-1: show（人間向け出力）— 実証データそのまま（#1739）
+W15_1_LOG=$(mktemp /tmp/todo-test-w15-1-XXXXXX.jsonl)
+W15_1_RESP='{"issues.get":[{"data":{"number":1739,"id":91739,"title":"検証用 recur Undo確認 1656","body":"","labels":[{"name":"🎯 next"}],"state":"closed","closed_at":"2026-08-08T23:32:23Z"}}]}'
+W15_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W15_1_RESP" OCTOKIT_STUB_LOG_ENV="$W15_1_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run show 1739 2>&1); W15_1_EC=$?
+assert_exit_ok "W15-1 正常系: runShow(#1739 境界またぎ) → exit 0" "$W15_1_EC"
+assert_contains "W15-1 正常系: 完了日がJST変換後（2026-08-09）で表示される" '- 状態: ✅ 完了（2026-08-09）' "$W15_1_OUT"
+assert_not_contains "W15-1 正常系: UTC日付（2026-08-08）のままでは表示されない" '- 状態: ✅ 完了（2026-08-08）' "$W15_1_OUT"
+rm -f "$W15_1_LOG"
+
+# W15-2: archive list — closedAt の表示日付がJST基準になる
+W15_2_LOG=$(mktemp /tmp/todo-test-w15-2-XXXXXX.jsonl)
+W15_2_RESP='{"issues.listForRepo":[{"data":[{"number":1739,"title":"境界またぎ","state":"closed","closed_at":"2026-08-08T23:32:23Z","labels":[],"pull_request":null}]}]}'
+W15_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W15_2_RESP" OCTOKIT_STUB_LOG_ENV="$W15_2_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run archive list 2>&1); W15_2_EC=$?
+assert_exit_ok "W15-2 正常系: runArchive list(境界またぎ) → exit 0" "$W15_2_EC"
+assert_contains "W15-2 正常系: archive list の日付がJST変換後（2026-08-09）" '✅2026-08-09' "$W15_2_OUT"
+assert_not_contains "W15-2 正常系: UTC日付（2026-08-08）のままでは表示されない" '✅2026-08-08' "$W15_2_OUT"
+rm -f "$W15_2_LOG"
+
+# ──────────────────────────────────────────
 # 結果サマリー（run-tests.sh から集計加算するための機械可読な行）
 # ──────────────────────────────────────────
 echo ""
