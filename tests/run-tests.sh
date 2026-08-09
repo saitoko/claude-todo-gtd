@@ -195,7 +195,14 @@ assert_eq "en: Next Week (caps)"     "2026-04-12"  "$(node "$ENGINE" normalize-d
 assert_eq "en: IN 1 DAY (caps)"      "2026-04-06"  "$(node "$ENGINE" normalize-due 'IN 1 DAY' "$TEST_TODAY")"
 
 # Cross-language: LANG_ENV=en but Japanese input still works
+# (Issue #1653: 入力パース（分類B）は言語設定と独立という既存設計を維持する回帰テスト。
+#  複数の日本語キーワード種別で確認する: 基本語彙・相対表現（N日後等）・曜日指定)
 assert_eq "en+ja: 明日 still works"  "2026-04-06"  "$(LANG_ENV=en node "$ENGINE" normalize-due '明日' "$TEST_TODAY")"
+assert_eq "en+ja: 来週 still works"  "2026-04-12"  "$(LANG_ENV=en node "$ENGINE" normalize-due '来週' "$TEST_TODAY")"
+assert_eq "en+ja: 今月末 still works" "2026-04-30"  "$(LANG_ENV=en node "$ENGINE" normalize-due '今月末' "$TEST_TODAY")"
+assert_eq "en+ja: 3日後 still works" "2026-04-08"  "$(LANG_ENV=en node "$ENGINE" normalize-due '3日後' "$TEST_TODAY")"
+assert_eq "en+ja: 来週月曜 still works" "2026-04-06" "$(LANG_ENV=en node "$ENGINE" normalize-due '来週月曜' "$TEST_TODAY")"
+assert_eq "en+ja: きょう(ひらがな) still works" "2026-04-05" "$(LANG_ENV=en node "$ENGINE" normalize-due 'きょう' "$TEST_TODAY")"
 
 # Passthrough for unknown English
 assert_eq "en: unknown passthrough"  "yesterday"   "$(node "$ENGINE" normalize-due 'yesterday' "$TEST_TODAY")"
