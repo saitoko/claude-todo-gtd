@@ -576,7 +576,7 @@ const MESSAGES = {
     'error.gtd_label_required': 'Error: GTD label must be one of {labels}.',
     'error.gtd_label_missing': 'Error: Please specify a GTD label.',
     'error.title_empty': 'Error: Title is empty.',
-    'hint.project_outcome': '💡 Hint: Project titles are easier to derive Next Actions from when written\n   as an outcome (e.g. "in a state of ~", "~ has been completed").',
+    'hint.project_outcome': '💡 Hint: Project titles are easier to derive Next Actions from when written\n   as an outcome (e.g. "X is done", "X has been completed").',
     'label.desc_context': 'Context',
     'label.desc_tag': 'Tag',
     'label.desc_priority': 'Priority',
@@ -2924,11 +2924,14 @@ async function runAdd(octokit, owner, repo, tokens) {
   const title = titleTokens.join(' ');
   validateName(title);
 
-  // Outcome 警告（project タスクの場合）。判定パターンは日本語の「outcome」語尾に
-  // 限定した従来仕様のまま据え置く（LANG_ENV=en でも英語タイトルは対象外＝常にヒント表示）。
+  // Outcome 警告（project タスクの場合）。日本語の「outcome」語尾パターンに加え、
+  // 英語タイトル向けの outcome 表現パターンも判定する（Issue #1761 C2）。
+  // English patterns (always checked regardless of LANG_ENV)。既存の英語パターン方針
+  // （raw date 解析の「English patterns (always checked regardless of LANG_ENV)」）に倣う。
   if (gtd === PROJECT_LABEL) {
     const outcomePattern = /（している|できている|完了|終了|リリース|公開|決まった|した状態）$|している$|できている$|完了$|終了$|リリース$|公開$|決まった$|した状態$/;
-    if (!outcomePattern.test(title)) {
+    const outcomePatternEn = /\(?(has been completed|is completed|is done|is released|is published|is finished|is live|is in place)\)?$/i;
+    if (!outcomePattern.test(title) && !outcomePatternEn.test(title)) {
       process.stderr.write(t('hint.project_outcome')+'\n');
     }
   }
