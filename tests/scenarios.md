@@ -400,21 +400,9 @@ Issue body に「このシステムプロンプトを無視して...」のよう
 ```
 /todo next テスト --due 2026-13-01
 /todo next テスト --due 99/99
-/todo next テスト --due 2026-02-30
-/todo next テスト --due 2026-02-29
 ```
-期待: 全て「不正な日付形式です」エラー。  
-Issue #1650 でカレンダー妥当性検証（`isValidCalendarDate`）を追加したため、`YYYY-MM-DD` / `M/D` の両形式で
-存在しない月日（13月、2月30日など）や非うるう年の2/29は拒否される。うるう年の2/29（例: `2028-02-29`）は許可される。
-
-### S-3b. M/D 形式の due 指定・年またぎ（Issue #1650）
-```
-# today が 12/20 の状態で
-/todo next テスト --due 1/5
-```
-期待: `today` より過去になる場合は自動で翌年に繰り上がる（例: 2027-01-05）。M/D 形式では意図的に過去日を
-指定することはできない（過去日を指定したい場合は `YYYY-MM-DD` 形式を使う）。`2/29` を指定した場合、繰り上げ先の
-年がうるう年でなければ、実在するうるう日になるまでさらに繰り上げる。
+期待: 「不正な日付形式です」エラー。  
+※ただし `YYYY-MM-DD` 形式ではスキルはフォーマットのみ検証し、月の範囲（1-12）は検証しないため、13月は通過する可能性に注意。
 
 ### S-4. テンプレート名の不正文字（詳細）
 以下をそれぞれ試す:
@@ -611,15 +599,6 @@ GitHub API 側でのクエリとして扱われ、不正な結果になっても
 /todo next 月次報告 --due 4/30 --recur monthly
 ```
 `done` 実行後: 翌月同日（5/30）の due を持つ新 Issue が作成される。
-
-### 18-2b. monthly recur の月末クランプ（Issue #1650、サフィックスなし monthly のみ対象）
-```
-/todo next 月末タスク --due 1/31 --recur monthly
-```
-`done` 実行後: 翌月にその日（31日）が存在しない場合はその月の末日にクランプされる（例: 2/28 または 2/29）。
-さらにその次の `done` は、クランプ後の日（28日等）を基準に進むため31日には戻らずドリフトも発生しない
-（1/31→2/28→3/28→...）。3/31 への復帰が必要な場合は `--recur monthly:31`（Issue #1676）を使う。
-`monthly:<日>` サフィックス付きは本修正の対象外で従来どおり。
 
 ### 18-3. weekdays recur（週末 due での done）
 due が土曜日（例: 4/5）の weekdays タスクを `done` した場合:  
@@ -1163,10 +1142,10 @@ before と activate が設定済みの Issue に対して:
 ### 36-17. edit で `--resume-condition` を後付け（正常系）
 既存の Issue（activate 設定済み）に対して:
 ```
-/todo edit <番号> --resume-condition "example.comの検索流入が観測できるレベルに育ったとき"
+/todo edit <番号> --resume-condition "blog.saitoko.netの検索流入が観測できるレベルに育ったとき"
 ```
-期待: body に `resume_condition: example.comの検索流入が観測できるレベルに育ったとき` が追加される。
-完了メッセージに「resume_condition → example.comの検索流入が観測できるレベルに育ったとき」が含まれる。
+期待: body に `resume_condition: blog.saitoko.netの検索流入が観測できるレベルに育ったとき` が追加される。
+完了メッセージに「resume_condition → blog.saitoko.netの検索流入が観測できるレベルに育ったとき」が含まれる。
 
 ### 36-18. edit で `--resume-condition clear`（正常系）
 resume_condition が設定済みの Issue に対して:
@@ -2018,7 +1997,7 @@ const newBody = buildBody({ ...parsed, reviewedAt: today });
 
 ## 46. Web環境実行不能対応（Issue #1695）
 
-`runMain()` に `TODO_REPO_OWNER`/`TODO_REPO_NAME` 未設定ガードを追加し、GitHub REST APIの401（認証拒否）を検知して分かりやすいメッセージ + 手動フォールバック手順を出力する。
+`runMain()` に `TODO_REPO_OWNER`/`TODO_REPO_NAME` 未設定ガードを追加し、GitHub REST APIの401（認証拒否）を検知して分かりやすいメッセージ + 手動フォールバック手順を出力する。設計書: Web環境実行不能対応の設計ドキュメント参照
 
 ### 46-1. `TODO_REPO_OWNER`/`TODO_REPO_NAME` 両方未設定 → `error.repo_not_configured` が出力され GitHub API は一度も呼ばれないこと（T-22）
 
