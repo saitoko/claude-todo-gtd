@@ -775,8 +775,15 @@ function addMonths(dt, n) {
 // 与えられた y/mo(1-12)/da が実在するカレンダー上の日付かを判定する。
 // Date コンストラクタは不正な日付（2/30等）を自動繰り上げてしまうため、
 // 生成した Date を構成要素へ逆変換し、入力値と一致するかで実在性を確認する（Issue #1650）。
+//
+// Date コンストラクタ（および Date.UTC）には「年 0〜99 は 1900+年 とみなす」という
+// 歴史的仕様があり、西暦0000〜0099年の日付が誤って1900〜1999年扱いされ判定を誤る
+// （例: new Date(99, 4, 1) は 1999-05-01 になる）。setFullYear() にはこの2桁年吸収が
+// 発生しないため（MDN: setFullYear は4桁年を要求し特別扱いをしない）、いったん任意の
+// Date を生成してから setFullYear で年月日を明示設定することで回避する（Issue #1804）。
 function isValidCalendarDate(y, mo, da) {
-  const dt = new Date(y, mo - 1, da);
+  const dt = new Date(0);
+  dt.setFullYear(y, mo - 1, da);
   return dt.getFullYear() === y && dt.getMonth() === mo - 1 && dt.getDate() === da;
 }
 
@@ -1162,6 +1169,23 @@ function validateDue(value) {
     if (isValidCalendarDate(MD_VALIDATION_LEAP_YEAR, mo, da)) return;
   }
   process.stderr.write(t('error.date_format')+'\n');
+  process.exit(1);
+}
+
+// activate バリデーション（normalizeDue 済みの文字列を受け取る）。
+// normalizeDue は正規化のみを行い実在性は判定しないため、YYYY-MM-DD 形式チェックに加えて
+// isValidCalendarDate でカレンダー上に実在する日付かを検証する。不正なら validateDue と
+// 同じ error.date_format メッセージ（ユーザー入力の原文付き）を出力して exit(1) する。
+// validateDue をそのまま使わず専用関数にしているのは、活性化系呼び出し元の既存エラー体系
+// （メッセージ末尾に元の入力文字列 `parsed.activate` を付与する形式）を変えずに保つため
+// （Issue #1803）。
+function validateActivateFormat(activateRaw, originalRaw) {
+  const m = activateRaw && activateRaw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) {
+    const y = parseInt(m[1], 10), mo = parseInt(m[2], 10), da = parseInt(m[3], 10);
+    if (isValidCalendarDate(y, mo, da)) return;
+  }
+  process.stderr.write(t('error.date_format') + ': ' + originalRaw + '\n');
   process.exit(1);
 }
 
@@ -3123,10 +3147,8 @@ async function runAdd(octokit, owner, repo, tokens) {
         process.stderr.write(t('error.date_format') + ': ' + parsed.activate + '\n');
         process.exit(1);
       }
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(activateRaw)) {
-        process.stderr.write(t('error.date_format') + ': ' + parsed.activate + '\n');
-        process.exit(1);
-      }
+      // 形式チェックに加え、実在するカレンダー日付かを検証する（Issue #1803）
+      validateActivateFormat(activateRaw, parsed.activate);
       // activateとbefore同時指定 → より早い方を採用
       if (activate && activateRaw < activate) {
         activate = activateRaw;
@@ -3617,10 +3639,8 @@ async function runEdit(octokit, owner, repo, tokens) {
         process.stderr.write(t('error.date_format') + ': ' + parsed.activate + '\n');
         process.exit(1);
       }
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(activateRaw)) {
-        process.stderr.write(t('error.date_format') + ': ' + parsed.activate + '\n');
-        process.exit(1);
-      }
+      // 形式チェックに加え、実在するカレンダー日付かを検証する（Issue #1803）
+      validateActivateFormat(activateRaw, parsed.activate);
       // activateとbefore同時指定 → より早い方を採用
       if (beforeStr && activate && activateRaw > activate) {
         // beforeで計算済みのactivateの方が早い → 何もしない

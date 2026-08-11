@@ -10,6 +10,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v2.8.1] - 2026-08-11
+
+### Fixed
+
+- `activate`（NEXT自動昇格日）にカレンダー上実在しない日付（`2026-13-01`、`2026-02-30`、非うるう年の `2/29` 等）を指定しても検証されず保存できてしまう問題を修正（Issue #1803）。`normalizeDue` は正規化のみで実在性を判定しないため、`due` は #1650 で `validateDue` 経由の検証が入っていたが `activate` には同等の検証が抜けていた。`add --activate` / `edit --activate` の2箇所の呼び出し経路に、YYYY-MM-DD形式チェックに加え `isValidCalendarDate` による実在日付チェックを追加した共通関数 `validateActivateFormat` を通すようにした。`--before` 指定経由（`addDays` で due から逆算する経路）は JS Date の日数加算で常に実在する日付が生成されるため対象外（影響なしを確認済み）
+- `isValidCalendarDate` が西暦0000〜0099年の日付を誤って INVALID 判定していた問題を修正（Issue #1804）。原因は `new Date(y, mo-1, da)` コンストラクタが年 0〜99 を 1900+年 とみなす歴史的仕様（例: `new Date(99, 4, 1)` は `1999-05-01` になる）で、逆変換一致チェックの前提が崩れていたため。`Date.prototype.setFullYear()`（この2桁年吸収が発生しない）経由に変更して回避した。実害はほぼゼロだが、#1803 で `activate` 側にも本関数の適用範囲が広がるため同時に修正した
+
+---
+
 ## [v2.8.0] - 2026-08-11
 
 ### Added
