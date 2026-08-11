@@ -766,6 +766,18 @@ function addMonths(dt, n) {
   return dt;
 }
 
+// 与えられた y/mo(1-12)/da が実在するカレンダー上の日付かを判定する。
+// Date コンストラクタは不正な日付（2/30等）を自動繰り上げてしまうため、
+// 生成した Date を構成要素へ逆変換し、入力値と一致するかで実在性を確認する（Issue #1650）。
+function isValidCalendarDate(y, mo, da) {
+  const dt = new Date(y, mo - 1, da);
+  return dt.getFullYear() === y && dt.getMonth() === mo - 1 && dt.getDate() === da;
+}
+
+function isLeapYear(y) {
+  return isValidCalendarDate(y, 2, 29);
+}
+
 function normalizeDue(raw, today) {
   const d = () => new Date(today+'T00:00:00');
   const add = (dt, days) => { dt.setDate(dt.getDate()+days); return dt; };
@@ -835,8 +847,20 @@ function normalizeDue(raw, today) {
       result=fmt(dt);
     }
     // M/D 形式 → YYYY-MM-DD（validateDue は M/D を許容するが、正規化後は常に YYYY-MM-DD で統一）
+    // 今年の月日として変換した結果が today より過去になる場合は翌年に繰り上げる
+    // （Issue #1650。過去日付を意図した M/D 指定は使えなくなるため、過去日を明示したい
+    // 場合は YYYY-MM-DD 形式を使う）。2/29 のような閏日指定は、繰り上げ先の年が
+    // 閏年でない限りさらに繰り上げ、存在しない日付（例: 2027-02-29）を返さないようにする。
     else if ((m=raw.match(/^(\d{1,2})\/(\d{1,2})$/))) {
-      result=today.slice(0,4)+'-'+String(m[1]).padStart(2,'0')+'-'+String(m[2]).padStart(2,'0');
+      const mm = parseInt(m[1], 10), dd = parseInt(m[2], 10);
+      const mmStr = String(mm).padStart(2, '0'), ddStr = String(dd).padStart(2, '0');
+      let year = parseInt(today.slice(0, 4), 10);
+      let candidate = year + '-' + mmStr + '-' + ddStr;
+      while (candidate < today || (mm === 2 && dd === 29 && !isLeapYear(year))) {
+        year += 1;
+        candidate = year + '-' + mmStr + '-' + ddStr;
+      }
+      result = candidate;
     }
   }
   return result !== null ? result : raw;
@@ -1002,7 +1026,12 @@ function nextDue(pattern, baseDate) {
       if (suffix === null) return addDays(baseDate, 7);
       return nextDueWeeklyOnDow(baseDate, RECUR_WEEKDAY_TO_DOW[suffix]);
     case 'monthly':
-      if (suffix === null) return addMonth(baseDate);
+      // サフィックスなしの monthly は「前回due」しか情報を持たないため、対象日として
+      // 前回dueの日を渡す。翌月にその日が存在しない場合は月末にクランプし（警告あり）、
+      // 以降はクランプ後の日（例: 28日）を基準に進むため、月末クランプ後にドリフトが
+      // 蓄積しない（1/31→2/28→3/28→...、3/31には戻らない）。3/31へ戻したい場合は
+      // monthly:31 サフィックス（Issue #1676）を使う。Issue #1650
+      if (suffix === null) return nextDueMonthlyOnDay(baseDate, new Date(baseDate+'T00:00:00').getDate());
       return nextDueMonthlyOnDay(baseDate, parseInt(suffix, 10));
     case 'weekdays': {
       let next = addDays(baseDate, 1);
@@ -1086,10 +1115,20 @@ function validateNumber(value) {
   }
 }
 
+// M/D 形式の妥当性判定に使う基準年（存在しない年は判定できないため、うるう年を採用し
+// 2/29 を許容する。西暦は判定結果に影響しない：2/30 等の非存在日は年に関わらず常に無効）
+const MD_VALIDATION_LEAP_YEAR = 2000;
+
 function validateDue(value) {
   if (value === 'clear' || value === '') return; // clear / 空文字は期日削除として許可
-  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return;
-  if (/^\d{1,2}\/\d{1,2}$/.test(value)) return;
+  let m;
+  if ((m = value.match(/^(\d{4})-(\d{2})-(\d{2})$/))) {
+    const y = parseInt(m[1], 10), mo = parseInt(m[2], 10), da = parseInt(m[3], 10);
+    if (isValidCalendarDate(y, mo, da)) return;
+  } else if ((m = value.match(/^(\d{1,2})\/(\d{1,2})$/))) {
+    const mo = parseInt(m[1], 10), da = parseInt(m[2], 10);
+    if (isValidCalendarDate(MD_VALIDATION_LEAP_YEAR, mo, da)) return;
+  }
   process.stderr.write(t('error.date_format')+'\n');
   process.exit(1);
 }
