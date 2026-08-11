@@ -24,6 +24,17 @@ fi
 
 LANG_ENV="${LANG_ENV:-ja}"
 
+# LANG_ENV に応じてメッセージを出し分ける（en: 英語 / それ以外: 日本語。todo-engine.js の t() 既定と揃える）
+# bash にはengine側のt()相当の機構がないため、呼び出し側で変数展開済みの文字列を渡すこと
+# $1: 日本語, $2: 英語
+_todo_i18n() {
+  if [ "$LANG_ENV" = "en" ]; then
+    printf '%s' "$2"
+  else
+    printf '%s' "$1"
+  fi
+}
+
 # --help / -h は GH_TOKEN 不要。help コマンドに変換してショートサーキット
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   shift
@@ -45,7 +56,7 @@ fi
 TODAY=$(TZ="$_TZ_TOKYO" date +%Y-%m-%d 2>/dev/null || date +%Y-%m-%d)
 
 if [ -z "$GH_TOKEN" ]; then
-  echo "エラー: GH_TOKEN未設定。.env に GH_TOKEN=ghp_... を設定するか、gh auth token > ~/.claude/github-token を実行してください。" >&2
+  echo "$(_todo_i18n 'エラー: GH_TOKEN未設定。.env に GH_TOKEN=ghp_... を設定するか、gh auth token > ~/.claude/github-token を実行してください。' 'Error: GH_TOKEN is not set. Set GH_TOKEN=ghp_... in .env, or run: gh auth token > ~/.claude/github-token')" >&2
   exit 1
 fi
 
@@ -79,12 +90,12 @@ _todo_fetch_counts() {
 # counts コマンド: GTD 7カテゴリの件数を一括取得して出力（読み取り専用）
 if [ "$1" = "counts" ]; then
   if [ -z "$TODO_REPO_OWNER" ] || [ -z "$TODO_REPO_NAME" ]; then
-    echo "エラー: TODO_REPO_OWNER / TODO_REPO_NAME が未設定です。.env に設定してください。" >&2
+    echo "$(_todo_i18n 'エラー: TODO_REPO_OWNER / TODO_REPO_NAME が未設定です。.env に設定してください。' 'Error: TODO_REPO_OWNER / TODO_REPO_NAME are not set. Please set them in .env.')" >&2
     exit 1
   fi
   _COUNTS=$(_todo_fetch_counts)
   if [ -z "$_COUNTS" ]; then
-    echo "エラー: GitHub Issue一覧の取得に失敗しました。" >&2
+    echo "$(_todo_i18n 'エラー: GitHub Issue一覧の取得に失敗しました。' 'Error: Failed to fetch the GitHub issue list.')" >&2
     exit 1
   fi
   echo "$_COUNTS"
@@ -136,7 +147,7 @@ tell application "Reminders"
   set remind me date of newReminder to dueDate
 end tell
 APPLESCRIPT
-    echo "🔔 Reminders に登録: $_REMINDER_TITLE ($_DUE_DATE $_REMIND_TIME)"
+    echo "$(_todo_i18n "🔔 Reminders に登録: $_REMINDER_TITLE ($_DUE_DATE $_REMIND_TIME)" "🔔 Registered to Reminders: $_REMINDER_TITLE ($_DUE_DATE $_REMIND_TIME)")"
   fi
 fi
 
