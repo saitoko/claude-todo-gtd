@@ -286,13 +286,13 @@ assert_eq "不正: 1;ls"  "INVALID" "$(validate_num '1;ls')"
 echo ""
 echo "§5  セキュリティルール5 — due日付バリデーション"
 
+# 実エンジンの validateDue()（todo-engine.js）を直接呼び出す。旧実装は bash 側の
+# case 文でフォーマットのみを模倣しており、実際のカレンダー妥当性検証を一切テストできて
+# いなかった（Issue #1650 でカレンダー妥当性検証を追加したため、実エンジン呼び出しに
+# 置き換える。関連: シナリオ S-3）
 validate_due() {
   local due="$1"
-  case "$due" in
-    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) echo "VALID" ;;
-    [0-9]/[0-9]|[0-9]/[0-9][0-9]|[0-9][0-9]/[0-9]|[0-9][0-9]/[0-9][0-9]) echo "VALID" ;;
-    *) echo "INVALID" ;;
-  esac
+  if node "$ENGINE" validate due "$due" 2>/dev/null; then echo "VALID"; else echo "INVALID"; fi
 }
 
 assert_eq "正常: YYYY-MM-DD"    "VALID"   "$(validate_due '2026-04-10')"
@@ -300,12 +300,16 @@ assert_eq "正常: M/D (4/1)"     "VALID"   "$(validate_due '4/1')"
 assert_eq "正常: M/D (4/10)"    "VALID"   "$(validate_due '4/10')"
 assert_eq "正常: M/D (12/31)"   "VALID"   "$(validate_due '12/31')"
 assert_eq "不正: 来週"          "INVALID" "$(validate_due '来週')"
-assert_eq "不正: 日付なし"      "INVALID" "$(validate_due '')"
+# 空文字は「期日クリア」として意図的に許可される（§32 due clear テスト参照）。
+# 旧shadowテストは実エンジンを呼んでおらず「不正」という誤った期待値のままだった
+assert_eq "正常: 空文字(期日クリアとして許可。§32参照)" "VALID" "$(validate_due '')"
 assert_eq "不正: コマンド挿入"  "INVALID" "$(validate_due '2026-04-05;ls')"
-# 注: YYYY-MM-DD 形式は月の範囲(1-12)はチェックしない（仕様通り）。シナリオ S-3 参照
-assert_eq "YYYY-MM-DD: 月範囲はチェックしない(2026-13-01は通過)" "VALID" "$(validate_due '2026-13-01')"
-# 注: M/D 形式は値範囲をチェックしない（フォーマットのみ）。99/99 も通過する
-assert_eq "M/D: 値範囲はチェックしない(99/99は通過)" "VALID" "$(validate_due '99/99')"
+# Issue #1650 修正2: YYYY-MM-DD 形式もカレンダー妥当性（実在する月日か）を検証するようになった。
+# 旧仕様は月の範囲(1-12)をチェックせず、2026-13-01 のような不正日付が通過していた（バグ）
+assert_eq "YYYY-MM-DD: 存在しない月は拒否される(2026-13-01)" "INVALID" "$(validate_due '2026-13-01')"
+# Issue #1650 修正2: M/D 形式も値範囲（実在する月日か）を検証するようになった。
+# 旧仕様は範囲チェックをせず、99/99 のような不正値が通過していた（バグ）
+assert_eq "M/D: 存在しない月日は拒否される(99/99)" "INVALID" "$(validate_due '99/99')"
 
 # ──────────────────────────────────────────
 # § 6  セキュリティルール 6 — recur バリデーション (シナリオ 1-5)
@@ -825,12 +829,12 @@ echo "§20  monthly recur — 月末境界テスト"
 
 next_monthly() {
   local base="$1"
-  FMT_JS="$FMT_JS" node -e "
-const fmt=require(process.env.FMT_JS);
-const d=new Date('${base}T00:00:00');
-d.setMonth(d.getMonth()+1);
-process.stdout.write(fmt(d));
-"
+  # 実エンジンの nextDue('monthly', base)（todo-engine.js）を直接呼び出す。旧実装は
+  # JS Date の自動繰り上げ（クランプしない旧バグ挙動）をローカルで再現するだけの
+  # shadow 関数で、実際のプロダクションコードを一切テストできていなかった
+  # （Issue #1650 修正3: 無印 monthly を「月末クランプ・ドリフトなし」に変更したため、
+  # 実エンジン呼び出しに置き換える）
+  node "$ENGINE" next-due monthly "$base" 2>/dev/null
 }
 
 # 通常ケース: 4/15 → 5/15
@@ -839,23 +843,28 @@ assert_eq "4/15→5/15(通常)" "2026-05-15" "$(next_monthly '2026-04-15')"
 # 4/30 → 5/30
 assert_eq "4/30→5/30" "2026-05-30" "$(next_monthly '2026-04-30')"
 
-# 1/31 → 3/3 (JSは2月28日超過分を3月に繰り上げ)
-assert_eq "1/31→3/3(JS月末繰り上がり)" "2026-03-03" "$(next_monthly '2026-01-31')"
+# 1/31 → 2/28（Issue #1650修正3: 月末クランプ。旧仕様は2月をスキップして3/3に繰り上がっていた）
+assert_eq "1/31→2/28(月末クランプ、旧仕様の3/3繰り上がりを修正)" "2026-02-28" "$(next_monthly '2026-01-31')"
 
-# 3/31 → 5/1 (4月は30日まで → 5/1に繰り上がり)
-assert_eq "3/31→5/1(4月は30日)" "2026-05-01" "$(next_monthly '2026-03-31')"
+# 3/31 → 4/30（4月は30日までなのでクランプ。旧仕様は5/1に繰り上がっていた）
+assert_eq "3/31→4/30(4月は30日までクランプ)" "2026-04-30" "$(next_monthly '2026-03-31')"
 
-# 5/31 → 7/1 (6月は30日まで → 7/1に繰り上がり)
-assert_eq "5/31→7/1(6月は30日)" "2026-07-01" "$(next_monthly '2026-05-31')"
+# 5/31 → 6/30（6月は30日までなのでクランプ。旧仕様は7/1に繰り上がっていた）
+assert_eq "5/31→6/30(6月は30日までクランプ)" "2026-06-30" "$(next_monthly '2026-05-31')"
 
 # 12/15 → 翌年1/15（年またぎ）
 assert_eq "12/15→翌年1/15(年またぎ)" "2027-01-15" "$(next_monthly '2026-12-15')"
 
-# 12/31 → 翌年1/31（年またぎ+月末）
+# 12/31 → 翌年1/31（年またぎ・1月は31日まであるためクランプ不要）
 assert_eq "12/31→翌年1/31(年またぎ月末)" "2027-01-31" "$(next_monthly '2026-12-31')"
 
 # 2/28 → 3/28（2月末→通常月）
 assert_eq "2/28→3/28" "2026-03-28" "$(next_monthly '2026-02-28')"
+
+# クランプ後は元の31日に戻らずドリフトしないことの連鎖確認（1/31→2/28→3/28）
+NM_STEP1=$(next_monthly '2026-01-31')
+NM_STEP2=$(next_monthly "$NM_STEP1")
+assert_eq "月末クランプの連鎖: 1/31→2/28→3/28（31日には戻らずドリフトしない）" "2026-03-28" "$NM_STEP2"
 
 # ──────────────────────────────────────────
 # §21  うるう年テスト
@@ -900,8 +909,8 @@ assert_eq "非うるう年1/29→来月=3/1(繰り上がり)" "2026-03-01" "$res
 
 # --- next_monthly: うるう年での monthly recur ---
 
-# うるう年の1/31 → 翌月 = 3/2（2月は29日まで → 繰り上がり）
-assert_eq "うるう年1/31→翌月=3/2" "2028-03-02" "$(next_monthly '2028-01-31')"
+# うるう年の1/31 → 2/29（Issue #1650修正3: うるう年は29日までクランプ。旧仕様は3/2に繰り上がっていた）
+assert_eq "うるう年1/31→2/29(うるう年は29日までクランプ)" "2028-02-29" "$(next_monthly '2028-01-31')"
 
 # うるう年の2/29 → 翌月 = 3/29（3月は31日まで → 正常）
 assert_eq "うるう年2/29→翌月=3/29" "2028-03-29" "$(next_monthly '2028-02-29')"
@@ -3010,7 +3019,9 @@ node "$ENGINE" validate due '6/26' 2>/dev/null \
 # 🟡-4: normalizeDue が M/D → YYYY-MM-DD に変換すること（Phase 3）
 ND_MD_OUT=$(node "$ENGINE" normalize-due '5/19' '2026-05-19')
 assert_eq "normalizeDue: 5/19 → 2026-05-19（今年YYYY-MM-DD）" "2026-05-19" "$ND_MD_OUT"
-ND_MD_OUT2=$(node "$ENGINE" normalize-due '4/1' '2026-04-05')
+# today より未来の M/D はゼロ埋めのうえ今年のまま変換される（today を2026-01-01にして
+# 4/1が未来日になるようにする。過去日になるケースはIssue #1650セクションで別途検証）
+ND_MD_OUT2=$(node "$ENGINE" normalize-due '4/1' '2026-01-01')
 assert_eq "normalizeDue: 4/1 → 2026-04-01（M/Dゼロ埋め）" "2026-04-01" "$ND_MD_OUT2"
 
 # validateDue で不正文字はエラー（回帰確認）
@@ -3773,6 +3784,101 @@ LIST_PROJ_STALE_MOCK='[
 ]'
 LIST_PROJ_STALE_OUT=$(OPEN_ENV="$LIST_PROJ_STALE_MOCK" TODAY_ENV="$TEST_TODAY2" node "$ENGINE" list-all)
 assert_not_contains "§42 list-all: JST基準では29日でまだ停滞判定されない" "停滞30日以上" "$LIST_PROJ_STALE_OUT"
+
+# ──────────────────────────────────────────
+# §47  日付処理バグ修正3件（Issue #1650、親 project #1640）
+# ──────────────────────────────────────────
+echo ""
+echo "§47  日付処理バグ修正3件（Issue #1650）"
+
+# --- 修正1: normalizeDue の M/D 形式が年をまたぐ場合の繰り上げ ---
+
+# 1/5 が today(2026-12-20) より過去 → 翌年に繰り上げる
+assert_eq "§47-1 normalize-due: 1/5(today=2026-12-20)→2027-01-05（過去日は翌年へ）" \
+  "2027-01-05" "$(node "$ENGINE" normalize-due '1/5' '2026-12-20')"
+
+# today とちょうど同じ月日 → 繰り上げない（境界値、< であり <= ではない）
+assert_eq "§47-1 normalize-due: 4/5(today=2026-04-05)→2026-04-05（today当日は繰り上げない・境界値）" \
+  "2026-04-05" "$(node "$ENGINE" normalize-due '4/5' '2026-04-05')"
+
+# today より未来の月日 → 今年のまま（回帰確認）
+assert_eq "§47-1 normalize-due: 12/25(today=2026-04-05)→2026-12-25（未来日は今年のまま・回帰確認）" \
+  "2026-12-25" "$(node "$ENGINE" normalize-due '12/25' '2026-04-05')"
+
+# 2/29 指定・今年が非うるう年・today がまだ2月より前 → 今年は存在しないので次のうるう年へ繰り上げ
+assert_eq "§47-1 normalize-due: 2/29(today=2026-08-11、非うるう年)→2028-02-29（次のうるう年へ）" \
+  "2028-02-29" "$(node "$ENGINE" normalize-due '2/29' '2026-08-11')"
+
+# 2/29 指定・today がうるう年で2/29より前 → 今年のうるう日をそのまま使う
+assert_eq "§47-1 normalize-due: 2/29(today=2028-01-01、うるう年)→2028-02-29（今年のうるう日）" \
+  "2028-02-29" "$(node "$ENGINE" normalize-due '2/29' '2028-01-01')"
+
+# 2/29 指定・today がうるう年で2/29を過ぎている → 今年は使えず、次のうるう年(2032)へ繰り上げ
+assert_eq "§47-1 normalize-due: 2/29(today=2028-03-01、うるう年の2/29経過後)→2032-02-29（次のうるう年）" \
+  "2032-02-29" "$(node "$ENGINE" normalize-due '2/29' '2028-03-01')"
+
+# --- 修正2: validateDue のカレンダー妥当性検証 ---
+
+node "$ENGINE" validate due '2026-13-01' 2>/dev/null; EC_1650_V1=$?
+assert_exit_fail "§47-2 validate due 2026-13-01: exit 1（存在しない月は拒否）" "$EC_1650_V1"
+
+node "$ENGINE" validate due '2026-02-30' 2>/dev/null; EC_1650_V2=$?
+assert_exit_fail "§47-2 validate due 2026-02-30: exit 1（2月に30日は存在しないため拒否）" "$EC_1650_V2"
+
+node "$ENGINE" validate due '2026-02-29' 2>/dev/null; EC_1650_V3=$?
+assert_exit_fail "§47-2 validate due 2026-02-29: exit 1（非うるう年の2/29は拒否）" "$EC_1650_V3"
+
+node "$ENGINE" validate due '2028-02-29' 2>/dev/null; EC_1650_V4=$?
+assert_exit_ok "§47-2 validate due 2028-02-29: exit 0（うるう年の2/29は許可）" "$EC_1650_V4"
+
+node "$ENGINE" validate due '13/1' 2>/dev/null; EC_1650_V5=$?
+assert_exit_fail "§47-2 validate due 13/1: exit 1（M/D形式でも存在しない月は拒否）" "$EC_1650_V5"
+
+node "$ENGINE" validate due '2/30' 2>/dev/null; EC_1650_V6=$?
+assert_exit_fail "§47-2 validate due 2/30: exit 1（M/D形式でも存在しない日は拒否）" "$EC_1650_V6"
+
+node "$ENGINE" validate due '99/99' 2>/dev/null; EC_1650_V7=$?
+assert_exit_fail "§47-2 validate due 99/99: exit 1（値範囲チェック追加により拒否。旧仕様からの変更点）" "$EC_1650_V7"
+
+# 2/29 は年を伴わない M/D 形式では「うるう年に存在しうる」ため許可する
+# （実際にどの年を割り当てるかは normalizeDue の役目。§47-1 参照）
+node "$ENGINE" validate due '2/29' 2>/dev/null; EC_1650_V8=$?
+assert_exit_ok "§47-2 validate due 2/29: exit 0（M/D形式の閏日指定は許可）" "$EC_1650_V8"
+
+node "$ENGINE" validate due '2026-04-10' 2>/dev/null; EC_1650_V9=$?
+assert_exit_ok "§47-2 validate due 2026-04-10: exit 0（回帰確認）" "$EC_1650_V9"
+node "$ENGINE" validate due '4/10' 2>/dev/null; EC_1650_V10=$?
+assert_exit_ok "§47-2 validate due 4/10: exit 0（回帰確認）" "$EC_1650_V10"
+
+# --- 修正3: 無印 monthly recur の月末クランプ（次回due計算。next-due 経由で実エンジンを直接検証） ---
+
+assert_eq "§47-3 next-due monthly: 1/31→2/28（月末クランプ、旧仕様の3/3繰り上がりを修正）" \
+  "2026-02-28" "$(node "$ENGINE" next-due monthly '2026-01-31' 2>/dev/null)"
+assert_eq "§47-3 next-due monthly: 2/28→3/28（クランプ後は31日に戻らずドリフトしない）" \
+  "2026-03-28" "$(node "$ENGINE" next-due monthly '2026-02-28' 2>/dev/null)"
+assert_eq "§47-3 next-due monthly: 3/31→4/30（4月は30日までクランプ）" \
+  "2026-04-30" "$(node "$ENGINE" next-due monthly '2026-03-31' 2>/dev/null)"
+assert_eq "§47-3 next-due monthly: 5/31→6/30（6月は30日までクランプ）" \
+  "2026-06-30" "$(node "$ENGINE" next-due monthly '2026-05-31' 2>/dev/null)"
+assert_eq "§47-3 next-due monthly: うるう年1/31→2/29（うるう年は29日までクランプ）" \
+  "2028-02-29" "$(node "$ENGINE" next-due monthly '2028-01-31' 2>/dev/null)"
+assert_eq "§47-3 next-due monthly: 4/15→5/15（通常、クランプ不要・回帰確認）" \
+  "2026-05-15" "$(node "$ENGINE" next-due monthly '2026-04-15' 2>/dev/null)"
+assert_eq "§47-3 next-due monthly: 12/15→翌年1/15（年またぎ・回帰確認）" \
+  "2027-01-15" "$(node "$ENGINE" next-due monthly '2026-12-15' 2>/dev/null)"
+
+# monthly:<日> サフィックス付きは今回の修正3の対象外（nextDueMonthlyOnDay は元々変更していない）。
+# 従来どおりの挙動を固定化する回帰確認
+assert_eq "§47-3 next-due monthly:31（サフィックス付きは今回の修正対象外・従来どおり）" \
+  "2026-02-28" "$(node "$ENGINE" next-due 'monthly:31' '2026-01-15' 2>/dev/null)"
+
+# スコープ外の固定化: add-month（CLI直接公開の add-month サブコマンド）と自然言語「来月」
+# （addMonths() 経由）は今回のrecur計算限定の修正の対象外で、意図的に変更していない。
+# 旧来の（クランプなしでJS Dateがそのまま繰り上げる）挙動のまま
+assert_eq "§47-3 add-month（recur以外の呼び出し元は変更していないことの固定化）: 1/31→3/3のまま" \
+  "2026-03-03" "$(node "$ENGINE" add-month '2026-01-31')"
+assert_eq "§47-3 normalize-due 来月（自然言語の月加算は変更していないことの固定化）: today=2026-01-31→3/3のまま" \
+  "2026-03-03" "$(node "$ENGINE" normalize-due '来月' '2026-01-31')"
 
 # ──────────────────────────────────────────
 # 書き込み系ハンドラのスタブベーステスト（run-tests-write.sh、Issue #1648）

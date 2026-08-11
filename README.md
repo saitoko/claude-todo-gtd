@@ -278,8 +278,8 @@ GitHub Issue bodies can contain arbitrary user-supplied text, so the following p
 2. User input is passed to shell commands via variables (never expanded directly)
 3. Context names are validated against invalid characters using POSIX `case` statements
 4. Issue numbers must be positive integers
-5. Dates must be in `YYYY-MM-DD` or `M/D` format
-6. Recurrence patterns are limited to `daily` / `weekly` / `monthly` / `weekdays`, plus the suffixed forms `weekly:<day>` / `monthly:<date>`
+5. Dates must be in `YYYY-MM-DD` or `M/D` format, and must be a calendar-valid date (e.g. `2026-13-01` or `2/30` is rejected). `M/D` values are always normalized to a concrete year; if the result would be in the past relative to today, it rolls forward to next year
+6. Recurrence patterns are limited to `daily` / `weekly` / `monthly` / `weekdays`, plus the suffixed forms `weekly:<day>` / `monthly:<date>`. Plain `monthly` (no suffix) clamps to the last day of the month when the target day doesn't exist next month (e.g. `1/31` → `2/28`), and does not drift back up in later months
 7. Color codes must be 6-digit hex values
 8. Priority must be one of `p1` / `p2` / `p3`
 
