@@ -1342,6 +1342,113 @@ assert_contains "W16-24 runSchema(en): description が英語化されている" 
 assert_no_japanese "W16-24 runSchema(en): 出力に日本語が含まれない" "$SCHEMA_EN_OUT"
 
 # ──────────────────────────────────────────
+# §W17  activate のカレンダー妥当性チェック（Issue #1803）
+# ──────────────────────────────────────────
+# normalizeDue は正規化のみを行い実在性は判定しないため、activate 側は #1650 が due 側で
+# 解消した「存在しない日付（2026-13-01等）が通ってしまう」欠陥が残っていた。
+# runAdd（新規作成、add系）と runEdit（既存Issue編集、edit系）の2箇所の呼び出し経路を
+# それぞれ検証する。
+echo ""
+echo "§W17  activate のカレンダー妥当性チェック（Issue #1803）"
+
+# --- runAdd（add系）: 不正な activate は拒否され、issues.create は呼ばれないこと ---
+# 優先度ラベルの ensureLabel（GET /repos/.../labels/{name}）は activate 検証より前に
+# 実行される実装のため、GET は1回発生する想定でスタブ応答を用意する。
+
+W17_ADD_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{}],"issues.create":[{"data":{"number":17001,"html_url":"https://example.com/17001"}}]}'
+
+W17_1_LOG=$(mktemp /tmp/todo-test-w17-1-XXXXXX.jsonl)
+W17_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W17_ADD_RESP" OCTOKIT_STUB_LOG_ENV="$W17_1_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-11 \
+  node "$ENGINE" run add next --activate 2026-13-01 Sample task title 2>&1); W17_1_EC=$?
+assert_exit_fail "W17-1 runAdd 異常系(#1803): --activate 2026-13-01（存在しない月）→ exit 1" "$W17_1_EC"
+assert_contains "W17-1 runAdd 異常系: エラーメッセージに元の入力値" "不正な日付形式です: 2026-13-01" "$W17_1_OUT"
+assert_eq "W17-1 runAdd 異常系: issues.create は呼ばれない（副作用なし確認）" "0" "$(log_count "$W17_1_LOG" issues.create)"
+rm -f "$W17_1_LOG"
+
+W17_2_LOG=$(mktemp /tmp/todo-test-w17-2-XXXXXX.jsonl)
+W17_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W17_ADD_RESP" OCTOKIT_STUB_LOG_ENV="$W17_2_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-11 \
+  node "$ENGINE" run add next --activate 2026-02-30 Sample task title 2>&1); W17_2_EC=$?
+assert_exit_fail "W17-2 runAdd 異常系(#1803): --activate 2026-02-30（2月に30日は存在しない）→ exit 1" "$W17_2_EC"
+assert_contains "W17-2 runAdd 異常系: エラーメッセージに元の入力値" "不正な日付形式です: 2026-02-30" "$W17_2_OUT"
+assert_eq "W17-2 runAdd 異常系: issues.create は呼ばれない" "0" "$(log_count "$W17_2_LOG" issues.create)"
+rm -f "$W17_2_LOG"
+
+W17_3_LOG=$(mktemp /tmp/todo-test-w17-3-XXXXXX.jsonl)
+W17_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W17_ADD_RESP" OCTOKIT_STUB_LOG_ENV="$W17_3_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-11 \
+  node "$ENGINE" run add next --activate 2026-02-29 Sample task title 2>&1); W17_3_EC=$?
+assert_exit_fail "W17-3 runAdd 異常系(#1803): --activate 2026-02-29（非うるう年の2/29）→ exit 1" "$W17_3_EC"
+assert_contains "W17-3 runAdd 異常系: エラーメッセージに元の入力値" "不正な日付形式です: 2026-02-29" "$W17_3_OUT"
+assert_eq "W17-3 runAdd 異常系: issues.create は呼ばれない" "0" "$(log_count "$W17_3_LOG" issues.create)"
+rm -f "$W17_3_LOG"
+
+# W17-4 リグレッション: 正常な activate 指定は従来どおり通ること
+W17_4_LOG=$(mktemp /tmp/todo-test-w17-4-XXXXXX.jsonl)
+W17_4_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W17_ADD_RESP" OCTOKIT_STUB_LOG_ENV="$W17_4_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-11 \
+  node "$ENGINE" run add next --activate 2026-09-01 Sample task title 2>&1); W17_4_EC=$?
+assert_exit_ok "W17-4 runAdd リグレッション(#1803): --activate 2026-09-01（正常値）→ exit 0" "$W17_4_EC"
+assert_contains "W17-4 runAdd リグレッション: 昇格予定表示" "昇格予定: 2026-09-01" "$W17_4_OUT"
+assert_eq "W17-4 runAdd リグレッション: issues.create 呼び出し1回" "1" "$(log_count "$W17_4_LOG" issues.create)"
+rm -f "$W17_4_LOG"
+
+# W17-5 リグレッション: before 指定経由（addDays で計算）は due から導出されるため、
+# カレンダー妥当性チェックの対象拡大による影響を受けないこと（#1803 本文の懸念点の確認）。
+# 既存の W4-1（run add next @office '#urgent' --p1 --due 2026-04-10 --before 3d ...）で
+# 「昇格予定: 2026-04-07」が exit 0 で得られることを既に確認済みだが、本セクションでも
+# 月末を跨ぐケースで明示的に再確認する。
+W17_5_LOG=$(mktemp /tmp/todo-test-w17-5-XXXXXX.jsonl)
+W17_5_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W17_ADD_RESP" OCTOKIT_STUB_LOG_ENV="$W17_5_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2028-02-20 \
+  node "$ENGINE" run add next --due 2028-03-01 --before 5d Sample task title 2>&1); W17_5_EC=$?
+assert_exit_ok "W17-5 runAdd リグレッション(#1803): --before 経由の activate は影響を受けない → exit 0" "$W17_5_EC"
+assert_contains "W17-5 runAdd リグレッション: before から逆算した昇格予定日" "昇格予定: 2028-02-25" "$W17_5_OUT"
+rm -f "$W17_5_LOG"
+
+# --- runEdit（edit系）: 不正な activate は拒否され、issues.update は呼ばれないこと ---
+W17_EDIT_ISSUE='{"number":17101,"id":9917101,"title":"Existing task","body":"","labels":[{"name":"🎯 next"}]}'
+W17_EDIT_RESP="{\"issues.get\":[{\"data\":$W17_EDIT_ISSUE}]}"
+
+W17_6_LOG=$(mktemp /tmp/todo-test-w17-6-XXXXXX.jsonl)
+W17_6_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W17_EDIT_RESP" OCTOKIT_STUB_LOG_ENV="$W17_6_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-11 \
+  node "$ENGINE" run edit 17101 --activate 2026-13-01 2>&1); W17_6_EC=$?
+assert_exit_fail "W17-6 runEdit 異常系(#1803): --activate 2026-13-01（存在しない月）→ exit 1" "$W17_6_EC"
+assert_contains "W17-6 runEdit 異常系: エラーメッセージに元の入力値" "不正な日付形式です: 2026-13-01" "$W17_6_OUT"
+assert_eq "W17-6 runEdit 異常系: issues.get のみ実行（1回）" "1" "$(log_count "$W17_6_LOG" issues.get)"
+assert_eq "W17-6 runEdit 異常系: issues.update は呼ばれない（副作用なし確認）" "0" "$(log_count "$W17_6_LOG" issues.update)"
+rm -f "$W17_6_LOG"
+
+W17_7_LOG=$(mktemp /tmp/todo-test-w17-7-XXXXXX.jsonl)
+W17_7_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W17_EDIT_RESP" OCTOKIT_STUB_LOG_ENV="$W17_7_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-11 \
+  node "$ENGINE" run edit 17101 --activate 2026-02-30 2>&1); W17_7_EC=$?
+assert_exit_fail "W17-7 runEdit 異常系(#1803): --activate 2026-02-30（2月に30日は存在しない）→ exit 1" "$W17_7_EC"
+assert_eq "W17-7 runEdit 異常系: issues.update は呼ばれない" "0" "$(log_count "$W17_7_LOG" issues.update)"
+rm -f "$W17_7_LOG"
+
+W17_8_LOG=$(mktemp /tmp/todo-test-w17-8-XXXXXX.jsonl)
+W17_8_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W17_EDIT_RESP" OCTOKIT_STUB_LOG_ENV="$W17_8_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-11 \
+  node "$ENGINE" run edit 17101 --activate 2026-02-29 2>&1); W17_8_EC=$?
+assert_exit_fail "W17-8 runEdit 異常系(#1803): --activate 2026-02-29（非うるう年の2/29）→ exit 1" "$W17_8_EC"
+assert_eq "W17-8 runEdit 異常系: issues.update は呼ばれない" "0" "$(log_count "$W17_8_LOG" issues.update)"
+rm -f "$W17_8_LOG"
+
+# W17-9 リグレッション: runEdit で正常な activate 指定は従来どおり通ること
+W17_9_RESP="{\"issues.get\":[{\"data\":$W17_EDIT_ISSUE}],\"issues.update\":[{}]}"
+W17_9_LOG=$(mktemp /tmp/todo-test-w17-9-XXXXXX.jsonl)
+W17_9_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W17_9_RESP" OCTOKIT_STUB_LOG_ENV="$W17_9_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-11 \
+  node "$ENGINE" run edit 17101 --activate 2026-09-01 2>&1); W17_9_EC=$?
+assert_exit_ok "W17-9 runEdit リグレッション(#1803): --activate 2026-09-01（正常値）→ exit 0" "$W17_9_EC"
+assert_contains "W17-9 runEdit リグレッション: 変更内容メッセージ" "activate → 2026-09-01" "$W17_9_OUT"
+assert_eq "W17-9 runEdit リグレッション: issues.update 呼び出し1回" "1" "$(log_count "$W17_9_LOG" issues.update)"
+rm -f "$W17_9_LOG"
+
+# ──────────────────────────────────────────
 # 結果サマリー（run-tests.sh から集計加算するための機械可読な行）
 # ──────────────────────────────────────────
 echo ""

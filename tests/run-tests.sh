@@ -4023,6 +4023,46 @@ assert_eq "§47-3 normalize-due 来月（自然言語の月加算は変更して
   "2026-03-03" "$(node "$ENGINE" normalize-due '来月' '2026-01-31')"
 
 # ──────────────────────────────────────────
+# §48  isValidCalendarDate の西暦0000〜0099年誤判定修正（Issue #1804）
+# ──────────────────────────────────────────
+echo ""
+echo "§48  isValidCalendarDate の西暦0000〜0099年誤判定修正（Issue #1804）"
+
+# 原因: Date コンストラクタ（new Date(y, mo-1, da)）は年 0〜99 を 1900+年 とみなす
+# 歴史的仕様があり、西暦0000〜0099年の日付が誤って1900年代扱いされ INVALID 判定に
+# なっていた。setFullYear() 経由に変更してこの2桁年吸収を回避する。
+
+node "$ENGINE" validate due '0099-05-01' 2>/dev/null; EC_1804_V1=$?
+assert_exit_ok "§48 validate due 0099-05-01: exit 0（西暦99年、旧実装ではINVALID誤判定）" "$EC_1804_V1"
+
+node "$ENGINE" validate due '0001-01-01' 2>/dev/null; EC_1804_V2=$?
+assert_exit_ok "§48 validate due 0001-01-01: exit 0（西暦1年）" "$EC_1804_V2"
+
+# 境界値: 100年（2桁年吸収の境界の直後）は旧実装でも正しく動いていた区間。回帰確認。
+node "$ENGINE" validate due '0100-01-01' 2>/dev/null; EC_1804_V3=$?
+assert_exit_ok "§48 validate due 0100-01-01: exit 0（境界値、2桁年吸収の対象外区間・回帰確認）" "$EC_1804_V3"
+
+# 境界値: Date が扱える上限に近い年。回帰確認。
+node "$ENGINE" validate due '9999-12-31' 2>/dev/null; EC_1804_V4=$?
+assert_exit_ok "§48 validate due 9999-12-31: exit 0（上限側境界値・回帰確認）" "$EC_1804_V4"
+
+# --- リグレッション: 既存のカレンダー妥当性判定（Issue #1650）が壊れていないこと ---
+# （§47 で既に同一アサーションを実施済みだが、#1804 の修正がこれらを壊していないことを
+# 本セクション単独でも明示的に確認するため、意図的に重複実行する）
+
+node "$ENGINE" validate due '2026-13-01' 2>/dev/null; EC_1804_R1=$?
+assert_exit_fail "§48 リグレッション: validate due 2026-13-01 → exit 1（存在しない月は引き続き拒否）" "$EC_1804_R1"
+
+node "$ENGINE" validate due '2026-02-30' 2>/dev/null; EC_1804_R2=$?
+assert_exit_fail "§48 リグレッション: validate due 2026-02-30 → exit 1（2月30日は引き続き拒否）" "$EC_1804_R2"
+
+node "$ENGINE" validate due '2026-02-29' 2>/dev/null; EC_1804_R3=$?
+assert_exit_fail "§48 リグレッション: validate due 2026-02-29 → exit 1（非うるう年の2/29は引き続き拒否）" "$EC_1804_R3"
+
+node "$ENGINE" validate due '2028-02-29' 2>/dev/null; EC_1804_R4=$?
+assert_exit_ok "§48 リグレッション: validate due 2028-02-29 → exit 0（うるう年の2/29は引き続き許可）" "$EC_1804_R4"
+
+# ──────────────────────────────────────────
 # 書き込み系ハンドラのスタブベーステスト（run-tests-write.sh、Issue #1648）
 # 3,266行超に肥大化した本ファイルへの追記を避けるため別ファイルに分離し、
 # ここで子プロセスとして呼び出して結果を合算する。実行口は
