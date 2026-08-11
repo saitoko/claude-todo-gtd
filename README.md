@@ -181,8 +181,8 @@ Environment variable: LANG_ENV=en
 
 | Command | Description |
 |---------|-------------|
-| `/todo move <#> <GTD>` | Change GTD category |
-| `/todo done <#>` | Complete a task (recurring tasks auto-create the next occurrence; project next-task hints are shown) |
+| `/todo move <#> <GTD> [--note "text"]` | Change GTD category. `--note` appends a comment after the label change (e.g. reason for demotion) |
+| `/todo done <#> [--note "text"]` | Complete a task (recurring tasks auto-create the next occurrence; project next-task hints are shown). `--note` appends a comment after closing (e.g. retrospective notes) |
 
 ### Edit
 
