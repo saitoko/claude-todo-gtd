@@ -51,7 +51,7 @@ cp todo.sh ~/.claude/todo.sh
 ## テスト
 
 - テストランナー: `bash tests/run-tests.sh`（+ 書き込み系は `bash tests/run-tests-write.sh` として個別実行も可能。通常は `run-tests.sh` から自動的に呼び出される）
-- 自動テスト総件数: **1,137件以上**（read-only系 + 書き込み系の合算。全件PASSが目安）
+- 自動テスト総件数: **1,172件以上**（read-only系 + 書き込み系の合算。全件PASSが目安）
 - シナリオ一覧: `tests/scenarios.md`
 - 全件 PASS が Pull Request マージの必須条件
 - 件数を更新する際は README.md の記載も合わせて更新する
@@ -176,6 +176,10 @@ if (issue.project || issue.dependsOn) {
 **対象ファイル:** `todo-engine.js`
 
 **テスト:** `tests/run-tests.sh`（buildBody/parseBodyObj 単体テスト・round-trip）+ `tests/run-tests-write.sh` §W12（10ケース・スタブベースCLI振る舞いテスト。add/edit/クリア/改行バリデーション/promoteスキップ/リグレッション/混在ケース/JSON出力）+ `tests/scenarios.md` §36-16〜36-21（手動シナリオ）。全875件PASS。
+
+### 2026-08-11: GTDルーティンの `cycles_overdue` 検知（Issue #1776 実装A）
+
+`renderToday()`/`renderIssueList()` に GTDルーティンの周期遅延検知（`cycles_overdue`）を追加。テスト用に CLI サブコマンド `cycles-overdue <pattern> <due> <today>` を追加（`tests/run-tests.sh` §43 参照）。
 
 ## 翻訳方針（i18n）
 

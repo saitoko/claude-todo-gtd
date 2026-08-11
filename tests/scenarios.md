@@ -2018,7 +2018,7 @@ const newBody = buildBody({ ...parsed, reviewedAt: today });
 
 ## 46. Web環境実行不能対応（Issue #1695）
 
-`runMain()` に `TODO_REPO_OWNER`/`TODO_REPO_NAME` 未設定ガードを追加し、GitHub REST APIの401（認証拒否）を検知して分かりやすいメッセージ + 手動フォールバック手順を出力する。
+`runMain()` に `TODO_REPO_OWNER`/`TODO_REPO_NAME` 未設定ガードを追加し、GitHub REST APIの401（認証拒否）を検知して分かりやすいメッセージ + 手動フォールバック手順を出力する。設計書: Web環境実行不能対応の設計ドキュメント参照
 
 ### 46-1. `TODO_REPO_OWNER`/`TODO_REPO_NAME` 両方未設定 → `error.repo_not_configured` が出力され GitHub API は一度も呼ばれないこと（T-22）
 

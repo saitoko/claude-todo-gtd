@@ -827,13 +827,13 @@ assert_eq "priority sort: p1(早)→p1(遅)→p2→p3→なし" "4,1,2,3,5" "$SO
 echo ""
 echo "§20  monthly recur — 月末境界テスト"
 
-next_monthly() {
-  local base="$1"
   # 実エンジンの nextDue('monthly', base)（todo-engine.js）を直接呼び出す。旧実装は
   # JS Date の自動繰り上げ（クランプしない旧バグ挙動）をローカルで再現するだけの
   # shadow 関数で、実際のプロダクションコードを一切テストできていなかった
   # （Issue #1650 修正3: 無印 monthly を「月末クランプ・ドリフトなし」に変更したため、
   # 実エンジン呼び出しに置き換える）
+next_monthly() {
+  local base="$1"
   node "$ENGINE" next-due monthly "$base" 2>/dev/null
 }
 
@@ -3784,6 +3784,148 @@ LIST_PROJ_STALE_MOCK='[
 ]'
 LIST_PROJ_STALE_OUT=$(OPEN_ENV="$LIST_PROJ_STALE_MOCK" TODAY_ENV="$TEST_TODAY2" node "$ENGINE" list-all)
 assert_not_contains "§42 list-all: JST基準では29日でまだ停滞判定されない" "停滞30日以上" "$LIST_PROJ_STALE_OUT"
+
+# ──────────────────────────────────────────
+# §43  GTDルーティン cycles_overdue 検知（Issue #1776 実装A）
+# 「実施はしたが done を打ち忘れている」後始末漏れの確度が高いシグナルを、
+# 従来の routineOverdue（cycles===1）と新設 routineStale（cycles>=STALE_CYCLE_THRESHOLD=2）に
+# 分離する。computeCyclesOverdue() は読み取り専用のプレビュー計算であり、
+# done コマンドの書き込みパス（nextDueCatchUp）とは独立実装。
+# ──────────────────────────────────────────
+echo ""
+echo "§43  GTDルーティン cycles_overdue 検知（Issue #1776）"
+
+# --- computeCyclesOverdue 正常系（CLI: cycles-overdue <pattern> <due> <today>） ---
+assert_eq "§43 cycles-overdue: due が未来 → 0" \
+  "0" "$(node "$ENGINE" cycles-overdue weekly 2026-08-20 2026-08-11)"
+assert_eq "§43 cycles-overdue: due が今日 → 0" \
+  "0" "$(node "$ENGINE" cycles-overdue weekly 2026-08-11 2026-08-11)"
+assert_eq "§43 cycles-overdue: weekly 1周期分過去(7日前) → 1" \
+  "1" "$(node "$ENGINE" cycles-overdue weekly 2026-08-04 2026-08-11)"
+assert_eq "§43 cycles-overdue: weekly ちょうど閾値(14日前) → 2（境界値）" \
+  "2" "$(node "$ENGINE" cycles-overdue weekly 2026-07-28 2026-08-11)"
+assert_eq "§43 cycles-overdue: weekly 3周期分過去(21日前) → 3" \
+  "3" "$(node "$ENGINE" cycles-overdue weekly 2026-07-21 2026-08-11)"
+assert_eq "§43 cycles-overdue: monthly:15 でも正しく計算できる(3周期)" \
+  "3" "$(node "$ENGINE" cycles-overdue monthly:15 2026-06-15 2026-08-20)"
+
+# --- 異常系・境界値: 不正recur・大幅超過でも安全装置（MAX_RECUR_CATCHUP_ITERATIONS）が効く ---
+CYCLES_INVALID_STDERR=$(node "$ENGINE" cycles-overdue notarealpattern 2026-01-01 2026-08-11 2>&1 1>/dev/null)
+assert_eq "§43 cycles-overdue: 不正recur → 反復上限で打ち切り(3660)" \
+  "3660" "$(node "$ENGINE" cycles-overdue notarealpattern 2026-01-01 2026-08-11 2>/dev/null)"
+assert_contains "§43 cycles-overdue: 不正recur → 既存nextDueCatchUpと同じ反復上限警告が出る" \
+  "反復上限" "$CYCLES_INVALID_STDERR"
+
+CYCLES_OLD_STDERR=$(node "$ENGINE" cycles-overdue weekly 2015-01-01 2026-08-08 2>&1 1>/dev/null)
+assert_eq "§43 cycles-overdue: 1年以上前のdue(weekly)でも反復上限内で確実に打ち切られる" \
+  "606" "$(node "$ENGINE" cycles-overdue weekly 2015-01-01 2026-08-08 2>/dev/null)"
+assert_not_contains "§43 cycles-overdue: 10年超でも正常patternでは反復上限メッセージが出ない" \
+  "反復上限" "$CYCLES_OLD_STDERR"
+
+# --- renderToday(): routineOverdue（cycles===1）と routineStale（cycles>=2）の分離 ---
+TODAY_ROUTINE_MOCK='[
+  {"number":9101,"title":"overdue-1cycle","body":"due: 2026-08-04\nrecur: weekly","labels":[{"name":"🔁 routine"}]},
+  {"number":9102,"title":"stale-3cycles","body":"due: 2026-07-21\nrecur: weekly","labels":[{"name":"🔁 routine"}]},
+  {"number":9103,"title":"stale-no-recur","body":"due: 2026-07-01","labels":[{"name":"🔁 routine"}],"updated_at":"2026-06-01T00:00:00Z"}
+]'
+TODAY_ROUTINE_OUT=$(OPEN_ENV="$TODAY_ROUTINE_MOCK" TODAY_ENV="2026-08-11" CLOSED_ENV='[]' node "$ENGINE" today)
+assert_contains "§43 today: cycles=1(#9101) は従来通り「ルーティン未実施」セクションに出る" \
+  "ルーティン未実施（1件）" "$TODAY_ROUTINE_OUT"
+assert_contains "§43 today: #9101(cycles=1)がrenderされる" \
+  "#9101  overdue-1cycle" "$TODAY_ROUTINE_OUT"
+assert_contains "§43 today: cycles>=2は新設「要確認（推定サイクル遅延）」セクションに分離される（2件）" \
+  "要確認（推定サイクル遅延・2件）" "$TODAY_ROUTINE_OUT"
+assert_contains "§43 today: #9102(cycles=3)に推定周遅延の表示が付く" \
+  "#9102  stale-3cycles  📅 2026-07-21  （推定3周遅延）" "$TODAY_ROUTINE_OUT"
+assert_contains "§43 today: recurフィールド欠落はupdated_at staleness(30日)にフォールバックしクラッシュしない" \
+  "#9103  stale-no-recur  📅 2026-07-01  （30日以上更新なし）" "$TODAY_ROUTINE_OUT"
+assert_contains "§43 today: サマリー合計はroutineStale(2件)を含まずroutineOverdue(1件)のみ" \
+  "合計: 1件" "$TODAY_ROUTINE_OUT"
+
+# --- リグレッション: routineStaleのみでも「今日のタスクはありません」にならない・0件集計 ---
+ONLY_STALE_MOCK='[
+  {"number":9104,"title":"only-stale","body":"due: 2026-07-21\nrecur: weekly","labels":[{"name":"🔁 routine"}]}
+]'
+ONLY_STALE_OUT=$(OPEN_ENV="$ONLY_STALE_MOCK" TODAY_ENV="2026-08-11" CLOSED_ENV='[]' node "$ENGINE" today)
+assert_not_contains "§43 today: routineStaleのみが存在する場合でも「今日のタスクはありません」は出ない" \
+  "今日のタスクはありません" "$ONLY_STALE_OUT"
+assert_contains "§43 today: routineStaleのみの場合サマリー合計は0件" \
+  "合計: 0件" "$ONLY_STALE_OUT"
+
+# --- renderIssueList(): routine(cycles>=2)・next/waiting(updated_at>=30日)へのマーカー ---
+LIST_ROUTINE_MOCK='[
+  {"number":9201,"title":"overdue-1cycle","body":"due: 2026-08-04\nrecur: weekly","labels":[{"name":"🔁 routine"}]},
+  {"number":9202,"title":"stale-3cycles","body":"due: 2026-07-21\nrecur: weekly","labels":[{"name":"🔁 routine"}]}
+]'
+LIST_ROUTINE_OUT=$(OPEN_ENV="$LIST_ROUTINE_MOCK" TODAY_ENV="2026-08-11" FILTER_GTD_ENV="routine" node "$ENGINE" list-all)
+assert_contains "§43 list routine: cycles>=2(#9202)に🕰マーカーが付く（/todo list routine 週次レビュー用）" \
+  "🕰#9202  stale-3cycles" "$LIST_ROUTINE_OUT"
+assert_not_contains "§43 list routine: cycles===1(#9201)には🕰マーカーが付かない" \
+  "🕰#9201" "$LIST_ROUTINE_OUT"
+assert_contains "§43 list routine: マーカー対象外の行は従来通り2スペースインデントのまま" \
+  "  #9201  overdue-1cycle" "$LIST_ROUTINE_OUT"
+
+# --- renderIssueList(): routine かつ recur 欠落 → updated_at staleness フォールバック ---
+# renderToday() の routineStale フォールバックとの非対称を解消（reviewer 🟡推奨修正）。
+# 実データでの該当有無に関わらず、recur 欠落時の挙動保証として必要なテスト。
+LIST_ROUTINE_NO_RECUR_MOCK='[
+  {"number":9211,"title":"stale-no-recur-old","body":"due: 2026-07-01","labels":[{"name":"🔁 routine"}],"updated_at":"2026-06-01T00:00:00Z"},
+  {"number":9212,"title":"stale-no-recur-exactly-30","body":"due: 2026-07-01","labels":[{"name":"🔁 routine"}],"updated_at":"2026-07-12T00:00:00Z"},
+  {"number":9213,"title":"fresh-no-recur-29days","body":"due: 2026-07-01","labels":[{"name":"🔁 routine"}],"updated_at":"2026-07-13T00:00:00Z"},
+  {"number":9214,"title":"no-recur-no-due","labels":[{"name":"🔁 routine"}],"updated_at":"2026-06-01T00:00:00Z"}
+]'
+LIST_ROUTINE_NO_RECUR_OUT=$(OPEN_ENV="$LIST_ROUTINE_NO_RECUR_MOCK" TODAY_ENV="2026-08-11" FILTER_GTD_ENV="routine" node "$ENGINE" list-all)
+assert_contains "§43 list routine: recur欠落かつupdated_atが30日以上前(#9211)に🕰マーカーが付く（renderTodayとの対称化）" \
+  "🕰#9211  stale-no-recur-old" "$LIST_ROUTINE_NO_RECUR_OUT"
+assert_contains "§43 list routine: recur欠落かつupdated_atがちょうど30日前(#9212)に🕰マーカーが付く（境界値）" \
+  "🕰#9212  stale-no-recur-exactly-30" "$LIST_ROUTINE_NO_RECUR_OUT"
+assert_not_contains "§43 list routine: recur欠落でもupdated_atが29日前(#9213)には🕰マーカーが付かない（境界値）" \
+  "🕰#9213" "$LIST_ROUTINE_NO_RECUR_OUT"
+assert_contains "§43 list routine: 境界値29日(#9213)は従来通り2スペースインデントのまま" \
+  "  #9213  fresh-no-recur-29days" "$LIST_ROUTINE_NO_RECUR_OUT"
+assert_not_contains "§43 list routine: recur欠落かつdue欠落(#9214)はクラッシュせずマーカーも付かない" \
+  "🕰#9214" "$LIST_ROUTINE_NO_RECUR_OUT"
+assert_contains "§43 list routine: recur欠落かつdue欠落(#9214)は従来通り2スペースインデントのまま" \
+  "  #9214  no-recur-no-due" "$LIST_ROUTINE_NO_RECUR_OUT"
+
+LIST_NW_MOCK='[
+  {"number":9301,"title":"stale-next-exactly-30","body":"due: 2026-08-20","labels":[{"name":"🎯 next"}],"updated_at":"2026-07-12T00:00:00Z"},
+  {"number":9302,"title":"fresh-next-29days","body":"due: 2026-08-20","labels":[{"name":"🎯 next"}],"updated_at":"2026-07-13T00:00:00Z"},
+  {"number":9303,"title":"stale-waiting","body":"due: 2026-08-20","labels":[{"name":"⏳ waiting"}],"updated_at":"2026-06-01T00:00:00Z"}
+]'
+LIST_NW_OUT_NEXT=$(OPEN_ENV="$LIST_NW_MOCK" TODAY_ENV="2026-08-11" FILTER_GTD_ENV="next" node "$ENGINE" list-all)
+assert_contains "§43 list next: updated_atがちょうど30日前(#9301)に🕰マーカーが付く（境界値、既存project stale と同一閾値）" \
+  "🕰#9301  stale-next-exactly-30" "$LIST_NW_OUT_NEXT"
+assert_not_contains "§43 list next: updated_atが29日前(#9302)には🕰マーカーが付かない（境界値）" \
+  "🕰#9302" "$LIST_NW_OUT_NEXT"
+
+LIST_NW_OUT_WAITING=$(OPEN_ENV="$LIST_NW_MOCK" TODAY_ENV="2026-08-11" FILTER_GTD_ENV="waiting" node "$ENGINE" list-all)
+assert_contains "§43 list waiting: updated_atが30日以上前(#9303)に🕰マーカーが付く" \
+  "🕰#9303  stale-waiting" "$LIST_NW_OUT_WAITING"
+
+# --- リグレッション: someday ⚠️ マーカー・project停滞バッジが本変更で崩れないこと ---
+REGRESSION_SOMEDAY_MOCK='[
+  {"number":9401,"title":"old-someday","body":"reviewed_at: 2026-06-01","labels":[{"name":"🌈 someday"}]}
+]'
+REGRESSION_SOMEDAY_OUT=$(OPEN_ENV="$REGRESSION_SOMEDAY_MOCK" TODAY_ENV="2026-08-11" FILTER_GTD_ENV="someday" node "$ENGINE" list-all)
+assert_contains "§43 リグレッション: someday の ⚠️ マーカーは本変更後も従来通り表示される" \
+  "⚠️#9401  old-someday" "$REGRESSION_SOMEDAY_OUT"
+
+REGRESSION_PROJ_MOCK='[
+  {"number":9402,"title":"stale-project","updated_at":"2026-06-01T00:00:00Z","labels":[{"name":"📁 project"}]}
+]'
+REGRESSION_PROJ_OUT=$(OPEN_ENV="$REGRESSION_PROJ_MOCK" TODAY_ENV="2026-08-11" node "$ENGINE" list-all)
+assert_contains "§43 リグレッション: project の停滞バッジ（⚠️停滞30日以上）は本変更後も従来通り表示される" \
+  "停滞30日以上" "$REGRESSION_PROJ_OUT"
+
+# --- リグレッション: LANG_ENV=en で routineStale / staleness マーカーの新規メッセージも英語化される ---
+TODAY_ROUTINE_EN_OUT=$(LANG_ENV=en OPEN_ENV="$TODAY_ROUTINE_MOCK" TODAY_ENV="2026-08-11" CLOSED_ENV='[]' node "$ENGINE" today)
+assert_contains "§43 today(en): routineStale見出しが英語化される" \
+  "Needs Review" "$TODAY_ROUTINE_EN_OUT"
+assert_contains "§43 today(en): 推定周遅延サフィックスが英語化される" \
+  "est. 3 cycles overdue" "$TODAY_ROUTINE_EN_OUT"
+assert_not_contains "§43 today(en): 出力に日本語（新規追加メッセージ）が含まれない" \
+  "推定" "$TODAY_ROUTINE_EN_OUT"
 
 # ──────────────────────────────────────────
 # §47  日付処理バグ修正3件（Issue #1650、親 project #1640）

@@ -174,6 +174,9 @@ const MESSAGES = {
     'today.due_today': '## 🎯 今日が期限（{n}）',
     'today.routine': '## 🔁 今日のルーティン（{n}）',
     'today.routine_overdue': '## 🔁 ルーティン未実施（{n}）',
+    'today.routine_stale': '## 🕰 要確認（推定サイクル遅延・{n}）',
+    'today.cycles_suffix': '（推定{n}周遅延）',
+    'today.stale_no_recur': '（30日以上更新なし）',
     'today.no_tasks': '今日のタスクはありません。期限超過もなし。',
     'today.summary': '📊 合計: {total}',
     'today.est': '⏱見積: {time}',
@@ -514,6 +517,9 @@ const MESSAGES = {
     'today.due_today': '## 🎯 Due Today ({n})',
     'today.routine': '## 🔁 Today\'s Routines ({n})',
     'today.routine_overdue': '## 🔁 Routines Pending ({n})',
+    'today.routine_stale': '## 🕰 Needs Review (Est. Cycle Delay, {n})',
+    'today.cycles_suffix': '(est. {n} cycles overdue)',
+    'today.stale_no_recur': '(no update in 30+ days)',
     'today.no_tasks': 'No tasks for today. No overdue items either.',
     'today.summary': '📊 Total: {total}',
     'today.est': '⏱Estimate: {time}',
@@ -1068,6 +1074,32 @@ function nextDueCatchUp(pattern, base, today) {
   return { nextDate: date, skipped };
 }
 
+// GTDルーティンの「後始末漏れ」検知閾値（Issue #1776）。
+// cycles_overdue が この値以上のルーティンを「要確認」として routineOverdue と別枠に分離する。
+// 1周期分の遅延（=1）は通常運用の範囲として従来どおり routineOverdue のまま扱う。
+// 実データ未検証の暫定値。運用開始後に調整余地あり。
+const STALE_CYCLE_THRESHOLD = 2;
+
+// due から today まで、recurPattern で何周期分「進めずに」経過したかを計算する
+// （読み取り専用のプレビュー関数。Issue #1776）。
+// nextDueCatchUp()（done コマンドの書き込みパスで使用）と同一の反復・上限・警告出力
+// ロジックを流用するが、書き込みパスには一切影響を与えない独立実装として追加する。
+// nextDueCatchUp() 自体はこの関数追加により変更しない。
+// 戻り値: number（0以上。due >= today なら 0）
+function computeCyclesOverdue(recurPattern, due, today) {
+  if (due >= today) return 0;
+  let date = due;
+  let iterations = 0;
+  while (date < today && iterations < MAX_RECUR_CATCHUP_ITERATIONS) {
+    date = nextDue(recurPattern, date);
+    iterations++;
+  }
+  if (date < today) {
+    process.stderr.write(tpl('warn.recur_catchup_limit', { limit: MAX_RECUR_CATCHUP_ITERATIONS, date })+'\n');
+  }
+  return iterations;
+}
+
 // ─── バリデーション関数 ───
 
 // 記号のみ・空文字のラベル名を弾くための判定（Issue #1686）
@@ -1277,6 +1309,33 @@ function renderIssueList(issue, today) {
     const reviewedAt = (issue.body||'').match(/^reviewed_at: (\d{4}-\d{2}-\d{2})/m)?.[1] || '';
     if (!reviewedAt || daysBetween(reviewedAt, today) >= 30) {
       line = '  ⚠️' + line.slice(2);
+    }
+  }
+  // routine かつ due がある場合にマーカーを付ける
+  // （renderToday の routineStale と同一の計算・閾値を再利用。Issue #1776）
+  if (today && lnames.includes('routine') && due) {
+    if (recur) {
+      const cycles = computeCyclesOverdue(recur[1], due, today);
+      if (cycles >= STALE_CYCLE_THRESHOLD) {
+        line = '  🕰' + line.slice(2);
+      }
+    } else if (due < today) {
+      // recur フィールドが欠落した routine（想定外だが存在しうる）は cycles_overdue 計算を
+      // スキップし、renderToday() の routineStale フォールバックと同一の updated_at
+      // staleness（既存 project staleness badge と同一閾値・判定式）にフォールバックする。
+      // 両者の挙動を対称に保つための対応。Issue #1776。
+      const updatedAt = issue.updated_at || '';
+      if (updatedAt && daysBetween(toJstDateStr(updatedAt), today) >= 30) {
+        line = '  🕰' + line.slice(2);
+      }
+    }
+  }
+  // next/waiting かつ updated_at が30日以上前の場合にマーカーを付ける
+  // （project staleness badge と同一閾値・判定式の横展開。Issue #1776）
+  if (today && (lnames.includes('next') || lnames.includes('waiting'))) {
+    const updatedAt = issue.updated_at || '';
+    if (updatedAt && daysBetween(toJstDateStr(updatedAt), today) >= 30) {
+      line = '  🕰' + line.slice(2);
     }
   }
   return line;
@@ -1696,12 +1755,30 @@ function renderToday() {
   const w = s => process.stdout.write(s);
 
   const overdue = [], dueToday = [], routineToday = [], routineOverdue = [];
+  // routineStale: cycles_overdue >= STALE_CYCLE_THRESHOLD の「要確認」ルーティン（Issue #1776）。
+  // { issue, cycles } の配列。cycles は recur 欠落時の updated_at フォールバック時 null になる。
+  const routineStale = [];
   for (const issue of issues) {
     const lnames = getLnames(issue);
     const due = getDue(issue);
     if (lnames.includes('routine')) {
-      if (due && due < todayStr) routineOverdue.push(issue);
-      else if (due && due === todayStr) routineToday.push(issue);
+      if (due && due < todayStr) {
+        const recurMatch = (issue.body||'').match(/^recur: (\S+)/m);
+        if (recurMatch) {
+          const cycles = computeCyclesOverdue(recurMatch[1], due, todayStr);
+          if (cycles >= STALE_CYCLE_THRESHOLD) routineStale.push({ issue, cycles });
+          else routineOverdue.push(issue);
+        } else {
+          // recur フィールドが欠落した routine（想定外だが存在しうる）は
+          // cycles_overdue 計算をスキップし、既存の updated_at staleness にフォールバックする
+          const updatedAt = issue.updated_at || '';
+          const isStaleByUpdatedAt = updatedAt ? daysBetween(toJstDateStr(updatedAt), todayStr) >= 30 : false;
+          if (isStaleByUpdatedAt) routineStale.push({ issue, cycles: null });
+          else routineOverdue.push(issue);
+        }
+      } else if (due && due === todayStr) {
+        routineToday.push(issue);
+      }
     } else if (due && due < todayStr) {
       overdue.push(issue);
     } else if (due && due === todayStr && lnames.includes('next')) {
@@ -1712,15 +1789,16 @@ function renderToday() {
   dueToday.sort(sortByPriDue);
   routineToday.sort(sortByPriDue);
   routineOverdue.sort(sortByPriDue);
+  routineStale.sort((a, b) => sortByPriDue(a.issue, b.issue));
 
   w(tpl('today.header', {date: todayStr})+'\n\n');
 
-  if (overdue.length === 0 && dueToday.length === 0 && routineToday.length === 0 && routineOverdue.length === 0) {
+  if (overdue.length === 0 && dueToday.length === 0 && routineToday.length === 0 && routineOverdue.length === 0 && routineStale.length === 0) {
     w(t('today.no_tasks')+'\n');
     return;
   }
 
-  const renderIssue = (i, showDue) => {
+  const renderIssue = (i, showDue, suffix) => {
     const lnames = getLnames(i);
     const ctx = getCtx(lnames);
     w('  '+priIcon(getPri(lnames))+'#'+i.number+'  '+i.title);
@@ -1728,6 +1806,7 @@ function renderToday() {
     if (showDue) { const due = getDue(i); if (due) w('  📅 '+due); }
     const em = (i.body||'').match(/^estimate: (\d+)/m);
     if (em) w('  ⏱'+formatTime(parseInt(em[1])));
+    if (suffix) w('  '+suffix);
     w('\n');
   };
 
@@ -1751,8 +1830,18 @@ function renderToday() {
     routineOverdue.forEach(i => renderIssue(i, true));
     w('\n');
   }
+  if (routineStale.length) {
+    w(tpl('today.routine_stale', {n: cnt(routineStale.length)})+'\n');
+    routineStale.forEach(({ issue: i, cycles }) => {
+      const suffix = cycles !== null
+        ? tpl('today.cycles_suffix', { n: cycles })
+        : t('today.stale_no_recur');
+      renderIssue(i, true, suffix);
+    });
+    w('\n');
+  }
 
-  // サマリー
+  // サマリー（routineStale は「今すぐやるタスク」ではなく「確認が必要な記録」のため含めない）
   const allTasks = [...overdue, ...dueToday, ...routineToday, ...routineOverdue];
   let estTotal = 0;
   for (const i of allTasks) {
@@ -2625,6 +2714,7 @@ switch (cmd) {
   case 'priority-color':  process.stdout.write(priorityColor(args[1])); break;
   case 'next-due':        process.stdout.write(nextDue(args[1], args[2])); break;
   case 'next-due-catchup': process.stdout.write(JSON.stringify(nextDueCatchUp(args[1], args[2], args[3]))); break;
+  case 'cycles-overdue':  process.stdout.write(String(computeCyclesOverdue(args[1], args[2], args[3]))); break;
   case 'decode-b64':      process.stdout.write(Buffer.from(args[1]||'','base64').toString('utf8')); break;
   case 'ctx-to-json': {
     const list = (args[1]||'').trim();

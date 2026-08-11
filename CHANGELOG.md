@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+---
+
+## [v2.8.0] - 2026-08-11
+
+### Added
+
+- GTDルーティンの周期遅延検知を追加（Issue #1776）。`recur` 付きの routine タスクについて、期日から今日まで何周期分「進めずに」経過したか（`cycles_overdue`）を計算し、`/todo today` に新設の「🕰 要確認（推定サイクル遅延）」セクションを設ける。従来の「ルーティン未実施」（1周期分の遅延=通常運用の範囲）と、2周期以上遅延した「実施はしたが done を打ち忘れている可能性が高い」ものを別枠に分離して表示する。`/todo list` の `routine`/`next`/`waiting` 表示にも 🕰 マーカーを追加した。routine は cycles_overdue が2以上（`recur` が欠落している routine は代わりに `updated_at` が30日以上前かで判定）、next/waiting は `updated_at` が30日以上前の場合にマーカーが付く。**検知のみを行い、タスクの状態やラベルを自動で変更することはない**（副作用ゼロ。今回追加した計算関数はいずれも読み取り専用で、`done` コマンド等の既存の書き込みパスには一切変更を加えていない）
+
 ### Fixed
 
 - 日付処理のバグ3件を修正（Issue #1650、親 project #1640）
