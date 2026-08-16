@@ -314,6 +314,7 @@ const MESSAGES = {
     'error.issue_not_found': 'エラー: Issue #{num} が見つかりません。',
     'error.issue_fetch_failed': 'エラー: Issue の取得に失敗しました（{msg}）',
     'show.unclassified': '（未分類）',
+    'show.estimate_invalid': '{raw}（形式不正）',
     'show.yes': 'あり',
     'show.no': 'なし',
     'show.status_done': '- 状態: ✅ 完了{suffix}',
@@ -659,6 +660,7 @@ const MESSAGES = {
     'error.issue_not_found': 'Error: Issue #{num} not found.',
     'error.issue_fetch_failed': 'Error: Failed to fetch issue ({msg})',
     'show.unclassified': '(uncategorized)',
+    'show.estimate_invalid': '{raw} (invalid format)',
     'show.yes': 'yes',
     'show.no': 'no',
     'show.status_done': '- Status: ✅ Done{suffix}',
@@ -965,6 +967,25 @@ function parseTime(input) {
   if (/^\d+$/.test(input)) return parseInt(input);
   return null;
 }
+
+// body 文字列から「<fieldName>: <値>」形式の時間フィールド（estimate / actual）を抽出し、
+// 分単位の数値へ変換する。
+// 戻り値: { raw: string|null, minutes: number|null }
+//   - raw === null            : フィールド自体が存在しない
+//   - raw !== null かつ minutes === null : フィールドはあるが parseTime() が解釈できない不正な形式
+// #1854: 従来は呼び出し側ごとに正規表現 `/^estimate: (\d+)/m` で先頭の数字だけを切り出した上で
+// parseInt() を通していたため、"2h" のような単位付き値が数字部分「2」だけに切り詰められて抽出され
+// （末尾の "h" は \d+ にマッチしないため単に無視される）、"⏱2m" のように 60〜120 倍誤った値が
+// 表示されていた。抽出を \S+（値全体）に広げ、変換を parseTime() に一本化することで、
+// 「数値のみ」「Nh」「Nm」「NhMm」のいずれの保存形式でも正しく分へ変換されるようにする。
+function extractTimeField(body, fieldName) {
+  const re = new RegExp('^' + fieldName + ': (\\S+)', 'm');
+  const m = (body || '').match(re);
+  if (!m) return { raw: null, minutes: null };
+  return { raw: m[1], minutes: parseTime(m[1]) };
+}
+function estimateMinutesFromBody(body) { return extractTimeField(body, 'estimate'); }
+function actualMinutesFromBody(body) { return extractTimeField(body, 'actual'); }
 
 function formatTime(minutes) {
   minutes = parseInt(minutes);
@@ -1324,12 +1345,14 @@ function renderIssueList(issue, today) {
   // recur の値は行末までの1トークン（空白を含まない）なので \S+ で全体を拾う。
   const recur = (issue.body||'').match(/^recur: (\S+)/m);
   const proj = (issue.body||'').match(/^project: #(\d+)/m);
-  const estMatch = (issue.body||'').match(/^estimate: (\d+)/m);
+  const est = estimateMinutesFromBody(issue.body||'');
   let line = '  '+priIcon(getPri(lnames))+'#'+issue.number+'  '+issue.title;
   if (ctx.length) line += '  ['+ctx.join(' ')+']';
   if (tags.length) line += '  ['+tags.join(' ')+']';
   if (due) line += '  📅 '+due;
-  if (estMatch) line += '  ⏱'+formatTime(parseInt(estMatch[1]));
+  // #1854: parseTime() が解釈できない不正な estimate 値は "⏱0m" のように黙って握りつぶさず、
+  // ⚠️ 付きで生値を表示して気づけるようにする（無視すると「静かな期待値乖離」になるため）。
+  if (est.raw !== null) line += est.minutes !== null ? '  ⏱'+formatTime(est.minutes) : '  ⏱⚠️'+est.raw;
   if (proj) line += '  [project:#'+proj[1]+']';
   if (recur) line += '  🔄'+recur[1];
   // someday かつ長期未見直しの場合にマーカーを付ける
@@ -1743,8 +1766,8 @@ function stats() {
   for (const issue of issues) {
     const lnames = getLnames(issue);
     if (lnames.includes('next')) {
-      const em = (issue.body||'').match(/^estimate: (\d+)/m);
-      if (em) { nextEstTotal += parseInt(em[1]); nextEstCount++; }
+      const est = estimateMinutesFromBody(issue.body||'');
+      if (est.minutes !== null) { nextEstTotal += est.minutes; nextEstCount++; }
       else noEstCount++;
     }
   }
@@ -1857,8 +1880,8 @@ function renderToday() {
     w('  '+priIcon(getPri(lnames))+'#'+i.number+'  '+i.title);
     if (ctx.length) w('  ['+ctx.join(' ')+']');
     if (showDue) { const due = getDue(i); if (due) w('  📅 '+due); }
-    const em = (i.body||'').match(/^estimate: (\d+)/m);
-    if (em) w('  ⏱'+formatTime(parseInt(em[1])));
+    const est = estimateMinutesFromBody(i.body||'');
+    if (est.raw !== null) w(est.minutes !== null ? '  ⏱'+formatTime(est.minutes) : '  ⏱⚠️'+est.raw);
     if (suffix) w('  '+suffix);
     w('\n');
   };
@@ -1898,8 +1921,8 @@ function renderToday() {
   const allTasks = [...overdue, ...dueToday, ...routineToday, ...routineOverdue];
   let estTotal = 0;
   for (const i of allTasks) {
-    const em = (i.body||'').match(/^estimate: (\d+)/m);
-    if (em) estTotal += parseInt(em[1]);
+    const est = estimateMinutesFromBody(i.body||'');
+    if (est.minutes !== null) estTotal += est.minutes;
   }
   const todayClosed = closed.filter(i => i.closedAt && toJstDateStr(i.closedAt) === todayStr).length;
 
@@ -2072,8 +2095,8 @@ function dashboard() {
   const todayTasks = [...overdue, ...dueToday];
   let estTotal = 0, estCount = 0;
   for (const i of todayTasks) {
-    const em = (i.body||'').match(/^estimate: (\d+)/m);
-    if (em) { estTotal += parseInt(em[1]); estCount++; }
+    const est = estimateMinutesFromBody(i.body||'');
+    if (est.minutes !== null) { estTotal += est.minutes; estCount++; }
   }
 
   w('---\n');
@@ -2197,11 +2220,11 @@ function report() {
   // 見積 vs 実績
   let estSum = 0, actSum = 0, estActCount = 0;
   for (const issue of periodClosed) {
-    const em = (issue.body||'').match(/^estimate: (\d+)/m);
-    const am = (issue.body||'').match(/^actual: (\d+)/m);
-    if (em) estSum += parseInt(em[1]);
-    if (am) actSum += parseInt(am[1]);
-    if (em && am) estActCount++;
+    const est = estimateMinutesFromBody(issue.body||'');
+    const act = actualMinutesFromBody(issue.body||'');
+    if (est.minutes !== null) estSum += est.minutes;
+    if (act.minutes !== null) actSum += act.minutes;
+    if (est.minutes !== null && act.minutes !== null) estActCount++;
   }
   if (estSum > 0 || actSum > 0) {
     w(t('report.est_vs_actual')+'\n\n');
@@ -4255,6 +4278,11 @@ function issueToJsonObj(rawIssue) {
     ...(priLabel ? [priLabel] : []),
   ]);
   const tags = lnames.filter(l => !systemLabels.has(l));
+  // #1854: parsed.estimate は parseBodyObj() が値全体（"2h" 等）を抽出済みなので、
+  // formatTime(parseInt(...)) ではなく parseTime() で単位付き文字列を正しく分へ変換する。
+  // parseTime() が解釈できない不正な形式は estimateFormatted を null にする
+  // （formatTime(NaN) の "0m" を返すと不正値が気づけないまま表示されてしまうため）。
+  const estMinutes = parsed.estimate ? parseTime(parsed.estimate) : null;
 
   return {
     number: rawIssue.number,
@@ -4263,7 +4291,7 @@ function issueToJsonObj(rawIssue) {
     priority: priLabel || null,
     due: parsed.due || null,
     estimate: parsed.estimate || null,
-    estimateFormatted: parsed.estimate ? formatTime(parseInt(parsed.estimate)) : null,
+    estimateFormatted: estMinutes !== null ? formatTime(estMinutes) : null,
     context: ctxLabels,
     claude: isClaudeTask,
     tags,
@@ -4350,7 +4378,12 @@ async function runShow(octokit, owner, repo, tokens) {
   const priDisplay = priLabel || t('list.none');
 
   // 見積もりを分 → 表示形式に変換
-  const estDisplay = issue.estimate ? formatTime(parseInt(issue.estimate)) : t('list.none');
+  // #1854: issue.estimate は fetchAndParseIssue() 経由で値全体（"2h" 等）を保持しているため
+  // parseTime() で単位付き文字列を正しく分へ変換する。parseTime() が解釈できない不正な形式は
+  // 「（形式不正）」を添えて表示し、0m と黙って表示しないようにする。
+  const estMinutes = issue.estimate ? parseTime(issue.estimate) : null;
+  const estDisplay = !issue.estimate ? t('list.none')
+    : (estMinutes !== null ? formatTime(estMinutes) : tpl('show.estimate_invalid', { raw: issue.estimate }));
 
   // タグ（GTD・コンテキスト・@claude・優先度以外のラベル）
   const systemLabels = new Set([
@@ -4373,7 +4406,7 @@ async function runShow(octokit, owner, repo, tokens) {
       priority: priLabel || null,
       due: issue.due || null,
       estimate: issue.estimate || null,
-      estimateFormatted: issue.estimate ? formatTime(parseInt(issue.estimate)) : null,
+      estimateFormatted: estMinutes !== null ? formatTime(estMinutes) : null,
       context: ctxLabels.length ? ctxLabels : [],
       claude: isClaudeTask,
       tags: tags.length ? tags : [],
