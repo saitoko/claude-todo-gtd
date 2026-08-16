@@ -224,4 +224,3 @@ const oldGtdLabel = labelNames.find(l => GTD_LABELS.includes(normLabel(l)));
 - `python3` は使用不可（`node` を使うこと）
 - `jq` は使用不可（`gh` の `-q` フラグか `node` を使うこと）
 - GNU/BSD 両対応の日付処理を維持すること
-- **`todo.md`/`CHANGELOG.md` 等、公開リポジトリ（`claude-todo-gtd`）に同期しうるファイルには、000-partner内部限定の情報を書かないこと**: 内部エージェントロール名（architect/researcher/COO/secretary等）、`/weekly-review`のような公開版に存在しないコマンド名、`/health`等の内部専用スキル名、`workspaces/`配下の内部パス参照。公開版で完結する一般的な表現に留める（実事故: 2026-08-04、`resume_condition`機能の公開同期直前にreviewerが4件発見。詳細は`content/reviews/2026-08-04_review-public-repo-resume-condition.md`）
