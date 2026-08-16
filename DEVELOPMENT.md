@@ -51,7 +51,7 @@ cp todo.sh ~/.claude/todo.sh
 ## テスト
 
 - テストランナー: `bash tests/run-tests.sh`（+ 書き込み系は `bash tests/run-tests-write.sh` として個別実行も可能。通常は `run-tests.sh` から自動的に呼び出される）
-- 自動テスト総件数: **1,205件以上**（read-only系 + 書き込み系の合算。全件PASSが目安）
+- 自動テスト総件数: **1,231件以上**（read-only系 + 書き込み系の合算。全件PASSが目安）
 - シナリオ一覧: `tests/scenarios.md`
 - 全件 PASS が Pull Request マージの必須条件
 - 件数を更新する際は README.md の記載も合わせて更新する
@@ -181,6 +181,35 @@ if (issue.project || issue.dependsOn) {
 
 `renderToday()`/`renderIssueList()` に GTDルーティンの周期遅延検知（`cycles_overdue`）を追加。テスト用に CLI サブコマンド `cycles-overdue <pattern> <due> <today>` を追加（`tests/run-tests.sh` §43 参照）。
 
+### 2026-08-16: `weekly-project-audit` / `list project` が someday 格下げ済みの project を除外しない（Issue #1846）
+
+**症状:** `/todo move <n> someday` で project を「休止中」にしても `weekly-project-audit` / `/todo list project` が引き続き対象に含めてしまい、next 欠落として毎週 ⚠️ 誤検知する。実測（2026-08-16）で `📁 project` ラベル21件中10件が `🌈 someday` を併せ持つ「休止中」project だった（一部だけを目視確認した際は4件と見えていたが、`gh issue list --label "📁 project"` で全件確認すると10件だった）。
+
+**原因:** `execMoveGtd`（`move <n> someday` の実処理）は除去対象の旧GTDラベルを `GTD_LABELS`（`next`/`routine`/`inbox`/`waiting`/`someday`/`reference`）から探すが、`GTD_LABELS` は `project` を含まない。`project` は `move <n> project` が明示的に禁止されている（`promote-project` 専任）ように GTD 状態と直交する軸として設計されているため、`project` を持つ Issue に `move <n> someday` すると `someday` が追加されるだけで `project` は剥がれず、二重ラベルのまま残る。`weekly-project-audit`/`list project` はこの二重ラベル Issue を素通しして毎回拾ってしまう。
+
+```js
+// GTD_LABELS は project を含まないため、project を持つ Issue に move <n> someday しても
+// project ラベルは対象外扱いで剥がれない
+const oldGtdLabel = labelNames.find(l => GTD_LABELS.includes(normLabel(l)));
+```
+
+**修正方針:** `execMoveGtd`（move 側）は変更せず、消費側（`runWeeklyProjectAudit` / `listAll()` の `list project` パス）で `🌈 someday` を併せ持つ `📁 project` を「休止中」として棚卸し・一覧対象から除外する。除外は黙って件数を減らさず、除外件数を利用者に明示する（`audit.paused_excluded` / `list.excluded_someday_projects`）。`move <n> next` 等で someday が外れれば自動的に一覧・audit に復帰する。
+
+**対象ファイル:** `todo-engine.js`（`runWeeklyProjectAudit()` / `listAll()`）
+
+**テスト:** `tests/run-tests-write.sh` §W18（3ケース: weekly-project-audit の除外+件数明示、list project の除外+件数明示、list someday は従来どおり除外しないリグレッション）+ `tests/scenarios.md` §39 P-19。全1220件PASS。
+
+**フォローアップ（同日、スコープ拡張・ユーザー承認済み）:** 上記修正時点で自己申告していた残り2箇所も #1846 のスコープ内として対応した。
+
+1. **プレーンな `/todo list`（フィルタなし全体一覧）の Projects セクション**: `listAll()` の「フィルタなし → GTDカテゴリ別グルーピング」分岐が `grouped[PROJECT_LABEL]` をそのまま使っており、`list project` / `weekly-project-audit` と表示件数が食い違っていた。同じ除外ロジックを適用し、ヘッダの件数・除外件数表示・フッターサマリーの `project: N件` を全て「休止中除外後」の件数に揃えた。
+2. **`list project --json`**: `runList()` の `jsonMode` 分岐は意図的に除外**しない**設計判断とした。理由: (a) JSON は機械可読インターフェースであり「表示しないか」は UI 側の関心事でデータを間引く理由にならない、(b) 各要素の `labels` フィールドに既に `project` と `someday` の両方が入っているため、消費側が `labels.includes('someday')` で休止中判定を自分で行える（新規フィールド不要）、(c) 既存消費者は見つからなかった（後方互換の実害なし）。なお `issueToJsonObj()` の `gtd` フィールドは `GTD_LABELS.find()` を先に評価する既存実装のため、project+someday の二重ラベル Issue は `gtd: "someday"` と出力される（`project` ではない）。これは本Issueとは独立の既存仕様であり今回変更していない。
+
+**実測訂正:** 当初の目視サンプルでは一部件数のみの確認だったが、全件確認したところ想定より多い件数が該当していた。ラベル属性ベースの判定にしているため、サンプル数に関わらず該当する Issue を漏れなく除外できる。
+
+**対象ファイル（追加分）:** `todo-engine.js`（`listAll()` の「フィルタなし」分岐 / `runList()` の `jsonMode` 分岐）
+
+**テスト（追加分）:** `tests/run-tests-write.sh` §W18-4（プレーン list の除外+件数明示、修正前コードに戻すと4アサーションがFAILすることを確認済み）+ §W18-5（`list project --json` が除外しないことをロックインする回帰テスト。この項目は挙動変更なしのためbefore/after差分はなし）。全1231件PASS。
+
 ## 翻訳方針（i18n）
 
 `todo-engine.js` の出力は `MESSAGES`/`t()`（`LANG_ENV=en` で英語、それ以外は日本語）で管理しているが、以下の2箇所は方針として `t()` 化せず英語固定とする。新しくコマンド・出力を追加する際はこの方針に従うこと。
@@ -195,3 +224,4 @@ if (issue.project || issue.dependsOn) {
 - `python3` は使用不可（`node` を使うこと）
 - `jq` は使用不可（`gh` の `-q` フラグか `node` を使うこと）
 - GNU/BSD 両対応の日付処理を維持すること
+- **`todo.md`/`CHANGELOG.md` 等、公開リポジトリ（`claude-todo-gtd`）に同期しうるファイルには、000-partner内部限定の情報を書かないこと**: 内部エージェントロール名（architect/researcher/COO/secretary等）、`/weekly-review`のような公開版に存在しないコマンド名、`/health`等の内部専用スキル名、`workspaces/`配下の内部パス参照。公開版で完結する一般的な表現に留める（実事故: 2026-08-04、`resume_condition`機能の公開同期直前にreviewerが4件発見。詳細は`content/reviews/2026-08-04_review-public-repo-resume-condition.md`）
