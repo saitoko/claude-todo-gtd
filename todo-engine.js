@@ -68,6 +68,7 @@ const MESSAGES = {
     'list.stale': '30日更新なし（停滞）',
     'list.overdue': '期限超過',
     'list.this_week': '今週期限',
+    'list.excluded_someday_projects': '（休止中（someday）のプロジェクト {n}件を除外）',
     // weeklySummary
     'weekly.header': '## 📋 週次レビュー サマリー',
     'weekly.current_status': '**現在のタスク状況:**',
@@ -346,6 +347,7 @@ const MESSAGES = {
     'link.unlinked': '✅ #{num} のプロジェクト紐付けを解除しました。',
     'audit.no_projects': '## 📁 プロジェクト棚卸し（0件）\n\nプロジェクトがありません。',
     'audit.header': '## 📁 プロジェクト棚卸し（全{n}件）',
+    'audit.paused_excluded': '（休止中（someday）のプロジェクト {n}件を除外）',
     'audit.verdict_stale_no_next': '⚠️ nextなし / 30日更新なし（停滞）',
     'audit.suggestion': '  → 対応候補: /todo next <タイトル> --project {n} / /todo move {n} someday / /todo close {n}',
     'audit.verdict_no_next': '⚠️ next欠落',
@@ -417,6 +419,7 @@ const MESSAGES = {
     'list.stale': '30 days no update (stale)',
     'list.overdue': 'Overdue',
     'list.this_week': 'Due this week',
+    'list.excluded_someday_projects': '(Excluded {n} paused (someday) project(s))',
     'weekly.header': '## 📋 Weekly Review Summary',
     'weekly.current_status': '**Current task status:**',
     'weekly.no_overdue': '✅ No overdue tasks',
@@ -689,6 +692,7 @@ const MESSAGES = {
     'link.unlinked': '✅ #{num} project link removed.',
     'audit.no_projects': '## 📁 Project Inventory (0)\n\nNo projects.',
     'audit.header': '## 📁 Project Inventory ({n} total)',
+    'audit.paused_excluded': '(Excluded {n} paused (someday) project(s))',
     'audit.verdict_stale_no_next': '⚠️ No next / no update in 30 days (stale)',
     'audit.suggestion': '  → Suggested actions: /todo next <title> --project {n} / /todo move {n} someday / /todo close {n}',
     'audit.verdict_no_next': '⚠️ Missing next',
@@ -1461,10 +1465,26 @@ function listAll() {
     filtered = filtered.filter(i => (i.body||'').includes(projTag));
   }
 
+  // 「/todo list project」（filterGtd === 'project'）は 🌈 someday を併せ持つ project を
+  // 「休止中」として除外する（#1846: move <n> someday しても project ラベルは残る設計のため、
+  //  消費側であるここで除外する。除外件数は黙って減らさず利用者に明示する）
+  let excludedSomedayProjectCount = 0;
+  if (filterGtd === PROJECT_LABEL) {
+    const before = filtered.length;
+    filtered = filtered.filter(i => !getLnames(i).includes('someday'));
+    excludedSomedayProjectCount = before - filtered.length;
+  }
+  const writeExcludedNote = () => {
+    if (excludedSomedayProjectCount > 0) {
+      w(tpl('list.excluded_someday_projects', { n: excludedSomedayProjectCount })+'\n');
+    }
+  };
+
   // --no-due → 期限未設定のタスクだけフラットリストで返す（--group より優先）
   if (noDue) {
     filtered = filtered.filter(i => !/(^|\n)due: \d{4}-\d{2}-\d{2}/.test(i.body||''));
     filtered.sort(sortByPriDue);
+    writeExcludedNote();
     if (!filtered.length) { w(t('list.no_match')+'\n'); return; }
     for (const issue of filtered) { w(renderIssueList(issue, today)+'\n'); }
     return;
@@ -1474,6 +1494,7 @@ function listAll() {
   if (noEstimate) {
     filtered = filtered.filter(i => !/(^|\n)estimate: \S+/.test(i.body||''));
     filtered.sort(sortByPriDue);
+    writeExcludedNote();
     if (!filtered.length) { w(t('list.no_match')+'\n'); return; }
     for (const issue of filtered) { w(renderIssueList(issue, today)+'\n'); }
     return;
@@ -1481,6 +1502,7 @@ function listAll() {
 
   // フィルタ指定あり かつ --group → 期限別グルーピング
   if ((filterGtd || filterCtx || filterTag || filterPri || filterProj) && groupByDue) {
+    writeExcludedNote();
     if (!filtered.length) { w(t('list.no_match')+'\n'); return; }
     listGroupedByDue(filtered, today);
     return;
@@ -1493,6 +1515,7 @@ function listAll() {
     } else {
       filtered.sort(sortByPriDue);
     }
+    writeExcludedNote();
     if (!filtered.length) { w(t('list.no_match')+'\n'); return; }
     for (const issue of filtered) { w(renderIssueList(issue, today)+'\n'); }
     return;
@@ -1533,7 +1556,11 @@ function listAll() {
   }
 
   // プロジェクトセクション（独立表示）
-  const projItems = grouped[PROJECT_LABEL];
+  // 🌈 someday を併せ持つ project は「休止中」として除外する（#1846: list project /
+  // weekly-project-audit と同じ扱いに揃える。除外件数は黙って減らさず明示する）
+  const allProjItems = grouped[PROJECT_LABEL];
+  const projItems = allProjItems.filter(i => !getLnames(i).includes('someday'));
+  const pausedProjCount = allProjItems.length - projItems.length;
   let noNextCount = 0, staleCount = 0;
   const projStats = projItems.map(issue => {
     const projTag = 'project: #'+issue.number;
@@ -1558,6 +1585,7 @@ function listAll() {
     projHeader = tpl('project.header_count', { n: cnt(projItems.length), badges: badges.length ? '  ' + badges.join(' / ') : '' });
   }
   w(projHeader+'\n');
+  if (pausedProjCount > 0) w(tpl('list.excluded_someday_projects', { n: pausedProjCount })+'\n');
   if (!projItems.length) {
     w('  '+t('list.none')+'\n');
   } else {
@@ -1585,9 +1613,10 @@ function listAll() {
   w('\n');
 
   // サマリー
+  // project件数は上のプロジェクトセクション表示（休止中除外後）と一致させる
   const counts = {};
   GTD_LABELS.forEach(l => counts[l] = grouped[l].length);
-  counts[PROJECT_LABEL] = grouped[PROJECT_LABEL].length;
+  counts[PROJECT_LABEL] = projItems.length;
   let overdue = 0, thisWeek = 0;
   const d7 = new Date(today); d7.setDate(d7.getDate()+7);
   const d7str = d7.toISOString().slice(0,10);
@@ -3289,6 +3318,14 @@ async function runList(octokit, owner, repo, tokens) {
   const allIssues = await fetchAllOpen(octokit, owner, repo);
 
   // --json モード: フィルタ後に JSON 配列を出力
+  // #1846: 人間向けの list project は「休止中」（🌈 someday 併記）の project を除外するが、
+  // --json はあえて除外しない。JSON は他プログラムが消費する機械可読インターフェースであり、
+  // どの Issue を「表示しないか」は UI の関心事（人間の注意を節約する）であって、
+  // データそのものを間引く理由にはならない。各要素の `labels` フィールドに既に
+  // 'project' と 'someday' の両方が含まれるため、休止中判定は
+  // `labels.includes('someday')` で消費側が自分で行える（新規フィールド追加は不要）。
+  // 000-partner 内・claude-todo-gtd 系リポジトリを検索した限り `list project --json` の
+  // 既存消費者は見つからなかった（後方互換の実害なし）。
   if (jsonMode) {
     let filtered = allIssues;
     if (filterGtd) filtered = filtered.filter(i => i.labels.map(l => normLabel(l.name)).includes(filterGtd));
@@ -4697,17 +4734,29 @@ async function runWeeklyProjectAudit(octokit, owner, repo) {
   const allIssues = await fetchAllOpen(octokit, owner, repo);
 
   // 📁 project ラベルを持つ Issue を抽出
-  const projects = allIssues.filter(i => {
+  const allProjectIssues = allIssues.filter(i => {
     const lnames = (i.labels || []).map(l => l.name || l);
     return lnames.some(l => normLabel(l) === PROJECT_LABEL);
   });
 
+  // 🌈 someday を併せ持つ project は「休止中」として棚卸し対象から除外する
+  // （#1846: move <n> someday で project ラベルは剥がれず二重ラベルのまま残る設計のため、
+  //  消費側であるここで除外する。move 側の挙動は変更しない）
+  const projects = allProjectIssues.filter(i => {
+    const lnames = (i.labels || []).map(l => l.name || l);
+    return !lnames.some(l => normLabel(l) === 'someday');
+  });
+  const pausedCount = allProjectIssues.length - projects.length;
+
   if (!projects.length) {
     runOut(t('audit.no_projects'));
+    if (pausedCount > 0) runOut(tpl('audit.paused_excluded', { n: pausedCount }));
     return;
   }
 
-  runOut(tpl('audit.header', { n: projects.length })+'\n');
+  runOut(tpl('audit.header', { n: projects.length }));
+  if (pausedCount > 0) runOut(tpl('audit.paused_excluded', { n: pausedCount }));
+  runOut('');
 
   let reviewedCount = 0;
   for (let idx = 0; idx < projects.length; idx++) {
