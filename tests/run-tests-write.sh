@@ -1449,6 +1449,55 @@ assert_eq "W17-9 runEdit リグレッション: issues.update 呼び出し1回" 
 rm -f "$W17_9_LOG"
 
 # ──────────────────────────────────────────
+# §W19 estimate 時間単位表示の --json 出力（Issue #1854）
+# 修正前は formatTime(parseInt(estimate)) だったため、"2h" が「2」に切り詰められ
+# estimateFormatted が誤った値（"2m"）になっていた。--json は list-all の OPEN_ENV 経路とは別に
+# octokit 経由（issueToJsonObj / runShow の jsonMode 分岐）で estimateFormatted を算出するため、
+# 別途 octokit スタブでの検証が必要。
+# ──────────────────────────────────────────
+
+# W19-1: run list --json（issueToJsonObj 経由）
+W1854_1_LOG=$(mktemp /tmp/todo-test-w1854-1-XXXXXX.jsonl)
+W1854_1_LIST='[
+  {"number":40101,"title":"est-2h","updated_at":"2026-04-01T00:00:00Z","body":"estimate: 2h","labels":[{"name":"🎯 next"}]},
+  {"number":40102,"title":"est-1h30m","updated_at":"2026-04-01T00:00:00Z","body":"estimate: 1h30m","labels":[{"name":"🎯 next"}]},
+  {"number":40103,"title":"est-60","updated_at":"2026-04-01T00:00:00Z","body":"estimate: 60","labels":[{"name":"🎯 next"}]},
+  {"number":40104,"title":"est-invalid","updated_at":"2026-04-01T00:00:00Z","body":"estimate: abc","labels":[{"name":"🎯 next"}]}
+]'
+W1854_1_RESP="{\"issues.listForRepo\":[{\"data\":$W1854_1_LIST}]}"
+W1854_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1854_1_RESP" OCTOKIT_STUB_LOG_ENV="$W1854_1_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run list next --json 2>&1); W1854_1_EC=$?
+assert_exit_ok "W19-1 list next --json(#1854): exit 0" "$W1854_1_EC"
+assert_contains "W19-1: estimate:2h の estimateFormatted は 2h（従来は2mだった）" '"estimateFormatted": "2h"' "$W1854_1_OUT"
+assert_contains "W19-1: estimate:1h30m の estimateFormatted は 1h30m" '"estimateFormatted": "1h30m"' "$W1854_1_OUT"
+assert_contains "W19-1: estimate:60（数値のみ）の estimateFormatted は 1h" '"estimateFormatted": "1h"' "$W1854_1_OUT"
+assert_contains "W19-1: estimate:abc（不正値）の estimate 生値は保持される" '"estimate": "abc"' "$W1854_1_OUT"
+assert_contains "W19-1: estimate:abc（不正値）の estimateFormatted は null（0mと黙って出さない）" '"estimateFormatted": null' "$W1854_1_OUT"
+rm -f "$W1854_1_LOG"
+
+# W19-2: run show <#> --json（runShow の jsonMode 分岐経由。issueToJsonObj とは別のコードパス）
+W1854_2_LOG=$(mktemp /tmp/todo-test-w1854-2-XXXXXX.jsonl)
+W1854_2_RESP='{"issues.get":[{"data":{"number":40201,"id":940201,"title":"est-2h-show","body":"estimate: 2h","labels":[{"name":"🎯 next"}]}}]}'
+W1854_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1854_2_RESP" OCTOKIT_STUB_LOG_ENV="$W1854_2_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run show 40201 --json 2>&1); W1854_2_EC=$?
+assert_exit_ok "W19-2 show --json(#1854): exit 0" "$W1854_2_EC"
+assert_contains "W19-2: show --json estimate:2h の estimateFormatted は 2h（従来は2mだった）" '"estimateFormatted": "2h"' "$W1854_2_OUT"
+rm -f "$W1854_2_LOG"
+
+# W19-3: run show <#>（非json）の見積もり表示。不正値は「（形式不正）」を添えて表示する
+W1854_3_LOG=$(mktemp /tmp/todo-test-w1854-3-XXXXXX.jsonl)
+W1854_3_RESP='{"issues.get":[{"data":{"number":40301,"id":940301,"title":"est-invalid-show","body":"estimate: abc","labels":[{"name":"🎯 next"}]}}]}'
+W1854_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1854_3_RESP" OCTOKIT_STUB_LOG_ENV="$W1854_3_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run show 40301 2>&1); W1854_3_EC=$?
+assert_exit_ok "W19-3 show（非json）(#1854): exit 0" "$W1854_3_EC"
+assert_contains "W19-3: show（非json）estimate:abc（不正値）は「形式不正」表示になる" "abc" "$W1854_3_OUT"
+assert_not_contains "W19-3: show（非json）estimate:abc（不正値）は 0m と黙って表示されない" "0m" "$W1854_3_OUT"
+rm -f "$W1854_3_LOG"
+
+# ──────────────────────────────────────────
 # 結果サマリー（run-tests.sh から集計加算するための機械可読な行）
 # ──────────────────────────────────────────
 echo ""

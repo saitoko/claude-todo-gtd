@@ -1130,6 +1130,38 @@ assert_contains "engine: renderIssueList estimate表示" "1h30m" "$RENDER_OUT"
 assert_contains "engine: renderIssueList ctx表示" "@PC" "$RENDER_OUT"
 assert_contains "engine: renderIssueList due表示" "2026-04-10" "$RENDER_OUT"
 
+# ──────────────────────────────────────────
+# #1854: renderIssueList の estimate 時間単位表示（2h/1h/30m/1h30m/60/不正値）
+# 修正前は `/^estimate: (\d+)/m` で先頭の数字だけを切り出した上で parseInt() していたため、
+# "2h" が "2" として抽出され "⏱2m" のように 60〜120倍誤った値が表示されていた。
+# ──────────────────────────────────────────
+EST1854_MOCK='[
+  {"number":101,"title":"est-2h","body":"estimate: 2h","labels":[{"name":"🎯 next"},{"name":"p3"}]},
+  {"number":102,"title":"est-1h","body":"estimate: 1h","labels":[{"name":"🎯 next"},{"name":"p3"}]},
+  {"number":103,"title":"est-30m","body":"estimate: 30m","labels":[{"name":"🎯 next"},{"name":"p3"}]},
+  {"number":104,"title":"est-1h30m","body":"estimate: 1h30m","labels":[{"name":"🎯 next"},{"name":"p3"}]},
+  {"number":105,"title":"est-60","body":"estimate: 60","labels":[{"name":"🎯 next"},{"name":"p3"}]},
+  {"number":106,"title":"est-invalid","body":"estimate: abc","labels":[{"name":"🎯 next"},{"name":"p3"}]}
+]'
+EST1854_OUT=$(OPEN_ENV="$EST1854_MOCK" TODAY_ENV="$TEST_TODAY" FILTER_GTD_ENV="next" node "$ENGINE" list-all)
+EST1854_LINE_101=$(printf '%s\n' "$EST1854_OUT" | grep '#101')
+EST1854_LINE_102=$(printf '%s\n' "$EST1854_OUT" | grep '#102')
+EST1854_LINE_103=$(printf '%s\n' "$EST1854_OUT" | grep '#103')
+EST1854_LINE_104=$(printf '%s\n' "$EST1854_OUT" | grep '#104')
+EST1854_LINE_105=$(printf '%s\n' "$EST1854_OUT" | grep '#105')
+EST1854_LINE_106=$(printf '%s\n' "$EST1854_OUT" | grep '#106')
+assert_contains "#1854 list: estimate:2h → ⏱2h（従来は⏱2mだった）" "⏱2h" "$EST1854_LINE_101"
+assert_not_contains "#1854 list: estimate:2h は ⏱2m と表示されない" "⏱2m" "$EST1854_LINE_101"
+assert_contains "#1854 list: estimate:1h → ⏱1h（従来は⏱1mだった）" "⏱1h" "$EST1854_LINE_102"
+assert_not_contains "#1854 list: estimate:1h は ⏱1m と表示されない" "⏱1m" "$EST1854_LINE_102"
+assert_contains "#1854 list: estimate:30m → ⏱30m" "⏱30m" "$EST1854_LINE_103"
+assert_contains "#1854 list: estimate:1h30m → ⏱1h30m" "⏱1h30m" "$EST1854_LINE_104"
+# formatTime(60) は「1h0m」ではなく「1h」を返す仕様（60分ちょうどは分表記を省略する）。
+# 60分という値自体は数値のみ形式でも parseTime() 経由で正しく60分として扱われることの確認。
+assert_contains "#1854 list: estimate:60（数値のみ）→ ⏱1h（60分は仕様上 1h と表示される）" "⏱1h" "$EST1854_LINE_105"
+assert_contains "#1854 list: estimate:abc（不正値）は ⚠️ 付きで生値を表示する" "⏱⚠️abc" "$EST1854_LINE_106"
+assert_not_contains "#1854 list: estimate:abc（不正値）は ⏱0m と黙って表示されない" "⏱0m" "$EST1854_LINE_106"
+
 # listSummary テスト
 LSUM_OUT=$(OPEN_ENV="$LIST_MOCK" TODAY_ENV="$TEST_TODAY" node "$ENGINE" list-summary)
 assert_contains "engine: list-summary next" "next: 2件" "$LSUM_OUT"
