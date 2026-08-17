@@ -138,11 +138,18 @@ if [[ "$OSTYPE" == "darwin"* ]] && [[ $_TODO_EXIT -eq 0 ]] && [[ "${1:-}" == "ad
   _DUE_DATE="${_DUE_VAL:-$TODAY}"
   _DUE_DATE_STR=$(date -j -f "%Y-%m-%d %H:%M" "$_DUE_DATE $_REMIND_TIME" "+%m/%d/%Y %H:%M:%S" 2>/dev/null)
   if [[ -n "$_REMINDER_TITLE" ]] && [[ -n "$_DUE_DATE_STR" ]]; then
+    # AppleScript の文字列リテラルへ埋め込む前にエスケープする（#1825）。
+    # 案A採用によりタイトルの丸括弧・二重引用符・バックスラッシュ許可を解禁したため、
+    # ヒアドキュメント埋め込み側でエスケープしないと AppleScript の文字列リテラルが壊れる。
+    # 順序が重要: 先にバックスラッシュを二重化し、その後に二重引用符をエスケープする
+    # （逆順だとエスケープ後に増えたバックスラッシュを再度エスケープしてしまう）。
+    _REMINDER_TITLE_ESC="${_REMINDER_TITLE//\\/\\\\}"
+    _REMINDER_TITLE_ESC="${_REMINDER_TITLE_ESC//\"/\\\"}"
     osascript <<APPLESCRIPT 2>/dev/null
 tell application "Reminders"
   set dueDate to date "$_DUE_DATE_STR"
   set newReminder to make new reminder at end of default list
-  set name of newReminder to "$_REMINDER_TITLE"
+  set name of newReminder to "$_REMINDER_TITLE_ESC"
   set due date of newReminder to dueDate
   set remind me date of newReminder to dueDate
 end tell
