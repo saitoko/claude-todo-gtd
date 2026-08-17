@@ -3760,6 +3760,99 @@ assert_exit_fail "T-27b: en版 401検知 → exit 1" "$T27B_EC"
 assert_contains "T-27b: en版 error.gh_auth_rejected" "GitHub API authentication was rejected (401)" "$T27B_OUT"
 
 # ──────────────────────────────────────────
+# Issue #1825: todo CLI タイトルに丸括弧が使えない制約を見直す（validateTitle 新設・案A）
+# タイトルは Octokit 経由の HTTP API にのみ渡り、シェル展開を一切経由しない
+# （grep実測: execSync/spawnSync/execFileSync/child_process は0ヒット）ため、
+# FORBIDDEN_CHARS によるシェル危険文字禁止は過剰だった。validateTitle は
+# 改行等の制御文字（Unicode Cc カテゴリ）のみを禁止し、丸括弧を含む記号は全許可する。
+# 一方 template/view の「名前」は process.env.TNAME_ENV/VNAME_ENV に入り、
+# todo.sh 側でシェル変数として扱われうるため validateName（FORBIDDEN_CHARS）を維持する。
+# ──────────────────────────────────────────
+echo ""
+echo "▶ Issue #1825: タイトル丸括弧許可（validateTitle 新設）"
+
+# すべて OCTOKIT_STUB_ENV 経由（Octokit注入シーム）で実行し、本番 GitHub には接続しない。
+
+# 1825-1: validate title — 丸括弧を含むタイトルが通過する
+node "$ENGINE" validate title "タイトル（丸括弧あり）(parens)" >/dev/null 2>&1
+assert_exit_ok "1825-1: validate title は丸括弧を含むタイトルを許可する" "$?"
+
+# 1825-2: validate title — シェル危険文字（; $ ` ( ) " ' \ | & > < { }）を全て含んでも通過する（案A: 全記号許可）
+node "$ENGINE" validate title 'test; $HOME `evil` "quote" '"'"'squote'"'"' \ | & > < { }' >/dev/null 2>&1
+assert_exit_ok "1825-2: validate title は全ての記号を許可する（シェル非経由のため）" "$?"
+
+# 1825-3: validate title — 空文字は引き続きエラー
+node "$ENGINE" validate title "" >/dev/null 2>&1
+assert_exit_fail "1825-3: validate title は空文字を拒否する" "$?"
+
+# 1825-4: validate title — 改行を含むタイトルは拒否される（新設の制御文字禁止）
+NEWLINE_TITLE=$(printf 'line1\nline2')
+TITLE_NL_OUT=$(LANG_ENV=ja node "$ENGINE" validate title "$NEWLINE_TITLE" 2>&1); TITLE_NL_EC=$?
+assert_exit_fail "1825-4: validate title は改行を含むタイトルを拒否する" "$TITLE_NL_EC"
+assert_contains "1825-4: エラーメッセージが制御文字禁止を示す（日本語）" "制御文字" "$TITLE_NL_OUT"
+
+# 1825-5: validate title — CR を含むタイトルも拒否される
+CR_TITLE=$(printf 'line1\rline2')
+node "$ENGINE" validate title "$CR_TITLE" >/dev/null 2>&1
+assert_exit_fail "1825-5: validate title は CR を含むタイトルを拒否する" "$?"
+
+# 1825-6: validate title — LANG_ENV=en でも制御文字エラーメッセージが出る
+TITLE_NL_EN_OUT=$(LANG_ENV=en node "$ENGINE" validate title "$NEWLINE_TITLE" 2>&1)
+assert_contains "1825-6: en版 制御文字エラーメッセージ" "control characters" "$TITLE_NL_EN_OUT"
+
+# 1825-7: リグレッション — validate name（template/view 名用）は丸括弧を引き続き拒否する
+node "$ENGINE" validate name "name(paren)" >/dev/null 2>&1
+assert_exit_fail "1825-7: validate name は丸括弧を含む名前を引き続き拒否する（リグレッション防止）" "$?"
+
+# 1825-8: リグレッション — validate name は引き続きダブルクォート・バックスラッシュも拒否する
+node "$ENGINE" validate name 'name"quote' >/dev/null 2>&1
+assert_exit_fail "1825-8a: validate name はダブルクォートを含む名前を引き続き拒否する" "$?"
+node "$ENGINE" validate name 'name\backslash' >/dev/null 2>&1
+assert_exit_fail "1825-8b: validate name はバックスラッシュを含む名前を引き続き拒否する" "$?"
+
+# 1825-9: run template save — 丸括弧を含む名前は引き続き拒否される（validateName 経由）
+# validateName は runTemplate 内で API 呼び出しより前に実行されるため、
+# OCTOKIT_STUB_ENV は未設定でも安全（Octokit初期化はされるがメソッド呼び出しには到達しない）。
+TPL_PAREN_OUT=$(TODO_REPO_OWNER=test TODO_REPO_NAME=test OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" \
+  node "$ENGINE" run template save "name(paren)" next 2>&1); TPL_PAREN_EC=$?
+assert_exit_fail "1825-9: run template save は丸括弧を含む名前を拒否する（リグレッション防止）" "$TPL_PAREN_EC"
+
+# 1825-10: run view save — 丸括弧を含む名前は引き続き拒否される（validateName 経由）
+VIEW_PAREN_OUT=$(TODO_REPO_OWNER=test TODO_REPO_NAME=test OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" \
+  node "$ENGINE" run view save "name(paren)" next 2>&1); VIEW_PAREN_EC=$?
+assert_exit_fail "1825-10: run view save は丸括弧を含む名前を拒否する（リグレッション防止）" "$VIEW_PAREN_EC"
+
+# 1825-11: run template show — 丸括弧を含む名前は引き続き拒否される（validateName 経由）
+TPL_SHOW_PAREN_OUT=$(TODO_REPO_OWNER=test TODO_REPO_NAME=test OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" \
+  node "$ENGINE" run template show "name(paren)" 2>&1); TPL_SHOW_PAREN_EC=$?
+assert_exit_fail "1825-11: run template show は丸括弧を含む名前を拒否する（リグレッション防止）" "$TPL_SHOW_PAREN_EC"
+
+# 1825-12: run add — 丸括弧を含むタイトルで Issue 作成が成功する（Octokit スタブ経由）
+ADD_PAREN_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{}],"issues.create":[{"data":{"number":9101,"html_url":"https://example.com/9101"}}]}'
+ADD_PAREN_OUT=$(TODO_REPO_OWNER=test TODO_REPO_NAME=test OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" OCTOKIT_STUB_RESPONSES_ENV="$ADD_PAREN_RESP" \
+  node "$ENGINE" run add next "タイトル（丸括弧）(parens)" 2>&1); ADD_PAREN_EC=$?
+assert_exit_ok "1825-12: run add は丸括弧を含むタイトルで成功する" "$ADD_PAREN_EC"
+assert_contains "1825-12: Issue #9101 作成メッセージが出力される" "9101" "$ADD_PAREN_OUT"
+assert_contains "1825-12: 作成メッセージにタイトルの丸括弧がそのまま含まれる" "(parens)" "$ADD_PAREN_OUT"
+
+# 1825-13: run add — 引用符・バックスラッシュ・\$記号を含むタイトルでも成功する（案A: 全記号許可）
+ADD_SYM_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{}],"issues.create":[{"data":{"number":9102,"html_url":"https://example.com/9102"}}]}'
+ADD_SYM_OUT=$(TODO_REPO_OWNER=test TODO_REPO_NAME=test OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" OCTOKIT_STUB_RESPONSES_ENV="$ADD_SYM_RESP" \
+  node "$ENGINE" run add next 'quote " backslash \ dollar $HOME' 2>&1); ADD_SYM_EC=$?
+assert_exit_ok "1825-13: run add は引用符・バックスラッシュ・\$記号を含むタイトルで成功する" "$ADD_SYM_EC"
+
+# 1825-14: run rename — 丸括弧を含む新タイトルへの変更が成功する（Octokit スタブ経由）
+RENAME_PAREN_RESP='{"issues.update":[{"data":{}}]}'
+RENAME_PAREN_OUT=$(TODO_REPO_OWNER=test TODO_REPO_NAME=test OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" OCTOKIT_STUB_RESPONSES_ENV="$RENAME_PAREN_RESP" \
+  node "$ENGINE" run rename 9001 "新タイトル（括弧付き）" 2>&1); RENAME_PAREN_EC=$?
+assert_exit_ok "1825-14: run rename は丸括弧を含む新タイトルで成功する" "$RENAME_PAREN_EC"
+
+# 1825-15: run rename — 改行を含む新タイトルは拒否される（validateTitle の制御文字禁止が rename にも適用される）
+RENAME_NL_OUT=$(TODO_REPO_OWNER=test TODO_REPO_NAME=test OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" \
+  node "$ENGINE" run rename 9001 "$NEWLINE_TITLE" 2>&1); RENAME_NL_EC=$?
+assert_exit_fail "1825-15: run rename は改行を含む新タイトルを拒否する" "$RENAME_NL_EC"
+
+# ──────────────────────────────────────────
 # §42  JST日付変換 — closedAt/updatedAt のUTCズレ修正（Issue #1748）
 # closed_at/updated_at はGitHub APIがUTC（末尾Z）で返す。従来は `.slice(0,10)` で
 # そのままUTC日付として扱っていたため、JST 0〜9時台に完了したタスクが前日扱いに

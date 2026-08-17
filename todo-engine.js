@@ -48,6 +48,7 @@ const MESSAGES = {
     'error.desc_required': 'エラー: 説明テキストが必要です',
     'error.view_ctx_multiple': 'エラー: view save では @ctx は1つのみ指定できます',
     'error.resume_condition_newline': 'エラー: resume_condition に改行を含めることはできません（1行のみ）',
+    'error.title_control_char': 'エラー: タイトルに制御文字（改行等）を含めることはできません',
     // 警告
     'warn.month_rollover': '⚠️ 注意: {day}日は翌月に存在しないため、{date} に繰り上がりました',
     'warn.month_day_clamped': '⚠️ 注意: {month}月に{day}日は存在しないため、{date} にクランプされました',
@@ -403,6 +404,7 @@ const MESSAGES = {
     'error.desc_required': 'Error: Description text is required',
     'error.view_ctx_multiple': 'Error: view save allows only one @ctx',
     'error.resume_condition_newline': 'Error: resume_condition must not contain line breaks (single line only)',
+    'error.title_control_char': 'Error: Title must not contain control characters (e.g. line breaks)',
     'warn.month_rollover': '⚠️ Note: Day {day} does not exist in the next month, rolled to {date}',
     'warn.month_day_clamped': '⚠️ Note: Day {day} does not exist in month {month}, clamped to {date}',
     'section.next': '## ✅ Next Actions',
@@ -1285,6 +1287,24 @@ function validateName(value) {
 function validateResumeCondition(value) {
   if (/[\r\n]/.test(value)) {
     process.stderr.write(t('error.resume_condition_newline')+'\n');
+    process.exit(1);
+  }
+}
+
+// Issue タイトル用バリデーション（#1825 案A）。
+// タイトルは Octokit 経由の HTTP API にのみ渡り、シェル展開を経由しないため
+// FORBIDDEN_CHARS（; $ ` ( ) " ' \ | & > < { }）による禁止は過剰。
+// 唯一の実害経路は todo.sh の --remind（AppleScript ヒアドキュメント）だが、
+// そちらは todo.sh 側でエスケープして対処する（本バリデーションでは扱わない）。
+// ここでは、行プレフィックス解析・表示崩れの原因になる制御文字（改行・タブ等、
+// Unicode Cc カテゴリ）のみを禁止し、丸括弧を含むそれ以外の記号は全て許可する。
+function validateTitle(value) {
+  if (!value) {
+    process.stderr.write(t('error.name_empty')+'\n');
+    process.exit(1);
+  }
+  if (/\p{Cc}/u.test(value)) {
+    process.stderr.write(t('error.title_control_char')+'\n');
     process.exit(1);
   }
 }
@@ -2811,6 +2831,7 @@ switch (cmd) {
       case 'color':     validateColor(args[2]); break;
       case 'priority':  validatePriority(args[2]); break;
       case 'name':      validateName(args[2]); break;
+      case 'title':     validateTitle(args[2]); break;
       case 'time': {
         const v = parseTime(args[2]);
         if (v === null || v <= 0) { process.stderr.write(t('error.time_format')+'\n'); process.exit(1); }
@@ -3127,7 +3148,7 @@ async function runAdd(octokit, owner, repo, tokens) {
     process.stderr.write(t('error.title_empty')+'\n'); process.exit(1);
   }
   const title = titleTokens.join(' ');
-  validateName(title);
+  validateTitle(title);
 
   // Outcome 警告（project タスクの場合）。日本語の「outcome」語尾パターンに加え、
   // 英語タイトル向けの outcome 表現パターンも判定する（Issue #1761 C2）。
@@ -3867,7 +3888,7 @@ async function runRename(octokit, owner, repo, tokens) {
   const num = parseInt(tokens[0]);
   const newTitle = tokens.slice(1).join(' ');
   if (!num || !newTitle) { process.stderr.write('Usage: run rename <number> <new-title>\n'); process.exit(1); }
-  validateNumber(String(num)); validateName(newTitle);
+  validateNumber(String(num)); validateTitle(newTitle);
   await octokit.issues.update({ owner, repo, issue_number: num, title: newTitle });
   runOut(tpl('rename.done', { num, title: newTitle }));
 }
@@ -4727,7 +4748,7 @@ async function runPromoteProject(octokit, owner, repo, tokens) {
   const outcomeIdx = tokens.indexOf('--outcome');
   if (outcomeIdx !== -1 && tokens[outcomeIdx+1]) {
     newTitle = tokens[outcomeIdx+1];
-    validateName(newTitle);
+    validateTitle(newTitle);
     await octokit.issues.update({ owner, repo, issue_number: num, title: newTitle });
   }
 

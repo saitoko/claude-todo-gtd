@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- タイトルに丸括弧 `()` 等の記号が使えない制約を緩和（Issue #1825）。従来、Issue タイトル（`/todo add` / `/todo rename` / `/todo promote-project --outcome`）はシェル注入対策の `validateName`（`; $ \` ( ) " ' \ | & > < { }` を禁止）を経由していたが、タイトルは Octokit 経由の HTTP API にのみ渡りシェル展開を一切経由しないため、この禁止は過剰だった（grep実測: `todo-engine.js` 内で `execSync`/`spawnSync`/`execFileSync`/`child_process` は0ヒット）。タイトル専用の `validateTitle` を新設し、改行等の制御文字（Unicode `Cc` カテゴリ）のみを禁止するよう緩和した。テンプレート名・ビュー名（`process.env.TNAME_ENV`/`VNAME_ENV` 経由でシェル変数として扱われうる）は引き続き `validateName` を使用し、シェル危険文字を禁止し続ける
+- `todo.sh` の `--remind`（macOS Reminders 連携）で、AppleScript ヒアドキュメントへ埋め込む前にタイトルをエスケープするよう変更（Issue #1825）。上記のタイトル許可緩和により `"` や `\` を含むタイトルが通るようになったため、エスケープなしでは AppleScript の文字列リテラルが破損する。Reminders 登録完了メッセージ（stdout）にはエスケープ前の元タイトルを表示する
+
 ### Fixed
 
 - `/todo list` の見積もり表示（`⏱`）が、`estimate:` に時間単位（`h`）が付いた値（例: `2h`）を正しく解釈できず、`2h` が `⏱2m` のように60〜120倍誤って表示される問題を修正（Issue #1854）。原因は、単位付き文字列を分へ変換する `parseTime()` が既に存在するのに、表示側の各所（`list` / `today` / `dashboard` / `report` の集計、`--json` の `estimateFormatted` を含む）が値抽出とパースの両方で `parseInt()` ベースの経路（正規表現 `/^estimate: (\d+)/m` で先頭の数字だけを切り出す）を使っていたため。抽出を `\S+`（値全体）に広げた上で `parseTime()` に統一し、「数値のみ」「`Nh`」「`Nm`」「`NhMm`」のいずれの保存形式でも正しく分へ変換されるようにした。`actual:` フィールドの集計（`report` コマンドの見積 vs 実績）にも同型の問題があったため合わせて修正した。`parseTime()` が解釈できない不正な形式（例: `estimate: abc`）は、従来 `⏱0m` と黙って表示されていたのを、`⏱⚠️abc` のように生値付きの警告表示に変更した（`show`（非JSON）は「（形式不正）」を添えて表示、`--json` の `estimateFormatted` は `null` を返す）
