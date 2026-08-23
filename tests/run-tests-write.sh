@@ -1311,6 +1311,64 @@ run_stub_en "{\"issues.listForRepo\":[{\"data\":$W16_20_LIST}],\"issues.get\":[{
 assert_contains "W16-20b migrate 本実行(en): complete" "migrate sub-issue complete: 1 registered / 0 skipped / 0 errors" "$LAST_OUT"
 assert_no_japanese "W16-20b migrate 本実行(en): 出力に日本語が含まれない" "$LAST_OUT"
 
+# ──────────────────────────────────────────
+# §W20  runMigrateSubIssue の sub_issue_id 正当性・422判別（Issue #1879）
+# 症状: fetchAllOpen が id を返さず sub_issue_id:undefined で POST していた（欠陥1）。
+# かつ 422 を無条件に「既登録」と誤判定していた（欠陥2）。
+# 以下は「意図的破壊」で有効性を検証済み（COO完了報告に破壊時の FAIL 結果を記載）。
+# ──────────────────────────────────────────
+echo ""
+echo "§W20  runMigrateSubIssue の sub_issue_id 正当性・422判別（Issue #1879）"
+
+# #1879-1: fetchAllOpen が返す id が POST の sub_issue_id にそのまま伝播すること
+#   （fetchAllOpen の map から id を外すとこのテストは FAIL する＝欠陥1の回帰検知）
+W1879_1_CHILD='{"number":31900,"id":931900,"title":"child","body":"project: #31901\n","labels":[]}'
+W1879_1_PARENT='{"number":31901,"labels":[{"name":"📁 project"}]}'
+W1879_1_LOG=$(mktemp /tmp/todo-test-1879-1-XXXXXX.jsonl)
+: > "$W1879_1_LOG"
+W1879_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W1879_1_LOG" \
+  OCTOKIT_STUB_RESPONSES_ENV="{\"issues.listForRepo\":[{\"data\":[$W1879_1_CHILD]}],\"issues.get\":[{\"data\":$W1879_1_PARENT}],\"POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{}]}" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run migrate sub-issue 2>&1); W1879_1_EC=$?
+assert_exit_ok "#1879-1 migrate 本実行: exit 0" "$W1879_1_EC"
+assert_contains "#1879-1 migrate: サマリーは1件登録" "✅ migrate sub-issue 完了: 1件登録 / 0件スキップ / 0件エラー" "$W1879_1_OUT"
+assert_contains "#1879-1 migrate: POST の sub_issue_id が fetchAllOpen の id(931900)と一致（undefinedでない）" \
+  "\"sub_issue_id\":931900" "$(log_lines_for_method "$W1879_1_LOG" 'POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues')"
+assert_not_contains "#1879-1 migrate: POST の sub_issue_id が undefined でない" \
+  '"sub_issue_id":null' "$(log_lines_for_method "$W1879_1_LOG" 'POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues')"
+rm -f "$W1879_1_LOG"
+
+# #1879-2: 422 かつ listSubIssues に本当に登録済み → 冪等スキップ（従来動作の維持確認）
+W1879_2_CHILD='{"number":31902,"id":931902,"title":"child2","body":"project: #31903\n","labels":[]}'
+W1879_2_PARENT='{"number":31903,"labels":[{"name":"📁 project"}]}'
+W1879_2_EXISTING='[{"id":931902,"number":31902}]'
+W1879_2_LOG=$(mktemp /tmp/todo-test-1879-2-XXXXXX.jsonl)
+: > "$W1879_2_LOG"
+W1879_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W1879_2_LOG" \
+  OCTOKIT_STUB_RESPONSES_ENV="{\"issues.listForRepo\":[{\"data\":[$W1879_2_CHILD]}],\"issues.get\":[{\"data\":$W1879_2_PARENT}],\"POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"__throw\":true,\"status\":422,\"message\":\"Validation Failed: sub_issue_id already assigned to a parent\"}],\"GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"data\":$W1879_2_EXISTING}]}" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run migrate sub-issue 2>&1); W1879_2_EC=$?
+assert_exit_ok "#1879-2 migrate 本実行(422・既登録): exit 0" "$W1879_2_EC"
+assert_contains "#1879-2 migrate: 一覧に本当に存在する422はスキップ計上" "✅ migrate sub-issue 完了: 0件登録 / 1件スキップ / 0件エラー" "$W1879_2_OUT"
+rm -f "$W1879_2_LOG"
+
+# #1879-3: 422 だが listSubIssues に登録されていない（例: sub_issue_id 不正 / 別の親に登録済み）
+#   → 「既登録」と誤判定せず error として計上する
+#   （addSubIssue を「422は無条件skip」に戻すとこのテストは FAIL する＝欠陥2の回帰検知）
+W1879_3_CHILD='{"number":31904,"id":931904,"title":"child3","body":"project: #31905\n","labels":[]}'
+W1879_3_PARENT='{"number":31905,"labels":[{"name":"📁 project"}]}'
+W1879_3_LOG=$(mktemp /tmp/todo-test-1879-3-XXXXXX.jsonl)
+: > "$W1879_3_LOG"
+W1879_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W1879_3_LOG" \
+  OCTOKIT_STUB_RESPONSES_ENV="{\"issues.listForRepo\":[{\"data\":[$W1879_3_CHILD]}],\"issues.get\":[{\"data\":$W1879_3_PARENT}],\"POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"__throw\":true,\"status\":422,\"message\":\"Validation Failed: sub_issue_id already assigned to a different parent\"}],\"GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"data\":[]}]}" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run migrate sub-issue 2>&1); W1879_3_EC=$?
+assert_exit_ok "#1879-3 migrate 本実行(422・未登録): exit 0" "$W1879_3_EC"
+assert_contains "#1879-3 migrate: 一覧に存在しない422はエラー計上（誤ってskipしない）" "✅ migrate sub-issue 完了: 0件登録 / 0件スキップ / 1件エラー" "$W1879_3_OUT"
+assert_contains "#1879-3 migrate: エラーメッセージに元の e.message がそのまま含まれる" \
+  "Validation Failed: sub_issue_id already assigned to a different parent" "$W1879_3_OUT"
+rm -f "$W1879_3_LOG"
+
 # W16-21: runShow（plain出力、recur/project/tags/desc 全フィールド）
 W16_21_ISSUE='{"number":22000,"title":"rich task","body":"due: 2026-05-01\nrecur: weekly\nproject: #999\nestimate: 90\nsome free-text description\n","labels":[{"name":"🎯 next"},{"name":"@home"},{"name":"#blog"},{"name":"p1"}],"state":"closed","closed_at":"2026-05-02T00:00:00Z"}'
 run_stub_en "{\"issues.get\":[{\"data\":$W16_21_ISSUE}]}" show 22000
@@ -1447,6 +1505,105 @@ assert_exit_ok "W17-9 runEdit リグレッション(#1803): --activate 2026-09-0
 assert_contains "W17-9 runEdit リグレッション: 変更内容メッセージ" "activate → 2026-09-01" "$W17_9_OUT"
 assert_eq "W17-9 runEdit リグレッション: issues.update 呼び出し1回" "1" "$(log_count "$W17_9_LOG" issues.update)"
 rm -f "$W17_9_LOG"
+
+# ──────────────────────────────────────────
+# §W18  weekly-project-audit / list project が someday 併記の project を
+# 「休止中」として除外する（Issue #1846）
+#
+# 背景: execMoveGtd（GTD_LABELS に project を含まない）は project ラベルを
+# 剥がさない設計のため、`move <n> someday` された project は
+# 「📁 project, 🌈 someday」の二重ラベルのまま残る。これを weekly-project-audit /
+# list project の消費側で「休止中」として除外する（move 側の挙動は変更しない）。
+# ──────────────────────────────────────────
+echo ""
+echo "§W18  weekly-project-audit / list project の someday 併記 project 除外（Issue #1846）"
+
+# 共通データ: project A（休止していないアクティブなプロジェクト、next子タスクあり）
+#           + project B（📁 project と 🌈 someday を併せ持つ「休止中」プロジェクト）
+W1846_LIST='[
+  {"number":30101,"title":"Active Project","updated_at":"2026-04-01T00:00:00Z","body":"","labels":[{"name":"📁 project"}]},
+  {"number":30102,"title":"Active Project Next Child","updated_at":"2026-04-01T00:00:00Z","body":"project: #30101\n","labels":[{"name":"🎯 next"}]},
+  {"number":30103,"title":"Paused Project","updated_at":"2026-04-01T00:00:00Z","body":"","labels":[{"name":"📁 project"},{"name":"🌈 someday"}]}
+]'
+
+# W18-1: weekly-project-audit → 休止中(someday併記)projectは走査対象から除外され、
+# 除外件数が利用者に見える形で明示される
+W1846_1_LOG=$(mktemp /tmp/todo-test-w1846-1-XXXXXX.jsonl)
+W1846_1_RESP="{\"issues.listForRepo\":[{\"data\":$W1846_LIST}],\"GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"data\":[]}]}"
+W1846_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1846_1_RESP" OCTOKIT_STUB_LOG_ENV="$W1846_1_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run weekly-project-audit 2>&1); W1846_1_EC=$?
+assert_exit_ok "W18-1 weekly-project-audit(#1846): exit 0" "$W1846_1_EC"
+assert_contains "W18-1: ヘッダが休止中を除いた件数(全1件)になる" "全1件" "$W1846_1_OUT"
+assert_contains "W18-1: 除外件数が明示される（休止中1件を除外）" "休止中（someday）のプロジェクト 1件を除外" "$W1846_1_OUT"
+assert_contains "W18-1: アクティブな project #30101 は列挙される" "#30101" "$W1846_1_OUT"
+assert_not_contains "W18-1: 休止中の project #30103 は列挙されない" "#30103" "$W1846_1_OUT"
+assert_not_contains "W18-1: 休止中の project タイトルは出力に含まれない" "Paused Project" "$W1846_1_OUT"
+assert_eq "W18-1: 休止中projectには sub_issues API が呼ばれない（走査対象外の確認）" "1" "$(log_count "$W1846_1_LOG" "GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues")"
+rm -f "$W1846_1_LOG"
+
+# W18-2: list project（フィルタのみ、番号なし）→ 休止中projectが除外され、除外件数が明示される
+W1846_2_LOG=$(mktemp /tmp/todo-test-w1846-2-XXXXXX.jsonl)
+W1846_2_RESP="{\"issues.listForRepo\":[{\"data\":$W1846_LIST}]}"
+W1846_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1846_2_RESP" OCTOKIT_STUB_LOG_ENV="$W1846_2_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run list project 2>&1); W1846_2_EC=$?
+assert_exit_ok "W18-2 list project(#1846): exit 0" "$W1846_2_EC"
+assert_contains "W18-2: アクティブな project #30101 は列挙される" "#30101" "$W1846_2_OUT"
+assert_not_contains "W18-2: 休止中の project #30103 は列挙されない" "#30103" "$W1846_2_OUT"
+assert_not_contains "W18-2: 休止中の project タイトルは出力に含まれない" "Paused Project" "$W1846_2_OUT"
+assert_contains "W18-2: 除外件数が明示される（休止中1件を除外）" "休止中（someday）のプロジェクト 1件を除外" "$W1846_2_OUT"
+rm -f "$W1846_2_LOG"
+
+# W18-3 リグレッション: list someday（通常のsomeday一覧）は従来どおり
+# project併記かどうかに関わらず someday タスクをすべて列挙する（除外対象外の確認）
+W1846_3_LOG=$(mktemp /tmp/todo-test-w1846-3-XXXXXX.jsonl)
+W1846_3_RESP="{\"issues.listForRepo\":[{\"data\":$W1846_LIST}]}"
+W1846_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1846_3_RESP" OCTOKIT_STUB_LOG_ENV="$W1846_3_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run list someday 2>&1); W1846_3_EC=$?
+assert_exit_ok "W18-3 list someday リグレッション(#1846): exit 0" "$W1846_3_EC"
+assert_contains "W18-3: someday併記の project #30103 は list someday には引き続き出る" "#30103" "$W1846_3_OUT"
+assert_not_contains "W18-3: list someday には除外メッセージは出ない（project専用の挙動）" "を除外" "$W1846_3_OUT"
+rm -f "$W1846_3_LOG"
+
+# W18-4: プレーンな /todo list（フィルタなし全体一覧）の Projects セクションも
+# 休止中(someday併記)projectを除外し、件数を明示する（フォローアップ: #1846 スコープ拡張）
+# renderIssueList のsomedayマーカー（'  ⚠️'+line.slice(2)）により、Projects セクションの
+# 行フォーマット「  #番号  タイトル」（⚠️を挟まない）と someday セクションの行フォーマット
+# 「  ⚠️#番号  タイトル」（⚠️を挟む）は区別できるため、not_containsで厳密に判定する。
+W1846_4_LOG=$(mktemp /tmp/todo-test-w1846-4-XXXXXX.jsonl)
+W1846_4_RESP="{\"issues.listForRepo\":[{\"data\":$W1846_LIST}]}"
+W1846_4_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1846_4_RESP" OCTOKIT_STUB_LOG_ENV="$W1846_4_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run list 2>&1); W1846_4_EC=$?
+assert_exit_ok "W18-4 プレーンlist(#1846): exit 0" "$W1846_4_EC"
+assert_contains "W18-4: Projectsセクションのヘッダが休止中を除いた件数(1件)になる" "📁 Projects（1件）" "$W1846_4_OUT"
+assert_contains "W18-4: Projectsセクションに除外件数が明示される" "休止中（someday）のプロジェクト 1件を除外" "$W1846_4_OUT"
+assert_contains "W18-4: アクティブな project #30101 はProjectsセクションに列挙される" "#30101  Active Project" "$W1846_4_OUT"
+assert_not_contains "W18-4: 休止中の project #30103 はProjectsセクションの行フォーマットでは出ない（⚠️を挟まない形）" "  #30103  Paused Project" "$W1846_4_OUT"
+assert_contains "W18-4: 休止中の project #30103 はsomedayセクションには引き続き出る（⚠️を挟む形）" "⚠️#30103  Paused Project" "$W1846_4_OUT"
+assert_contains "W18-4: フッターサマリーのproject件数もProjectsセクションと一致する(project: 1件)" "project: 1件" "$W1846_4_OUT"
+rm -f "$W1846_4_LOG"
+
+# W18-5: list project --json は除外せず全件返す（設計判断のロックイン）。
+# 休止中判定は各要素の labels フィールドに project と someday が両方含まれることで
+# 消費側が行える設計のため、新規フィールドは追加しない。既存消費者不在を確認済み
+# （000-partner/claude-todo-gtd系リポジトリをgrepしても該当なし）。
+W1846_5_LOG=$(mktemp /tmp/todo-test-w1846-5-XXXXXX.jsonl)
+W1846_5_LIST='[
+  {"number":30101,"title":"Active Project","updated_at":"2026-04-01T00:00:00Z","body":"","labels":[{"name":"📁 project"}]},
+  {"number":30103,"title":"Paused Project","updated_at":"2026-04-01T00:00:00Z","body":"","labels":[{"name":"📁 project"},{"name":"🌈 someday"}]}
+]'
+W1846_5_RESP="{\"issues.listForRepo\":[{\"data\":$W1846_5_LIST}]}"
+W1846_5_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1846_5_RESP" OCTOKIT_STUB_LOG_ENV="$W1846_5_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run list project --json 2>&1); W1846_5_EC=$?
+assert_exit_ok "W18-5 list project --json(#1846): exit 0" "$W1846_5_EC"
+assert_contains "W18-5: アクティブなproject #30101 がJSONに含まれる" '"number": 30101' "$W1846_5_OUT"
+assert_contains "W18-5: 休止中のproject #30103 も除外されずJSONに含まれる（設計判断: 全件返す）" '"number": 30103' "$W1846_5_OUT"
+assert_contains "W18-5: 休止中projectのlabelsにproject/somedayが両方含まれる（消費側が判定できる）" '"project",' "$W1846_5_OUT"
+rm -f "$W1846_5_LOG"
 
 # ──────────────────────────────────────────
 # §W19 estimate 時間単位表示の --json 出力（Issue #1854）
