@@ -17,7 +17,7 @@ GitHub Issues をバックエンドに使った、Claude Code 用の GTD（Getti
 - **優先度** — p1（緊急）/ p2（重要）/ p3（通常）の3段階
 - **繰り返しタスク** — daily / weekly / monthly / weekdays の4パターン
 - **セキュリティ対策** — シェルインジェクション・プロンプトインジェクション対策を8ルールで実装
-- **1,300+ テスト** — ローカルユニットテスト + GitHub統合テストで品質を担保
+- **1,319+ テスト** — ローカルユニットテスト + GitHub統合テストで品質を担保
 - **サーバー不要** — GitHub Issues API + ローカルファイルのみで動作
 
 ## インストール
@@ -295,7 +295,7 @@ claude-todo-gtd/
 ├── README.ja.md            # このファイル
 └── tests/
     ├── scenarios.md        # テストシナリオ一覧（40+シナリオ）
-    ├── run-tests.sh        # ローカルユニットテスト（1,300+ アサーション）
+    ├── run-tests.sh        # ローカルユニットテスト（1,319+ アサーション）
     ├── run-tests-write.sh  # 書き込み系のローカルユニットテスト
     ├── gh-tests.sh         # GitHub統合テスト
     ├── helpers/

@@ -136,7 +136,7 @@ MCP_MODEでは `bash ~/.claude/todo.sh` は呼び出さない。GitHub MCP ツ�
 |---------|------|
 | `project <Outcome>` | プロジェクト Issue を作成（タイトルは完了状態を記述） |
 | `promote-project <#> [--outcome "タイトル"]` | 既存 Issue をプロジェクトに昇格（GTD ラベルを外し 📁 project を付与） |
-| `unlink <#>` | 子 Issue のプロジェクト紐付けを解除（sub-issue 解除 + body `project: #N` 行削除） |
+| `unlink <#> [--force]` | 子 Issue のプロジェクト紐付けを解除（sub-issue 解除 + body `project: #N` 行削除）。body の親と GitHub 上の親が食い違う場合は解除せずエラー終了する。`--force` で body 側のみ解除する |
 | `migrate sub-issue [--dry-run]` | body `project: #N` を持つ Issue を GitHub sub-issue に一括登録。`--dry-run` で対象一覧のみ表示 |
 | `weekly-project-audit` | 全プロジェクトを走査して棚卸し。next 欠落・停滞を検出し `reviewed_at` を自動記録 |
 

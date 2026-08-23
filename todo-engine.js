@@ -347,6 +347,9 @@ const MESSAGES = {
     'project.promoted_hint': '💡 最初の Next Action を追加するには: /todo next <タイトル> --project {num}',
     'error.no_project_link': 'エラー: #{num} にプロジェクト紐付けがありません。',
     'link.unlinked': '✅ #{num} のプロジェクト紐付けを解除しました。',
+    'error.unlink_mismatch': 'エラー: #{num} の body は project: #{parent} を指していますが、GitHub 上その親には sub-issue として登録されていません。body のみ解除する場合は /todo unlink {num} --force を実行してください。',
+    'error.unlink_failed': 'エラー: #{num} の sub-issue 解除に失敗したため、body は更新していません。',
+    'link.unlinked_mismatch': '⚠️ #{num} のプロジェクト紐付け（body）のみ解除しました（GitHub 上の sub-issue 関係は元々ありませんでした）。',
     'audit.no_projects': '## 📁 プロジェクト棚卸し（0件）\n\nプロジェクトがありません。',
     'audit.header': '## 📁 プロジェクト棚卸し（全{n}件）',
     'audit.paused_excluded': '（休止中（someday）のプロジェクト {n}件を除外）',
@@ -696,6 +699,9 @@ const MESSAGES = {
     'project.promoted_hint': '💡 To add the first Next Action: /todo next <title> --project {num}',
     'error.no_project_link': 'Error: #{num} has no project link.',
     'link.unlinked': '✅ #{num} project link removed.',
+    'error.unlink_mismatch': 'Error: #{num} body points to project: #{parent}, but it is not registered as a sub-issue of that parent on GitHub. To remove the body link only, run /todo unlink {num} --force.',
+    'error.unlink_failed': 'Error: Failed to unlink sub-issue for #{num}; body was not updated.',
+    'link.unlinked_mismatch': '⚠️ #{num} project link (body) removed only (there was no matching sub-issue relation on GitHub).',
     'audit.no_projects': '## 📁 Project Inventory (0)\n\nNo projects.',
     'audit.header': '## 📁 Project Inventory ({n} total)',
     'audit.paused_excluded': '(Excluded {n} paused (someday) project(s))',
@@ -3130,7 +3136,9 @@ async function listSubIssues(octokit, owner, repo, parentNumber) {
   }
 }
 
-// sub-issue の関連を解除（Phase 2 の /todo unlink で使用予定）
+// sub-issue の関連を解除する（/todo unlink で使用）。
+// addSubIssue と対称に、呼び出し側が成否を判定できるよう文字列ステータスを返す
+// （#1880: 戻り値がなく呼び出し側が失敗を検知できず、body だけ消えるデータ喪失事故があった）。
 async function removeSubIssue(octokit, owner, repo, parentNumber, childInternalId) {
   try {
     await octokit.request('DELETE /repos/{owner}/{repo}/issues/{issue_number}/sub_issue', {
@@ -3139,8 +3147,10 @@ async function removeSubIssue(octokit, owner, repo, parentNumber, childInternalI
       data: { sub_issue_id: childInternalId },
       headers: { 'X-GitHub-Api-Version': '2022-11-28' },
     });
+    return 'removed';
   } catch (e) {
     process.stderr.write(tpl('warn.sub_issue_unlink_failed', { msg: e.message })+'\n');
+    return 'error';
   }
 }
 
@@ -4821,11 +4831,19 @@ async function runPromoteProject(octokit, owner, repo, tokens) {
   runOut(tpl('project.promoted_hint', { num }));
 }
 
-// /todo unlink <N> — 子 Issue の sub-issue 関連と body project 行を解除
+// /todo unlink <N> [--force] — 子 Issue の sub-issue 関連と body project 行を解除
+// #1880: 修正前は removeSubIssue の成否を見ず、DELETE が失敗しても body の project 行を
+// 無条件に削除していた（実事故: #454 で GitHub 上の親子関係は残ったまま body だけ消えた）。
+// 以下2点をガードする。
+//   1. DELETE が失敗した場合、body は更新しない（エラー終了）
+//   2. body の project: #N が指す親と、GitHub 上で実際に登録されている親が食い違う場合、
+//      --force なしでは body も消さない（食い違いを明示してエラー終了）。--force 指定時は
+//      「GitHub 側に解除すべき関係が元々ない」ことを確認した上で body のみ解除する
 async function runUnlink(octokit, owner, repo, tokens) {
   const num = parseInt(tokens[0]);
-  if (!num) { process.stderr.write('Usage: /todo unlink <N>\n'); process.exit(1); }
+  if (!num) { process.stderr.write('Usage: /todo unlink <N> [--force]\n'); process.exit(1); }
   validateNumber(String(num));
+  const force = tokens.includes('--force');
 
   const issue = await fetchAndParseIssue(octokit, owner, repo, num);
 
@@ -4837,14 +4855,37 @@ async function runUnlink(octokit, owner, repo, tokens) {
   }
   const parentNum = parseInt(projMatch[1]);
 
-  // removeSubIssue を呼ぶ
-  await removeSubIssue(octokit, owner, repo, parentNum, issue.id);
+  // body の親が実際に GitHub 上でも親であるかを事前確認する。
+  // body の project: #N は「そうあるべき」という記述に過ぎず、実態と食い違うことがある
+  // （#1879 由来の登録失敗・プロジェクト付け替え時の body 直書き換え等）。
+  const existing = await listSubIssues(octokit, owner, repo, parentNum);
+  const isRegistered = existing.some(s => s.id === issue.id);
+
+  if (!isRegistered && !force) {
+    process.stderr.write(tpl('error.unlink_mismatch', { num, parent: parentNum })+'\n');
+    process.exit(1);
+  }
+
+  if (isRegistered) {
+    const result = await removeSubIssue(octokit, owner, repo, parentNum, issue.id);
+    if (result !== 'removed') {
+      // DELETE 失敗: body は更新しない
+      process.stderr.write(tpl('error.unlink_failed', { num })+'\n');
+      process.exit(1);
+    }
+  }
+  // isRegistered === false かつ force === true の場合はここに到達する。
+  // GitHub 側に解除すべき sub-issue 関係が元々ないため removeSubIssue は呼ばない。
 
   // body から project: #N 行を削除
   const newBody = (issue.body||'').replace(/^project: #\d+\r?\n?/m, '');
   await octokit.issues.update({ owner, repo, issue_number: num, body: newBody });
 
-  runOut(tpl('link.unlinked', { num }));
+  if (!isRegistered && force) {
+    runOut(tpl('link.unlinked_mismatch', { num }));
+  } else {
+    runOut(tpl('link.unlinked', { num }));
+  }
 }
 
 // /todo weekly-project-audit — 全プロジェクトを走査し棚卸しを促す
