@@ -1288,7 +1288,7 @@ assert_contains "W16-18a runPromoteProject(en): hint" "To add the first Next Act
 assert_no_japanese "W16-18a runPromoteProject(en): 出力に日本語が含まれない" "$LAST_OUT"
 
 W16_18B_ISSUE='{"number":21700,"id":921700,"body":"project: #21600\n","labels":[]}'
-run_stub_en "{\"issues.get\":[{\"data\":$W16_18B_ISSUE}],\"DELETE /repos/{owner}/{repo}/issues/{issue_number}/sub_issue\":[{}],\"issues.update\":[{}]}" \
+run_stub_en "{\"issues.get\":[{\"data\":$W16_18B_ISSUE}],\"GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"data\":[{\"id\":921700}]}],\"DELETE /repos/{owner}/{repo}/issues/{issue_number}/sub_issue\":[{}],\"issues.update\":[{}]}" \
   unlink 21700
 assert_contains "W16-18b runUnlink(en): project link removed" "project link removed." "$LAST_OUT"
 assert_no_japanese "W16-18b runUnlink(en): 出力に日本語が含まれない" "$LAST_OUT"
@@ -1734,6 +1734,71 @@ assert_exit_ok "W19-3 show（非json）(#1854): exit 0" "$W1854_3_EC"
 assert_contains "W19-3: show（非json）estimate:abc（不正値）は「形式不正」表示になる" "abc" "$W1854_3_OUT"
 assert_not_contains "W19-3: show（非json）estimate:abc（不正値）は 0m と黙って表示されない" "0m" "$W1854_3_OUT"
 rm -f "$W1854_3_LOG"
+
+# ──────────────────────────────────────────
+# §W22  runUnlink — sub-issue 解除失敗/食い違い時に body を消さない（Issue #1880）
+# 実事故: body が project: #1640 を指す Issue で unlink を実行したところ、実際の
+# GitHub 上の親は #1133 で DELETE が Not Found を返したが、body の project 行だけが
+# 削除され、GitHub 上の親子関係は残ったまま紐付け情報だけが消えた（復旧済み）。
+# 核心アサーションは W22-2（DELETE失敗時に issues.update が呼ばれないこと）。
+# ──────────────────────────────────────────
+echo ""
+echo "§W22  runUnlink — sub-issue 解除失敗/食い違い時に body を消さない（Issue #1880）"
+
+# W22-1 正常系（リグレッション）: body の親と GitHub 上の親が一致 → DELETE成功 → body更新
+W1880_1_LOG=$(mktemp /tmp/todo-test-w1880-1-XXXXXX.jsonl)
+W1880_1_ISSUE='{"number":8701,"id":988701,"body":"project: #8700\n","labels":[]}'
+W1880_1_RESP="{\"issues.get\":[{\"data\":$W1880_1_ISSUE}],\"GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"data\":[{\"id\":988701}]}],\"DELETE /repos/{owner}/{repo}/issues/{issue_number}/sub_issue\":[{}],\"issues.update\":[{}]}"
+W1880_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1880_1_RESP" OCTOKIT_STUB_LOG_ENV="$W1880_1_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run unlink 8701 2>&1); W1880_1_EC=$?
+assert_exit_ok "W22-1 正常系(リグレッション): exit 0" "$W1880_1_EC"
+assert_contains "W22-1: 成功メッセージが出る" "✅ #8701 のプロジェクト紐付けを解除しました。" "$W1880_1_OUT"
+assert_eq "W22-1: 事前確認(GET sub_issues)が1回呼ばれる" "1" "$(log_count "$W1880_1_LOG" "GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues")"
+assert_eq "W22-1: DELETE sub_issue が1回呼ばれる" "1" "$(log_count "$W1880_1_LOG" "DELETE /repos/{owner}/{repo}/issues/{issue_number}/sub_issue")"
+assert_eq "W22-1: issues.update が1回呼ばれる（body更新）" "1" "$(log_count "$W1880_1_LOG" issues.update)"
+assert_not_contains "W22-1: issues.update の body に project: 行が残っていない" "project: #8700" "$(log_lines_for_method "$W1880_1_LOG" issues.update)"
+rm -f "$W1880_1_LOG"
+
+# W22-2 【核心】DELETE失敗（Not Found、実事故の再現）: body を更新してはいけない
+W1880_2_LOG=$(mktemp /tmp/todo-test-w1880-2-XXXXXX.jsonl)
+W1880_2_ISSUE='{"number":8702,"id":988702,"body":"project: #8700\n","labels":[]}'
+W1880_2_RESP="{\"issues.get\":[{\"data\":$W1880_2_ISSUE}],\"GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"data\":[{\"id\":988702}]}],\"DELETE /repos/{owner}/{repo}/issues/{issue_number}/sub_issue\":[{\"__throw\":true,\"status\":404,\"message\":\"Not Found - https://docs.github.com/rest/issues/sub-issues#remove-sub-issue\"}]}"
+W1880_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1880_2_RESP" OCTOKIT_STUB_LOG_ENV="$W1880_2_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run unlink 8702 2>&1); W1880_2_EC=$?
+assert_exit_fail "W22-2 DELETE失敗: exit非0" "$W1880_2_EC"
+assert_contains "W22-2: sub-issue解除失敗の警告が出る" "sub-issue 解除失敗" "$W1880_2_OUT"
+assert_contains "W22-2: bodyを更新していない旨のエラーが出る" "body は更新していません" "$W1880_2_OUT"
+assert_not_contains "W22-2: 誤って成功メッセージを出していない" "プロジェクト紐付けを解除しました" "$W1880_2_OUT"
+assert_eq "W22-2 【核心】DELETE失敗時に issues.update が呼ばれない（データ喪失防止の本体）" "0" "$(log_count "$W1880_2_LOG" issues.update)"
+rm -f "$W1880_2_LOG"
+
+# W22-3 body の親とGitHub上の親が食い違う（--forceなし）: 黙ってbodyを消さずエラー終了する
+W1880_3_LOG=$(mktemp /tmp/todo-test-w1880-3-XXXXXX.jsonl)
+W1880_3_ISSUE='{"number":8703,"id":988703,"body":"project: #8700\n","labels":[]}'
+W1880_3_RESP="{\"issues.get\":[{\"data\":$W1880_3_ISSUE}],\"GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"data\":[]}]}"
+W1880_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1880_3_RESP" OCTOKIT_STUB_LOG_ENV="$W1880_3_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run unlink 8703 2>&1); W1880_3_EC=$?
+assert_exit_fail "W22-3 親の食い違い(--forceなし): exit非0" "$W1880_3_EC"
+assert_contains "W22-3: 食い違いエラーに --force の案内が含まれる" "--force を実行してください" "$W1880_3_OUT"
+assert_eq "W22-3: 登録されていない親へのDELETEは試みない" "0" "$(log_count "$W1880_3_LOG" "DELETE /repos/{owner}/{repo}/issues/{issue_number}/sub_issue")"
+assert_eq "W22-3: issues.update が呼ばれない（bodyは無傷）" "0" "$(log_count "$W1880_3_LOG" issues.update)"
+rm -f "$W1880_3_LOG"
+
+# W22-4 body の親とGitHub上の親が食い違う（--force指定）: body のみ明示的に解除する
+W1880_4_LOG=$(mktemp /tmp/todo-test-w1880-4-XXXXXX.jsonl)
+W1880_4_ISSUE='{"number":8704,"id":988704,"body":"project: #8700\n","labels":[]}'
+W1880_4_RESP="{\"issues.get\":[{\"data\":$W1880_4_ISSUE}],\"GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"data\":[]}],\"issues.update\":[{}]}"
+W1880_4_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1880_4_RESP" OCTOKIT_STUB_LOG_ENV="$W1880_4_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run unlink 8704 --force 2>&1); W1880_4_EC=$?
+assert_exit_ok "W22-4 親の食い違い(--force指定): exit 0" "$W1880_4_EC"
+assert_contains "W22-4: body のみ解除した旨のメッセージが出る" "プロジェクト紐付け（body）のみ解除しました" "$W1880_4_OUT"
+assert_eq "W22-4: 登録されていない親へのDELETEは試みない" "0" "$(log_count "$W1880_4_LOG" "DELETE /repos/{owner}/{repo}/issues/{issue_number}/sub_issue")"
+assert_eq "W22-4: issues.update が1回呼ばれる（body のみ更新）" "1" "$(log_count "$W1880_4_LOG" issues.update)"
+rm -f "$W1880_4_LOG"
 
 # ──────────────────────────────────────────
 # 結果サマリー（run-tests.sh から集計加算するための機械可読な行）

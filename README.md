@@ -16,7 +16,7 @@ Just type `/todo` to add, manage, and review tasks entirely from the terminal.
 - **Priority levels** — p1 (urgent) / p2 (important) / p3 (normal)
 - **Recurring tasks** — daily / weekly / monthly / weekdays
 - **Security** — Shell injection and prompt injection protection with 8 rules
-- **1,300+ tests** — Local unit tests + GitHub integration tests
+- **1,319+ tests** — Local unit tests + GitHub integration tests
 - **No server required** — GitHub Issues API + local files only
 
 ## Installation
@@ -298,7 +298,7 @@ claude-todo-gtd/
 ├── README.ja.md            # Japanese README
 └── tests/
     ├── scenarios.md        # Test scenario list (40+ scenarios)
-    ├── run-tests.sh        # Local unit tests (1,300+ assertions)
+    ├── run-tests.sh        # Local unit tests (1,319+ assertions)
     ├── run-tests-write.sh  # Local unit tests for write operations
     ├── gh-tests.sh         # GitHub integration tests
     ├── helpers/
