@@ -1625,7 +1625,6 @@ done
 
 # 1-2: --depends-on の配線漏れ修正（help() から呼ばれる）
 # 注: grep パターンが "--" で始まると未知オプション扱いになるため、先頭の "--" を含めない
-# （ops/playbooks/code/script-development.md §既知の注意点 参照）
 assert_contains "ja: help に --depends-on が含まれる" "depends-on <#N>" "$HELP_JA"
 assert_contains "en: help に --depends-on が含まれる" "depends-on <#N>" "$HELP_EN"
 

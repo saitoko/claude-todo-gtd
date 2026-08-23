@@ -3431,7 +3431,7 @@ async function runList(octokit, owner, repo, tokens) {
   // データそのものを間引く理由にはならない。各要素の `labels` フィールドに既に
   // 'project' と 'someday' の両方が含まれるため、休止中判定は
   // `labels.includes('someday')` で消費側が自分で行える（新規フィールド追加は不要）。
-  // 000-partner 内・claude-todo-gtd 系リポジトリを検索した限り `list project --json` の
+  // 関連リポジトリを検索した限り `list project --json` の
   // 既存消費者は見つからなかった（後方互換の実害なし）。
   if (jsonMode) {
     let filtered = allIssues;

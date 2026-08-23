@@ -1670,7 +1670,7 @@ rm -f "$W1846_4_LOG"
 # W18-5: list project --json は除外せず全件返す（設計判断のロックイン）。
 # 休止中判定は各要素の labels フィールドに project と someday が両方含まれることで
 # 消費側が行える設計のため、新規フィールドは追加しない。既存消費者不在を確認済み
-# （000-partner/claude-todo-gtd系リポジトリをgrepしても該当なし）。
+# （関連リポジトリをgrepしても該当なし）。
 W1846_5_LOG=$(mktemp /tmp/todo-test-w1846-5-XXXXXX.jsonl)
 W1846_5_LIST='[
   {"number":30101,"title":"Active Project","updated_at":"2026-04-01T00:00:00Z","body":"","labels":[{"name":"📁 project"}]},
