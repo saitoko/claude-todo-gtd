@@ -17,7 +17,7 @@ GitHub Issues をバックエンドに使った、Claude Code 用の GTD（Getti
 - **優先度** — p1（緊急）/ p2（重要）/ p3（通常）の3段階
 - **繰り返しタスク** — daily / weekly / monthly / weekdays の4パターン
 - **セキュリティ対策** — シェルインジェクション・プロンプトインジェクション対策を8ルールで実装
-- **1,319+ テスト** — ローカルユニットテスト + GitHub統合テストで品質を担保
+- **1,351+ テスト** — ローカルユニットテスト + GitHub統合テストで品質を担保
 - **サーバー不要** — GitHub Issues API + ローカルファイルのみで動作
 
 ## インストール
@@ -111,8 +111,8 @@ export LANG_ENV=en
 # タスクを完了
 /todo done 5
 
-# 週次レビューを開始
-/todo weekly-review
+# 週次レビューを開始（/todo のサブコマンドではありません。呼び出し方は
+# todo.md の「対話コマンド」節を参照してください）
 ```
 
 ## 日付入力パターン
@@ -153,6 +153,8 @@ export LANG_ENV=en
 | `@context` | コンテキスト（複数可） | `@PC @会社` |
 | `--due` | 期限（日本語対応） | `--due 明日`, `--due 4/10`, `--due 2026-04-10` |
 | `--desc` | 説明文 | `--desc "3章まで読む"` |
+| `--body` | 本文全体を直接指定（自動生成される本文を上書き） | `--body "詳細説明..."` |
+| `--body-file` | ファイルから本文を読み込む（`--body` より優先） | `--body-file notes.md` |
 | `--recur` | 繰り返し | `--recur weekly` |
 | `--project` | プロジェクト紐付け（GitHub sub-issue にも自動登録） | `--project 7` |
 | `--priority` | 優先度 | `--priority p1` |
@@ -175,6 +177,8 @@ export LANG_ENV=en
 | `/todo list project 7` | プロジェクト配下のタスク表示 |
 | `/todo search <keyword>` | オープンタスクをキーワード検索 |
 | `/todo stats` | タスク統計（カテゴリ別・優先度別・期限状況・完了実績） |
+| `/todo show <#> [--json]` | 個別タスクの詳細表示 |
+| `/todo schema` | `--json` 出力のフィールド定義を表示 |
 
 ### ステータス変更・完了
 
@@ -254,9 +258,7 @@ export LANG_ENV=en
 
 ### 週次レビュー
 
-```
-/todo weekly-review
-```
+> `weekly-review` は `/todo` のサブコマンドではありません。呼び出し方はお使いの環境によって異なります。詳細は `todo.md` の「対話コマンド」節を参照してください。
 
 GTD の週次レビューを6ステップの対話形式で実施:
 
@@ -295,7 +297,7 @@ claude-todo-gtd/
 ├── README.ja.md            # このファイル
 └── tests/
     ├── scenarios.md        # テストシナリオ一覧（40+シナリオ）
-    ├── run-tests.sh        # ローカルユニットテスト（1,319+ アサーション）
+    ├── run-tests.sh        # ローカルユニットテスト（1,351+ アサーション）
     ├── run-tests-write.sh  # 書き込み系のローカルユニットテスト
     ├── gh-tests.sh         # GitHub統合テスト
     ├── helpers/
@@ -363,13 +365,7 @@ MIT
 
 ### デイリーレビュー
 
-朝の計画と夜の振り返りを対話形式で実施。
-
-```bash
-/todo daily-review          # 時刻で自動判定（15時前→朝、15時以降→夜）
-/todo daily-review morning  # 朝の計画
-/todo daily-review evening  # 夜の振り返り
-```
+朝の計画と夜の振り返りを対話形式で実施（時刻で自動判定：15時前→朝、15時以降→夜。明示指定も可）。`daily-review` は `/todo` のサブコマンドではありません。呼び出し方はお使いの環境によって異なります。詳細は `todo.md` の「対話コマンド」節を参照してください。
 
 **Morning:** ダッシュボード → Inbox仕分け → 今日やるタスク選定 → 計画サマリー
 **Evening:** 完了実績 → 未完了タスク処理 → 明日の予定 → 一日のサマリー

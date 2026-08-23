@@ -16,7 +16,7 @@ Just type `/todo` to add, manage, and review tasks entirely from the terminal.
 - **Priority levels** — p1 (urgent) / p2 (important) / p3 (normal)
 - **Recurring tasks** — daily / weekly / monthly / weekdays
 - **Security** — Shell injection and prompt injection protection with 8 rules
-- **1,319+ tests** — Local unit tests + GitHub integration tests
+- **1,351+ tests** — Local unit tests + GitHub integration tests
 - **No server required** — GitHub Issues API + local files only
 
 ## Installation
@@ -114,8 +114,8 @@ Environment variable: LANG_ENV=en
 # Complete a task
 /todo done 5
 
-# Start a weekly review
-/todo weekly-review
+# Start a weekly review (not a /todo subcommand — see "Interactive Commands" in todo.md
+# for how to invoke it in your environment)
 ```
 
 ## Date Input Patterns
@@ -156,6 +156,8 @@ Environment variable: LANG_ENV=en
 | `@context` | Context (multiple allowed) | `@PC @office` |
 | `--due` | Due date (Japanese also supported) | `--due tomorrow`, `--due 4/10`, `--due 2026-04-10` |
 | `--desc` | Description | `--desc "Read through chapter 3"` |
+| `--body` | Full issue body text (overrides the auto-generated body) | `--body "Detailed notes..."` |
+| `--body-file` | Read the body from a file (takes priority over `--body`) | `--body-file notes.md` |
 | `--recur` | Recurrence | `--recur weekly` |
 | `--project` | Link to a project (also registers as a GitHub sub-issue) | `--project 7` |
 | `--priority` | Priority | `--priority p1` |
@@ -176,6 +178,8 @@ Environment variable: LANG_ENV=en
 | `/todo list project 7` | Show tasks under a project |
 | `/todo search <keyword>` | Search open tasks by keyword |
 | `/todo stats` | Task statistics (by category, priority, due status, completion record) |
+| `/todo show <#> [--json]` | Show details for a single task |
+| `/todo schema` | Show the field schema for `--json` output |
 
 ### Status & Completion
 
@@ -255,9 +259,7 @@ Environment variable: LANG_ENV=en
 
 ## Weekly Review
 
-```
-/todo weekly-review
-```
+> `weekly-review` is not a `/todo` subcommand. How you invoke it depends on your environment — see the "Interactive Commands" section in `todo.md` for details.
 
 Runs the GTD weekly review as a 6-step interactive session:
 
@@ -298,7 +300,7 @@ claude-todo-gtd/
 ├── README.ja.md            # Japanese README
 └── tests/
     ├── scenarios.md        # Test scenario list (40+ scenarios)
-    ├── run-tests.sh        # Local unit tests (1,319+ assertions)
+    ├── run-tests.sh        # Local unit tests (1,351+ assertions)
     ├── run-tests-write.sh  # Local unit tests for write operations
     ├── gh-tests.sh         # GitHub integration tests
     ├── helpers/
@@ -366,13 +368,7 @@ Shows overdue tasks, today's tasks, tasks due this week, next actions, and compl
 
 ### Daily Review
 
-An interactive morning-planning / evening-reflection routine.
-
-```bash
-/todo daily-review          # Auto-detects morning/evening based on time (before 3pm → morning, after → evening)
-/todo daily-review morning  # Morning planning
-/todo daily-review evening  # Evening reflection
-```
+An interactive morning-planning / evening-reflection routine (auto-detects morning/evening based on time — before 3pm → morning, after → evening; can also be specified explicitly). `daily-review` is not a `/todo` subcommand — how you invoke it depends on your environment, see the "Interactive Commands" section in `todo.md` for details.
 
 **Morning:** Dashboard → Inbox triage → Pick today's tasks → Plan summary
 **Evening:** Completion stats → Handle incomplete tasks → Tomorrow's plan → Daily summary
