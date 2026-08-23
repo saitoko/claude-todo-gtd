@@ -375,6 +375,7 @@ const MESSAGES = {
     'error.unknown_command_hint2': '  明示的に inbox へ追加したい場合: /todo add {args}',
     'warn.sub_issue_skip': '⚠️ sub-issue 登録スキップ: #{parent} に既に登録済み（冪等）',
     'warn.sub_issue_register_failed': '⚠️ sub-issue 登録失敗（Issue は作成済み）: {msg}',
+    'warn.sub_issue_register_failed_422': '⚠️ sub-issue 登録失敗（#{parent} には未登録と判定）: {msg}',
     'warn.sub_issue_list_failed': '⚠️ sub-issue 一覧取得失敗: {msg}',
     'warn.sub_issue_unlink_failed': '⚠️ sub-issue 解除失敗: {msg}',
     'list.project_children_header': '## 📁 プロジェクト #{parent} の子タスク（{n}件）',
@@ -722,6 +723,7 @@ const MESSAGES = {
     'error.unknown_command_hint2': '  To explicitly add it to inbox: /todo add {args}',
     'warn.sub_issue_skip': '⚠️ sub-issue registration skipped: #{parent} already registered (idempotent)',
     'warn.sub_issue_register_failed': '⚠️ sub-issue registration failed (issue was already created): {msg}',
+    'warn.sub_issue_register_failed_422': '⚠️ sub-issue registration failed (not registered to #{parent}): {msg}',
     'warn.sub_issue_list_failed': '⚠️ Failed to fetch sub-issue list: {msg}',
     'warn.sub_issue_unlink_failed': '⚠️ Failed to unlink sub-issue: {msg}',
     'list.project_children_header': '## 📁 Project #{parent} subtasks ({n})',
@@ -3071,7 +3073,11 @@ async function fetchAndParseIssue(octokit, owner, repo, num) {
 
 // ─── sub-issue ヘルパ（Phase 1 互換レイヤ） ───
 
-// 親 Issue に子を sub-issue として登録（冪等: 422 は既登録としてスキップ）
+// 親 Issue に子を sub-issue として登録
+// 冪等: 422 を返した場合、GitHub のメッセージ文言は仕様として保証されないため
+// e.message の部分一致では判定しない（#1879）。親の sub-issue 一覧を取得し直し、
+// 子が実際に登録済みかで「既登録（冪等スキップ）」と「それ以外のエラー
+// （別の親に登録済み・sub_issue_id 不正 等）」を区別する。
 async function addSubIssue(octokit, owner, repo, parentNumber, childInternalId) {
   try {
     await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues', {
@@ -3083,8 +3089,14 @@ async function addSubIssue(octokit, owner, repo, parentNumber, childInternalId) 
     return 'registered';
   } catch (e) {
     if (e.status === 422) {
-      process.stderr.write(tpl('warn.sub_issue_skip', { parent: parentNumber })+'\n');
-      return 'skipped';
+      const existing = await listSubIssues(octokit, owner, repo, parentNumber);
+      const alreadyRegistered = existing.some(s => s.id === childInternalId);
+      if (alreadyRegistered) {
+        process.stderr.write(tpl('warn.sub_issue_skip', { parent: parentNumber })+'\n');
+        return 'skipped';
+      }
+      process.stderr.write(tpl('warn.sub_issue_register_failed_422', { parent: parentNumber, msg: e.message })+'\n');
+      return 'error';
     }
     process.stderr.write(tpl('warn.sub_issue_register_failed', { msg: e.message })+'\n');
     return 'error';
@@ -3401,7 +3413,10 @@ async function fetchAllOpen(octokit, owner, repo) {
     const { data } = await octokit.issues.listForRepo({ owner, repo, state: 'open', per_page: 100, page });
     const issues = data.filter(i => !i.pull_request);
     if (!issues.length) break;
-    allIssues.push(...issues.map(i => ({ number: i.number, title: i.title, body: i.body||'', labels: i.labels.map(l => ({name:l.name})), closedAt: null, updated_at: i.updated_at || '' })));
+    // #1879: id（database ID）を含める。sub-issue 登録（addSubIssue）が
+    // childInternalId として使うため必須。issueToJsonObj() は明示ホワイトリストで
+    // フィールドを組み立てるため、ここに id を足しても list --json 等の出力には漏れない。
+    allIssues.push(...issues.map(i => ({ number: i.number, id: i.id, title: i.title, body: i.body||'', labels: i.labels.map(l => ({name:l.name})), closedAt: null, updated_at: i.updated_at || '' })));
     if (data.length < 100) break;
     page++;
   }
