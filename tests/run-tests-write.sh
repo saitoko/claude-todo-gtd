@@ -425,21 +425,23 @@ assert_eq "runEdit 異常系: issues.get のみ実行（1回）" "1" "$(log_coun
 assert_eq "runEdit 異常系: issues.update は呼ばれない（副作用なし）" "0" "$(log_count "$W5B_LOG" issues.update)"
 rm -f "$W5B_LOG"
 
-# W5-3 characterization（既知の設計判断: runEdit の validate-before-mutate 順序バグは修正せず、
-# 現状挙動を記録するテストとして残す。修正は別Issue）:
-# --priority に不正値を指定すると、旧priorityラベルの削除（removeLabel）は実行されるが、
-# validatePriority() がその後にexit(1)するため、新ラベル追加(addLabels)も本体の
-# issues.update（body更新）も一切呼ばれない。
+# W5-3（Issue #1652 修正後）: validate-before-mutate。
+# --priority に不正値を指定した場合、validatePriority() が旧priorityラベル削除
+# （removeLabel）より「前」に呼ばれるようになったため、typo時に旧ラベルだけが
+# 破壊された中途半端な状態でエラー終了することがなくなった。
+# issues.get（issue本体の取得）はpriority検証より前の共通フローで既に1回呼ばれているため
+# 1回のまま、removeLabel/addLabels/issues.update（body更新）は全て0回になる。
 W5C_LOG=$(mktemp /tmp/todo-test-w5c-XXXXXX.jsonl)
-W5C_RESP='{"issues.get":[{"data":{"number":603,"id":9603,"title":"Task","body":"due: 2026-04-01\n","labels":[{"name":"🎯 next"},{"name":"p1"}]}}],"issues.removeLabel":[{}]}'
+W5C_RESP='{"issues.get":[{"data":{"number":603,"id":9603,"title":"Task","body":"due: 2026-04-01\n","labels":[{"name":"🎯 next"},{"name":"p1"}]}}]}'
 W5C_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W5C_RESP" OCTOKIT_STUB_LOG_ENV="$W5C_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
   node "$ENGINE" run edit 603 --priority p9 2>&1); W5C_EC=$?
-assert_exit_fail "runEdit characterization(順序バグ): 不正priority → exit 1" "$W5C_EC"
-assert_contains "runEdit characterization: エラーメッセージ" "priority は p1/p2/p3 のみ有効です" "$W5C_OUT"
-assert_eq "runEdit characterization: 旧priorityラベル削除は実行される（バグの一部）" "1" "$(log_count "$W5C_LOG" issues.removeLabel)"
-assert_eq "runEdit characterization: 新ラベル追加(addLabels)は呼ばれない" "0" "$(log_count "$W5C_LOG" issues.addLabels)"
-assert_eq "runEdit characterization: 本体のbody更新(issues.update)も呼ばれない（未修正の順序バグの全体像）" "0" "$(log_count "$W5C_LOG" issues.update)"
+assert_exit_fail "runEdit(#1652 validate-before-mutate): 不正priority → exit 1" "$W5C_EC"
+assert_contains "runEdit(#1652): エラーメッセージ" "priority は p1/p2/p3 のみ有効です" "$W5C_OUT"
+assert_eq "runEdit(#1652): issue本体取得(issues.get)は1回（priority検証と無関係の既存フロー）" "1" "$(log_count "$W5C_LOG" issues.get)"
+assert_eq "runEdit(#1652): 旧priorityラベル削除(removeLabel)は呼ばれない（修正の核心）" "0" "$(log_count "$W5C_LOG" issues.removeLabel)"
+assert_eq "runEdit(#1652): 新ラベル追加(addLabels)は呼ばれない" "0" "$(log_count "$W5C_LOG" issues.addLabels)"
+assert_eq "runEdit(#1652): 本体のbody更新(issues.update)も呼ばれない" "0" "$(log_count "$W5C_LOG" issues.update)"
 rm -f "$W5C_LOG"
 
 # ──────────────────────────────────────────
@@ -462,18 +464,17 @@ assert_eq "runPriority 正常系: 新p2追加" "1" "$(log_count "$W6_LOG" issues
 assert_contains "runPriority 正常系: 追加対象がp2" '"labels":["p2"]' "$(log_lines_for_method "$W6_LOG" issues.addLabels)"
 rm -f "$W6_LOG"
 
-# W6-2 異常系 characterization（既知の設計判断・design §Phase1 優先順位6）:
-# 旧ラベル削除→validateの順序バグを修正せず、現状挙動として記録する。
-# 不正値指定時、removeLabel(旧priority) は実行されるが addLabels(新priority) は呼ばれない。
+# W6-2（Issue #1652 修正後）: validate-before-mutate。
+# runPriority は validatePriority() を issues.get（issue本体取得）より前に呼ぶよう
+# 修正したため、不正値指定時はAPI呼び出しが一切発生しない（0回）ことを確認する。
 W6C_LOG=$(mktemp /tmp/todo-test-w6c-XXXXXX.jsonl)
-W6C_RESP='{"issues.get":[{"data":{"number":702,"id":9702,"title":"Task2","body":"","labels":[{"name":"🎯 next"},{"name":"p1"}]}}],"issues.removeLabel":[{}]}'
-W6C_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W6C_RESP" OCTOKIT_STUB_LOG_ENV="$W6C_LOG" \
+: > "$W6C_LOG"
+W6C_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W6C_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
   node "$ENGINE" run priority 702 p9 2>&1); W6C_EC=$?
-assert_exit_fail "runPriority characterization(順序バグ): 不正priority → exit 1" "$W6C_EC"
-assert_contains "runPriority characterization: エラーメッセージ" "priority は p1/p2/p3 のみ有効です" "$W6C_OUT"
-assert_eq "runPriority characterization: 旧priorityラベル削除は実行される（バグの一部）" "1" "$(log_count "$W6C_LOG" issues.removeLabel)"
-assert_eq "runPriority characterization: 新ラベル追加(addLabels)は呼ばれない" "0" "$(log_count "$W6C_LOG" issues.addLabels)"
+assert_exit_fail "runPriority(#1652 validate-before-mutate): 不正priority → exit 1" "$W6C_EC"
+assert_contains "runPriority(#1652): エラーメッセージ" "priority は p1/p2/p3 のみ有効です" "$W6C_OUT"
+assert_eq "runPriority(#1652): API呼び出しゼロ（issue取得より前にvalidatePriorityで弾かれる）" "0" "$(wc -l < "$W6C_LOG" | tr -d ' ')"
 rm -f "$W6C_LOG"
 
 # ──────────────────────────────────────────
@@ -1368,6 +1369,86 @@ assert_contains "#1879-3 migrate: 一覧に存在しない422はエラー計上�
 assert_contains "#1879-3 migrate: エラーメッセージに元の e.message がそのまま含まれる" \
   "Validation Failed: sub_issue_id already assigned to a different parent" "$W1879_3_OUT"
 rm -f "$W1879_3_LOG"
+
+# ──────────────────────────────────────────
+# §W21  状態整合性の順序統一 — validate-before-mutate / create-before-close（Issue #1652）
+# ──────────────────────────────────────────
+# 起票元: content/reviews/2026-08-03_todo-engine_reviewer.md の2件。
+#   課題A: runPriority/runEdit が「旧priorityラベル削除 → validate」の順で、
+#          typo時に既存ラベルだけ破壊してエラー終了していた（validate-before-mutateへ統一）。
+#          → runEdit/runPriority 側は W5-3 / W6-2 を修正後の挙動に更新済み（本節では重複しない）。
+#   課題B: runDone のリカレンスが「close成功 → 新Issue create」の順で、create失敗時に
+#          次周期が失われていた（create-before-closeへ統一。recur再作成のみ createRecurIssue
+#          として close 前に切り出し、depends_on昇格・project昇格ヒントは postDoneProcessing
+#          として close 後のまま維持。理由: fetchAllOpenが完了直後の自分自身を候補に
+#          混入させてしまうため）。
+# 以下は「意図的破壊」で有効性を検証済み（COO完了報告に破壊時の FAIL 結果を記載）。
+echo ""
+echo "§W21  状態整合性の順序統一 — validate-before-mutate / create-before-close（Issue #1652）"
+
+# #1652-B1: runDone — recur再作成(create)は成功するがclose(issues.update)が失敗するケース。
+#   旧実装（close→create順）だとこの状況でissues.createは0回のまま次周期が永久に失われるため、
+#   「issues.create が1回呼ばれている（次周期Issueが失われていない）」がこのテストの核心。
+#   （createRecurIssueの呼び出し順をpostDoneProcessing側=close後に戻すとFAILする＝欠陥の回帰検知）
+W1652_B1_LOG=$(mktemp /tmp/todo-test-1652-b1-XXXXXX.jsonl)
+W1652_B1_RESP='{"issues.get":[{"data":{"number":90101,"id":990101,"title":"Recur Task","body":"due: 2026-04-01\nrecur: weekly\n","labels":[{"name":"🎯 next"}]}}],"issues.create":[{"data":{"number":90111}}],"issues.update":[{"__throw":true,"status":500,"message":"boom"}]}'
+W1652_B1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1652_B1_RESP" OCTOKIT_STUB_LOG_ENV="$W1652_B1_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run done 90101 2>&1); W1652_B1_EC=$?
+assert_exit_fail "#1652-B1 runDone: close失敗 → exit 1" "$W1652_B1_EC"
+assert_eq "#1652-B1 runDone: issues.create が1回呼ばれている（次周期Issueが失われていない＝create-before-closeの核心）" \
+  "1" "$(log_count "$W1652_B1_LOG" issues.create)"
+assert_eq "#1652-B1 runDone: issues.update（close試行）は1回" "1" "$(log_count "$W1652_B1_LOG" issues.update)"
+assert_eq "#1652-B1 runDone: postDoneProcessing未到達のためissues.listForRepoは0回" "0" "$(log_count "$W1652_B1_LOG" issues.listForRepo)"
+assert_contains "#1652-B1 runDone: エラーメッセージに元Issue番号(#90101)が含まれる" "#90101" "$W1652_B1_OUT"
+assert_contains "#1652-B1 runDone: エラーメッセージに作成済み新Issue番号(#90111)が含まれる（副作用の可視化）" "#90111" "$W1652_B1_OUT"
+assert_contains "#1652-B1 runDone: エラーメッセージに元のAPIエラー内容(boom)が含まれる" "boom" "$W1652_B1_OUT"
+rm -f "$W1652_B1_LOG"
+
+# #1652-B2: runDone — recurなし・close失敗のケース。newIssueNumberが無いので通常のエラーに
+#   フォールバックし、close_failed_after_recur系のメッセージにはならないことを確認する
+#   （newIssueNumber分岐の判定漏れ回帰検知）。
+W1652_B2_LOG=$(mktemp /tmp/todo-test-1652-b2-XXXXXX.jsonl)
+W1652_B2_RESP='{"issues.get":[{"data":{"number":90102,"id":990102,"title":"No Recur Task","body":"","labels":[{"name":"🎯 next"}]}}],"issues.update":[{"__throw":true,"status":500,"message":"boom2"}]}'
+W1652_B2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1652_B2_RESP" OCTOKIT_STUB_LOG_ENV="$W1652_B2_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run done 90102 2>&1); W1652_B2_EC=$?
+assert_exit_fail "#1652-B2 runDone: recurなし・close失敗 → exit 1" "$W1652_B2_EC"
+assert_eq "#1652-B2 runDone: issues.create は呼ばれない（recurなし）" "0" "$(log_count "$W1652_B2_LOG" issues.create)"
+assert_contains "#1652-B2 runDone: エラーメッセージに元のAPIエラー内容(boom2)が含まれる" "boom2" "$W1652_B2_OUT"
+assert_not_contains "#1652-B2 runDone: newIssueNumberが無いので「作成済み」系メッセージは出ない" "は作成済みです" "$W1652_B2_OUT"
+rm -f "$W1652_B2_LOG"
+
+# #1652-B3: runBulk done — 複数Issueのうち1件（#90202）だけcloseが失敗するケース。
+#   成功した#90201は通常どおり完了・recur再作成され、失敗した#90202は
+#   per-item errorとして計上され、newIssueNumberがエラーメッセージに含まれる。
+#   他のIssueの処理が巻き込まれて止まらないこと（bulk本来の独立処理保証）も確認する。
+W1652_B3_LOG=$(mktemp /tmp/todo-test-1652-b3-XXXXXX.jsonl)
+W1652_B3_RESP='{"issues.get":[{"data":{"number":90201,"id":990201,"title":"Bulk Recur OK","body":"due: 2026-04-01\nrecur: weekly\n","labels":[{"name":"🎯 next"}]}},{"data":{"number":90202,"id":990202,"title":"Bulk Recur Close Fail","body":"due: 2026-04-01\nrecur: weekly\n","labels":[{"name":"🎯 next"}]}}],"issues.create":[{"data":{"number":90211}},{"data":{"number":90212}}],"issues.update":[{},{"__throw":true,"status":500,"message":"boom3"}],"issues.listForRepo":[{"data":[]}]}'
+W1652_B3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1652_B3_RESP" OCTOKIT_STUB_LOG_ENV="$W1652_B3_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run bulk done 90201 90202 2>&1); W1652_B3_EC=$?
+assert_exit_ok "#1652-B3 runBulk done: bulk全体はexit 0（per-item errorのため）" "$W1652_B3_EC"
+assert_contains "#1652-B3 runBulk done: サマリーが1件完了/1件エラー" "✅ 1件完了" "$W1652_B3_OUT"
+assert_contains "#1652-B3 runBulk done: サマリーにエラー件数1件" "（エラー: 1件）" "$W1652_B3_OUT"
+assert_contains "#1652-B3 runBulk done: #90201はrecur再作成メッセージが出る" "#90201: 繰り返しタスク #90211" "$W1652_B3_OUT"
+assert_contains "#1652-B3 runBulk done: #90202のエラーに新Issue番号(#90212)が含まれる（副作用の可視化）" "#90212" "$W1652_B3_OUT"
+assert_eq "#1652-B3 runBulk done: issues.create は2回（両方ともrecur再作成は実行される）" "2" "$(log_count "$W1652_B3_LOG" issues.create)"
+assert_eq "#1652-B3 runBulk done: issues.listForRepo は1回（postDoneProcessing到達は#90201のみ）" "1" "$(log_count "$W1652_B3_LOG" issues.listForRepo)"
+rm -f "$W1652_B3_LOG"
+
+# #1652-B4: api done-issue — close失敗時、apiMain経由でも新Issue番号を含むエラーになること
+#   （Web版done()経路。#1669のdone-issue専用サブコマンドの回帰確認を兼ねる）
+W1652_B4_LOG=$(mktemp /tmp/todo-test-1652-b4-XXXXXX.jsonl)
+W1652_B4_RESP='{"issues.get":[{"data":{"number":90301,"id":990301,"title":"API Recur Task","body":"due: 2026-04-01\nrecur: weekly\n","labels":[{"name":"🎯 next"}]}}],"issues.create":[{"data":{"number":90311}}],"issues.update":[{"__throw":true,"status":500,"message":"boom4"}]}'
+W1652_B4_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1652_B4_RESP" OCTOKIT_STUB_LOG_ENV="$W1652_B4_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run api done-issue 90301 2>&1); W1652_B4_EC=$?
+assert_exit_fail "#1652-B4 api done-issue: close失敗 → exit 1" "$W1652_B4_EC"
+assert_eq "#1652-B4 api done-issue: issues.create が1回呼ばれている（次周期Issueが失われていない）" \
+  "1" "$(log_count "$W1652_B4_LOG" issues.create)"
+assert_contains "#1652-B4 api done-issue: エラーメッセージに作成済み新Issue番号(#90311)が含まれる" "#90311" "$W1652_B4_OUT"
+rm -f "$W1652_B4_LOG"
 
 # W16-21: runShow（plain出力、recur/project/tags/desc 全フィールド）
 W16_21_ISSUE='{"number":22000,"title":"rich task","body":"due: 2026-05-01\nrecur: weekly\nproject: #999\nestimate: 90\nsome free-text description\n","labels":[{"name":"🎯 next"},{"name":"@home"},{"name":"#blog"},{"name":"p1"}],"state":"closed","closed_at":"2026-05-02T00:00:00Z"}'

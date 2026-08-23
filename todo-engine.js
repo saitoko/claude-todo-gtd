@@ -373,6 +373,7 @@ const MESSAGES = {
     'error.unknown_command': 'エラー: 未知のコマンド「{cmd}」です。',
     'error.unknown_command_hint1': '  （コマンドと混同を避けるため、英字タイトルは /todo add <タイトル> で明示的に追加してください）',
     'error.unknown_command_hint2': '  明示的に inbox へ追加したい場合: /todo add {args}',
+    'error.close_failed_after_recur': 'エラー: #{num} のクローズに失敗しました（新しい繰り返しIssue #{newNum} は作成済みです）: {msg}\n  同じタスクのオープンなIssueが2件（元 #{num} と新規 #{newNum}）残っている可能性があります。手動で確認してください。',
     'warn.sub_issue_skip': '⚠️ sub-issue 登録スキップ: #{parent} に既に登録済み（冪等）',
     'warn.sub_issue_register_failed': '⚠️ sub-issue 登録失敗（Issue は作成済み）: {msg}',
     'warn.sub_issue_register_failed_422': '⚠️ sub-issue 登録失敗（#{parent} には未登録と判定）: {msg}',
@@ -721,6 +722,7 @@ const MESSAGES = {
     'error.unknown_command': 'Error: Unknown command "{cmd}".',
     'error.unknown_command_hint1': '  (To avoid confusion with a command, use /todo add <title> to explicitly add an English title)',
     'error.unknown_command_hint2': '  To explicitly add it to inbox: /todo add {args}',
+    'error.close_failed_after_recur': 'Error: Failed to close #{num} (a new recurring issue #{newNum} was already created): {msg}\n  There may now be two open issues for the same task (original #{num} and new #{newNum}). Please check manually.',
     'warn.sub_issue_skip': '⚠️ sub-issue registration skipped: #{parent} already registered (idempotent)',
     'warn.sub_issue_register_failed': '⚠️ sub-issue registration failed (issue was already created): {msg}',
     'warn.sub_issue_register_failed_422': '⚠️ sub-issue registration failed (not registered to #{parent}): {msg}',
@@ -2660,16 +2662,25 @@ async function apiMain(subArgs) {
         break;
       }
 
-      // Issue #1669: close-issue は close するだけで postDoneProcessing（recur再作成 +
-      // depends_on昇格）を一切呼ばないため、Web版の done() 経由では繰り返しタスクの
-      // 周期チェーンが無言で途切れていた。CLIの `run done`（runDone）と同じ後処理を
-      // api 層からも呼べるようにする専用サブコマンド。
+      // Issue #1669: close-issue は close するだけで createRecurIssue（recur再作成）/
+      // postDoneProcessing（depends_on昇格）を一切呼ばないため、Web版の done() 経由では
+      // 繰り返しタスクの周期チェーンが無言で途切れていた。CLIの `run done`（runDone）と
+      // 同じ後処理を api 層からも呼べるようにする専用サブコマンド。
       case 'done-issue': {
         const num = parseInt(subArgs[1]);
         if (!num) { throw apiErr('Usage: api done-issue <number>'); }
         const issue = await fetchAndParseIssue(octokit, owner, repo, num);
-        await octokit.issues.update({ owner, repo, issue_number: num, state: 'closed' });
-        const { recurLine, otherLines, newIssueNumber } = await postDoneProcessing(octokit, owner, repo, num, issue);
+        // #1652: create-before-close — 次周期Issueの作成をcloseより先に行う（詳細はcreateRecurIssue定義部のコメント参照）
+        const { recurLine, newIssueNumber } = await createRecurIssue(octokit, owner, repo, issue);
+        try {
+          await octokit.issues.update({ owner, repo, issue_number: num, state: 'closed' });
+        } catch (e) {
+          if (newIssueNumber) {
+            throw apiErr('Error: Failed to close issue #'+num+' (a new recurring issue #'+newIssueNumber+' was already created): '+e.message+'. There may now be two open issues for the same task (original #'+num+' and new #'+newIssueNumber+'). Please check manually.');
+          }
+          throw e;
+        }
+        const { otherLines } = await postDoneProcessing(octokit, owner, repo, num, issue);
         process.stdout.write(JSON.stringify({
           ok: true,
           recurLine: recurLine || null,
@@ -3450,11 +3461,18 @@ async function fetchRecentClosed(octokit, owner, repo, limit, fields) {
 // runDone（単体完了）と runBulk の done 分岐（一括完了）の両方から呼ばれる。
 // #1642: bulk done がこの後処理をスキップしていたため、リカレンス付きIssueを
 // bulk done に含めると周期チェーンが無言で途切れるデータ損失バグがあった。
-async function postDoneProcessing(octokit, owner, repo, num, issue) {
+// #1652: create-before-close — リカレンス次周期Issueの作成は必ずcloseより「前」に呼ぶこと。
+// close→create の順（旧実装）だとcreate失敗時に次周期Issueが永久に失われるため、
+// 呼び出し順をcreate→closeへ入れ替えた（postDoneProcessingから本関数として分離）。
+// 分離時の設計判断: 本関数はrecur再作成のみを担う。postDoneProcessing側に残した
+// depends_on昇格・project昇格ヒントはfetchAllOpen（オープンIssue一覧取得）に依存しており、
+// closeより前に呼ぶと完了中のIssue自身がまだopenのため一覧に混入し、
+// 「自分自身を次タスク候補として提示する」誤動作を起こす。そのため分離を「recur再作成のみ
+// close前に前倒し」に留め、depends_on昇格・project昇格ヒントは従来どおりclose後のまま維持した。
+async function createRecurIssue(octokit, owner, repo, issue) {
   const today = getToday();
   let recurLine = null;
   let newIssueNumber = null;
-  const otherLines = [];
 
   if (issue.recur) {
     validateRecur(issue.recur);
@@ -3487,7 +3505,15 @@ async function postDoneProcessing(octokit, owner, repo, num, issue) {
     if (skipped) recurLine += '\n' + tpl('done.recur_skip_note', { base, date: nextDate });
   }
 
-  // depends_on 昇格チェックおよびプロジェクト昇格候補ヒント
+  return { recurLine, newIssueNumber };
+}
+
+// depends_on 昇格チェックおよびプロジェクト昇格候補ヒント。
+// #1652: 必ずclose「後」に呼ぶこと。fetchAllOpenで完了直後のIssue自身が
+// まだopenのまま候補に混入するのを避けるため（createRecurIssue側のコメント参照）。
+async function postDoneProcessing(octokit, owner, repo, num, issue) {
+  const otherLines = [];
+
   // #1660: depends_on 昇格は「完了した Issue を他のオープン Issue が依存先にしているか」を
   // 判定する処理であり、完了した Issue 自身の project/dependsOn フィールドとは論理的に無関係。
   // そのためガードなしで常に fetchAllOpen を実行し、依存関係を確認する
@@ -3556,7 +3582,7 @@ async function postDoneProcessing(octokit, owner, repo, num, issue) {
     } // end if (issue.project)
   }
 
-  return { recurLine, otherLines, newIssueNumber };
+  return { otherLines };
 }
 
 async function runDone(octokit, owner, repo, tokens) {
@@ -3576,9 +3602,19 @@ async function runDone(octokit, owner, repo, tokens) {
     const body = buildBody({ ...issue, actual });
     await octokit.issues.update({ owner, repo, issue_number: num, body });
   }
-  await octokit.issues.update({ owner, repo, issue_number: num, state: 'closed' });
 
-  const { recurLine, otherLines } = await postDoneProcessing(octokit, owner, repo, num, issue);
+  // #1652: create-before-close — 次周期Issueの作成をcloseより先に行う（詳細はcreateRecurIssue定義部のコメント参照）
+  const { recurLine, newIssueNumber } = await createRecurIssue(octokit, owner, repo, issue);
+  try {
+    await octokit.issues.update({ owner, repo, issue_number: num, state: 'closed' });
+  } catch (e) {
+    if (newIssueNumber) {
+      throw apiErr(tpl('error.close_failed_after_recur', { num, newNum: newIssueNumber, msg: e.message }));
+    }
+    throw e;
+  }
+
+  const { otherLines } = await postDoneProcessing(octokit, owner, repo, num, issue);
   if (recurLine) {
     runOut(tpl('done.completed', { num }) + recurLine);
   } else {
@@ -3790,6 +3826,9 @@ async function runEdit(octokit, owner, repo, tokens) {
 
   // priority 変更
   if (parsed.priority !== null) {
+    // #1652: validate-before-mutate — 旧priorityラベルを削除する前にparsed.priorityを検証する。
+    // 逆順だとtypo時に旧ラベルだけ削除された中途半端な状態でエラー終了してしまう。
+    if (parsed.priority !== 'clear') validatePriority(parsed.priority);
     const oldPri = issue.labels.find(l => /^p[123]$/.test(l));
     if (oldPri) {
       await removeLabelIfPresent(octokit, owner, repo, num, oldPri);
@@ -3797,7 +3836,6 @@ async function runEdit(octokit, owner, repo, tokens) {
     if (parsed.priority === 'clear') {
       changed.push('priority → '+t('edit.clear'));
     } else {
-      validatePriority(parsed.priority);
       const pcolor = priorityColor(parsed.priority);
       await ensureLabel(octokit, owner, repo, parsed.priority, pcolor, t('label.desc_priority'));
       await octokit.issues.addLabels({ owner, repo, issue_number: num, labels: [parsed.priority] });
@@ -3913,6 +3951,9 @@ async function runPriority(octokit, owner, repo, tokens) {
   const level = tokens[1];
   if (!num || !level) { process.stderr.write('Usage: run priority <number> <p1|p2|p3|clear>\n'); process.exit(1); }
   validateNumber(String(num));
+  // #1652: validate-before-mutate — 旧priorityラベルを削除する前にlevelを検証する。
+  // 逆順だとtypo時に旧ラベルだけ削除された中途半端な状態でエラー終了してしまう。
+  if (level !== 'clear') validatePriority(level);
 
   const issue = await fetchAndParseIssue(octokit, owner, repo, num);
   const oldPri = issue.labels.find(l => /^p[123]$/.test(l));
@@ -3922,7 +3963,6 @@ async function runPriority(octokit, owner, repo, tokens) {
   if (level === 'clear') {
     runOut(tpl('priority.cleared', { num }));
   } else {
-    validatePriority(level);
     const pcolor = priorityColor(level);
     await ensureLabel(octokit, owner, repo, level, pcolor, t('label.desc_priority'));
     await octokit.issues.addLabels({ owner, repo, issue_number: num, labels: [level] });
@@ -4581,10 +4621,20 @@ async function runBulk(octokit, owner, repo, tokens) {
           const body = buildBody({ ...issue, actual });
           await octokit.issues.update({ owner, repo, issue_number: num, body });
         }
-        await octokit.issues.update({ owner, repo, issue_number: num, state: 'closed' });
 
-        // #1642: recur再作成 + depends_on昇格を runDone と共通の後処理で実施
-        const { recurLine, otherLines } = await postDoneProcessing(octokit, owner, repo, num, issue);
+        // #1652: create-before-close — 次周期Issueの作成をcloseより先に行う（詳細はcreateRecurIssue定義部のコメント参照）
+        const { recurLine, newIssueNumber } = await createRecurIssue(octokit, owner, repo, issue);
+        try {
+          await octokit.issues.update({ owner, repo, issue_number: num, state: 'closed' });
+        } catch (e) {
+          if (newIssueNumber) {
+            throw new Error(tpl('error.close_failed_after_recur', { num, newNum: newIssueNumber, msg: e.message }));
+          }
+          throw e;
+        }
+
+        // #1642: depends_on昇格を runDone と共通の後処理で実施
+        const { otherLines } = await postDoneProcessing(octokit, owner, repo, num, issue);
         if (recurLine) {
           recurCreated++;
           runOut(`  #${num}: ${recurLine}`);
