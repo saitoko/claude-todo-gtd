@@ -1612,6 +1612,48 @@ assert_contains "en: help Templates"      "Templates"          "$HELP_EN"
 assert_contains "en: help Other"          "Other"              "$HELP_EN"
 
 # ──────────────────────────────────────────
+# help コマンド: #1655 フェーズ1（7コマンド欠落修正・review系移行・--depends-on配線）
+# ──────────────────────────────────────────
+echo ""
+echo "▶ help コマンド（#1655 フェーズ1）"
+
+# 1-1: 7コマンドが help() に出力される（ja/en）
+for cmd in "promote-project" "unlink" "review-someday" "weekly-project-audit" "migrate" "comment" "api"; do
+  assert_contains "ja: help に $cmd が含まれる" "$cmd" "$HELP_JA"
+  assert_contains "en: help に $cmd が含まれる" "$cmd" "$HELP_EN"
+done
+
+# 1-2: --depends-on の配線漏れ修正（help() から呼ばれる）
+# 注: grep パターンが "--" で始まると未知オプション扱いになるため、先頭の "--" を含めない
+# （ops/playbooks/code/script-development.md §既知の注意点 参照）
+assert_contains "ja: help に --depends-on が含まれる" "depends-on <#N>" "$HELP_JA"
+assert_contains "en: help に --depends-on が含まれる" "depends-on <#N>" "$HELP_EN"
+
+# 1-3: review / daily-review / weekly-review は「現役コマンド」としては現れない
+#      （旧コマンド行の厳密な文字列。誘導文言側は異なる文言・スペース幅のため誤検知しない）
+assert_not_contains "ja: help に旧 review コマンド行が残っていない"        "review                    Inboxレビュー"                 "$HELP_JA"
+assert_not_contains "ja: help に旧 daily-review コマンド行が残っていない"  "daily-review \[morning|evening\] デイリーレビュー"        "$HELP_JA"
+assert_not_contains "ja: help に旧 weekly-review コマンド行が残っていない" "weekly-review              週次レビュー"                  "$HELP_JA"
+assert_not_contains "en: help に旧 review コマンド行が残っていない"        "review                    Inbox review"                   "$HELP_EN"
+assert_not_contains "en: help に旧 daily-review コマンド行が残っていない"  "daily-review \[morning|evening\] Daily review"            "$HELP_EN"
+assert_not_contains "en: help に旧 weekly-review コマンド行が残っていない" "weekly-review              Weekly review"                 "$HELP_EN"
+
+# 1-3: 誘導文言としては残っているが、環境依存の具体スキル名(/gtd-collect 等)は書かず、
+#      環境非依存に todo.md の「対話コマンド」節へ誘導する（COO方針・公開リポには
+#      /gtd-collect 等のスキルが存在しないため。ユーザー承認済み、2026-08-23）
+assert_contains "ja: help の誘導文言が todo.md を参照させている"         "todo.md"           "$HELP_JA"
+assert_contains "ja: help の誘導文言が「対話コマンド」節を指している"     "対話コマンド"       "$HELP_JA"
+assert_contains "en: help の誘導文言が todo.md を参照させている"         "todo.md"           "$HELP_EN"
+assert_contains "en: help の誘導文言が Interactive Commands 節を指している" "Interactive Commands" "$HELP_EN"
+
+assert_not_contains "ja: help の誘導文言に環境依存スキル名 /gtd-collect が含まれない"   "/gtd-collect"   "$HELP_JA"
+assert_not_contains "ja: help の誘導文言に環境依存スキル名 /daily-review が含まれない"  "/daily-review"  "$HELP_JA"
+assert_not_contains "ja: help の誘導文言に環境依存スキル名 /weekly-review が含まれない" "/weekly-review" "$HELP_JA"
+assert_not_contains "en: help の誘導文言に環境依存スキル名 /gtd-collect が含まれない"   "/gtd-collect"   "$HELP_EN"
+assert_not_contains "en: help の誘導文言に環境依存スキル名 /daily-review が含まれない"  "/daily-review"  "$HELP_EN"
+assert_not_contains "en: help の誘導文言に環境依存スキル名 /weekly-review が含まれない" "/weekly-review" "$HELP_EN"
+
+# ──────────────────────────────────────────
 # today コマンドテスト
 # ──────────────────────────────────────────
 echo ""

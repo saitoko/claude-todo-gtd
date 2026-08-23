@@ -140,7 +140,9 @@ const MESSAGES = {
     'help.section_bulk': '### 一括操作',
     'help.section_review': '### レビュー・分析',
     'help.section_template': '### テンプレート・ビュー',
+    'help.section_project': '### プロジェクト管理',
     'help.section_other': '### その他',
+    'help.section_migrated': '### 統合済みコマンド',
     'help.add': '/todo [GTD] <タイトル> [--body "本文"] [--body-file <path>]  タスク追加（GTD省略時: inbox）',
     'help.list': '/todo list [フィルタ] [--json]   タスク一覧',
     'help.done': '/todo done <#> [--actual 時間] [--note "テキスト"]  タスク完了',
@@ -158,18 +160,25 @@ const MESSAGES = {
     'help.bulk': '/todo bulk <done|move|tag|untag|priority> <#>...',
     'help.today': '/todo today                     今日のタスク（期限超過＋今日期限）',
     'help.dashboard': '/todo dashboard                 ダッシュボード',
-    'help.daily': '/todo daily-review [morning|evening] デイリーレビュー',
-    'help.weekly': '/todo weekly-review              週次レビュー',
+    'help.review_someday': '/todo review-someday <#>        somedayタスクの見直し日(reviewed_at)を更新',
     'help.stats': '/todo stats                     統計情報',
     'help.report': '/todo report <weekly|monthly|Nd> レポート出力',
     'help.template': '/todo template <list|show|save|use|delete>',
     'help.view': '/todo view <save|use|list|delete>',
-    'help.review': '/todo review                    Inboxレビュー',
     'help.archive': '/todo archive [list|search|reopen] 完了済みタスク',
     'help.link': '/todo link <#> <project#>       プロジェクト紐付け',
+    'help.promote_project': '/todo promote-project <#> [--outcome "タイトル"]  既存Issueをプロジェクトに昇格',
+    'help.unlink': '/todo unlink <#> [--force]      子Issueのプロジェクト紐付けを解除',
+    'help.migrate': '/todo migrate sub-issue [--dry-run]  project紐付けをGitHub sub-issueへ一括登録',
+    'help.weekly_project_audit': '/todo weekly-project-audit      全プロジェクトを棚卸し（next欠落・停滞を検出）',
     'help.show': '/todo show <#> [--json]          個別タスク詳細表示',
     'help.schema': '/todo schema                    --json 出力のフィールド定義を表示',
+    'help.comment': '/todo comment <#> <テキスト>     Issueにコメントを追加',
+    'help.api': '/todo api <subcommand> [args...] JSON API（list-comments 等。詳細は todo.md 参照）',
     'help.help': '/todo help                      このヘルプを表示',
+    'help.review_migrated': '💡 review は /todo のサブコマンドではなくなりました。使い方は todo.md の「対話コマンド」節を参照してください。',
+    'help.daily_migrated': '💡 daily-review は /todo のサブコマンドではなくなりました。使い方は todo.md の「対話コマンド」節を参照してください。',
+    'help.weekly_migrated': '💡 weekly-review は /todo のサブコマンドではなくなりました。使い方は todo.md の「対話コマンド」節を参照してください。',
     // today
     'today.header': '# 🎯 今日のタスク — {date}',
     'today.overdue': '## ⚠️ 期限超過（{n}）',
@@ -197,7 +206,7 @@ const MESSAGES = {
     'promote.no_targets': '昇格対象なし（activate日到来タスク: 0件）',
     'promote.summary': '✅ {n}件を next に昇格しました',
     'promote.pending_review': '⏸ #{num} 「{title}」activate日到来ですが再開条件の確認が必要です: {condition}',
-    'promote.pending_summary': '⏸ {n}件が再開条件の確認待ちです（次回 /todo weekly-review で確認してください）',
+    'promote.pending_summary': '⏸ {n}件が再開条件の確認待ちです（次回の週次レビューで確認してください）',
     'help.promote': '/todo promote                   activate日到来タスクをNEXTに昇格',
     'help.activate': '  --activate <日付>             指定日にNEXTへ自動昇格（例: 2026-05-01）',
     'help.before': '  --before <期間>               dueのN日前にNEXTへ自動昇格（例: 14d, 2w）',
@@ -492,7 +501,9 @@ const MESSAGES = {
     'help.section_bulk': '### Bulk Operations',
     'help.section_review': '### Reviews & Analysis',
     'help.section_template': '### Templates & Views',
+    'help.section_project': '### Project Management',
     'help.section_other': '### Other',
+    'help.section_migrated': '### Merged Commands',
     'help.add': '/todo [GTD] <title> [--body "text"] [--body-file <path>]  Add task (default: inbox)',
     'help.list': '/todo list [filter] [--json]     List tasks',
     'help.done': '/todo done <#> [--actual time] [--note "text"]  Mark done',
@@ -510,18 +521,25 @@ const MESSAGES = {
     'help.bulk': '/todo bulk <done|move|tag|untag|priority> <#>...',
     'help.today': '/todo today                     Today\'s tasks (overdue + due today)',
     'help.dashboard': '/todo dashboard                 Dashboard',
-    'help.daily': '/todo daily-review [morning|evening] Daily review',
-    'help.weekly': '/todo weekly-review              Weekly review',
+    'help.review_someday': '/todo review-someday <#>        Update review date (reviewed_at) for a someday task',
     'help.stats': '/todo stats                     Statistics',
     'help.report': '/todo report <weekly|monthly|Nd> Report',
     'help.template': '/todo template <list|show|save|use|delete>',
     'help.view': '/todo view <save|use|list|delete>',
-    'help.review': '/todo review                    Inbox review',
     'help.archive': '/todo archive [list|search|reopen] Closed tasks',
     'help.link': '/todo link <#> <project#>       Link to project',
+    'help.promote_project': '/todo promote-project <#> [--outcome "title"]  Promote an existing issue to a project',
+    'help.unlink': '/todo unlink <#> [--force]      Unlink a child issue from its project',
+    'help.migrate': '/todo migrate sub-issue [--dry-run]  Bulk-register project links as GitHub sub-issues',
+    'help.weekly_project_audit': '/todo weekly-project-audit      Audit all projects (detect missing next / stale)',
     'help.show': '/todo show <#> [--json]          Show task detail',
     'help.schema': '/todo schema                    Show JSON field schema for --json output',
+    'help.comment': '/todo comment <#> <text>        Add a comment to an issue',
+    'help.api': '/todo api <subcommand> [args...] JSON API (list-comments, etc. See todo.md for details)',
     'help.help': '/todo help                      Show this help',
+    'help.review_migrated': '💡 review is no longer a /todo subcommand. See the "Interactive Commands" section in todo.md for how to use it.',
+    'help.daily_migrated': '💡 daily-review is no longer a /todo subcommand. See the "Interactive Commands" section in todo.md for how to use it.',
+    'help.weekly_migrated': '💡 weekly-review is no longer a /todo subcommand. See the "Interactive Commands" section in todo.md for how to use it.',
     // today
     'today.header': '# 🎯 Today\'s Tasks — {date}',
     'today.overdue': '## ⚠️ Overdue ({n})',
@@ -549,7 +567,7 @@ const MESSAGES = {
     'promote.no_targets': 'No targets to promote (activate date arrived: 0)',
     'promote.summary': '✅ {n} tasks promoted to next',
     'promote.pending_review': '⏸ #{num} "{title}" activate date arrived but resume condition needs review: {condition}',
-    'promote.pending_summary': '⏸ {n} task(s) awaiting resume condition review (check at next /todo weekly-review)',
+    'promote.pending_summary': '⏸ {n} task(s) awaiting resume condition review (check at your next weekly review)',
     'help.promote': '/todo promote                   Promote tasks whose activate date has arrived',
     'help.activate': '  --activate <date>             Auto-promote to NEXT on specified date',
     'help.before': '  --before <duration>           Auto-promote N days before due (e.g. 14d, 2w)',
@@ -1831,7 +1849,7 @@ function help() {
 
   w(t('help.section_review')+'\n');
   w('```\n');
-  for (const k of ['today','eisenhower','dashboard','daily','weekly','stats','report']) { w(t('help.'+k)+'\n'); }
+  for (const k of ['today','eisenhower','dashboard','review_someday','stats','report']) { w(t('help.'+k)+'\n'); }
   w('```\n\n');
 
   w(t('help.section_template')+'\n');
@@ -1839,19 +1857,31 @@ function help() {
   for (const k of ['template','view']) { w(t('help.'+k)+'\n'); }
   w('```\n\n');
 
+  w(t('help.section_project')+'\n');
+  w('```\n');
+  for (const k of ['promote_project','unlink','migrate','weekly_project_audit']) { w(t('help.'+k)+'\n'); }
+  w('```\n\n');
+
   w(t('help.section_other')+'\n');
   w('```\n');
-  for (const k of ['show','schema','review','archive','link','promote','help']) { w(t('help.'+k)+'\n'); }
+  for (const k of ['show','schema','archive','link','promote','comment','api','help']) { w(t('help.'+k)+'\n'); }
   w('```\n\n');
 
   w(t('help.activate_section_header')+'\n');
   w('```\n');
   w(t('help.activate')+'\n');
   w(t('help.before')+'\n');
+  w(t('help.depends_on')+'\n');
   w(t('help.resume_condition')+'\n');
   w('```\n');
   w('\n');
   w(t('help.desc_note')+'\n');
+  w('\n');
+
+  w(t('help.section_migrated')+'\n');
+  w(t('help.review_migrated')+'\n');
+  w(t('help.daily_migrated')+'\n');
+  w(t('help.weekly_migrated')+'\n');
 }
 
 function renderToday() {
