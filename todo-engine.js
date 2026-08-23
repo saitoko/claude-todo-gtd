@@ -16,6 +16,7 @@ const GTD_DISPLAY = {
 };
 const FORBIDDEN_CHARS = ';$`()\"\'' + String.fromCharCode(92) + '|&><{}';
 const MAX_OPEN_ISSUES_LIMIT = 200; // GitHub API ページネーション上限。これを超える場合は警告を出力
+const MAX_SUB_ISSUES_LIMIT = 500; // sub-issue 一覧のページネーション上限（#1881: 無限ループ防止の安全弁。GitHub の現行上限は親1つにつき100件なので通常は到達しない）
 const PRI_COLORS = { p1: 'B60205', p2: 'FBCA04', p3: '0075CA' };
 // recur の曜日固定サフィックス（weekly:sat 等）で使う曜日名→Date.getDay()数値の対応表。
 // キーの集合が「有効な曜日サフィックス一覧」を兼ねる（Issue #1676）
@@ -394,6 +395,7 @@ const MESSAGES = {
     'list.project_children_header': '## 📁 プロジェクト #{parent} の子タスク（{n}件）',
     'list.no_children': '  （子タスクなし）',
     'warn.open_issue_limit': '⚠️ オープン Issue が {limit} 件の上限に達しました。古いタスクのクローズを推奨します。',
+    'warn.sub_issue_list_limit': '⚠️ #{parent} の sub-issue が {limit} 件の上限に達しました。一部が一覧から欠落している可能性があります。',
   },
   en: {
     'error.ctx_invalid': 'Error: Context name contains invalid characters',
@@ -755,6 +757,7 @@ const MESSAGES = {
     'list.project_children_header': '## 📁 Project #{parent} subtasks ({n})',
     'list.no_children': '  (No subtasks)',
     'warn.open_issue_limit': '⚠️ Open issues reached the limit of {limit}. Consider closing older tasks.',
+    'warn.sub_issue_list_limit': '⚠️ Sub-issues for #{parent} reached the limit of {limit}. Some may be missing from the list.',
   }
 };
 function t(key) { return (MESSAGES[LANG] || MESSAGES.ja)[key] || MESSAGES.ja[key] || key; }
@@ -3150,17 +3153,41 @@ async function addSubIssue(octokit, owner, repo, parentNumber, childInternalId) 
   }
 }
 
-// 親 Issue の sub-issue 一覧取得（per_page:100）
+// 親 Issue の sub-issue 一覧取得（ページング対応、#1881）。
+// GitHub の現行仕様では sub-issue は「親1つにつき最大100件」（公式ドキュメント
+// "Adding sub-issues" に明記。2026-08-23 確認）。したがって per_page:100 の
+// 1ページで必ず全件取得でき、現時点でページングは実際には発火しない。
+// それでもページングを実装しているのは、この上限が GitHub 側の仕様変更で
+// 引き上げられたときに、黙って欠落しないようにするため（防御的実装）。
+// この結果は addSubIssue の422判別・list project・weekly-project-audit・
+// unlink の事前確認の4箇所が使うため、欠落するとどれも静かに誤動作する。
+// fetchAllOpen（MAX_OPEN_ISSUES_LIMIT）と同型の構造にしてある。
 async function listSubIssues(octokit, owner, repo, parentNumber) {
+  const all = [];
+  let page = 1;
   try {
-    const { data } = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues', {
-      owner, repo,
-      issue_number: parentNumber,
-      per_page: 100,
-      headers: { 'X-GitHub-Api-Version': '2022-11-28' },
-    });
-    return data;
+    while (all.length < MAX_SUB_ISSUES_LIMIT) {
+      const { data } = await octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues', {
+        owner, repo,
+        issue_number: parentNumber,
+        per_page: 100,
+        page,
+        headers: { 'X-GitHub-Api-Version': '2022-11-28' },
+      });
+      if (!data.length) break;
+      all.push(...data);
+      if (data.length < 100) break;
+      page++;
+    }
+    if (all.length === MAX_SUB_ISSUES_LIMIT) {
+      process.stderr.write(tpl('warn.sub_issue_list_limit', { parent: parentNumber, limit: MAX_SUB_ISSUES_LIMIT })+'\n');
+    }
+    return all;
   } catch (e) {
+    // 取得失敗時は[]を返す既存仕様を維持（#1880で自己申告された「取得失敗」と
+    // 「本当に未登録」を区別できない問題は本Issue#1881のスコープ外。理由は
+    // 完了報告を参照）。ページ2以降で失敗した場合、既に取得済みのページ分も
+    // 含めて[]を返す（部分結果を返すと呼び出し側が「全件取得できた」と誤認しうるため）。
     process.stderr.write(tpl('warn.sub_issue_list_failed', { msg: e.message })+'\n');
     return [];
   }

@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased]
+
+### Changed
+
+- `listSubIssues()` を `fetchAllOpen()` と同型のページング実装に変更した（Issue #1881）。**これは現時点で挙動の変わらない防御的な変更である**。GitHub の sub-issue は現行仕様で「親1つにつき最大100件」（公式ドキュメント "Adding sub-issues" に明記。2026-08-23 確認）のため、従来の `per_page: 100` の単発リクエストでも常に全件を取得できており、欠落は発生していなかった。この上限が将来引き上げられた場合に黙って欠落しないよう、あらかじめページングに寄せておくもの。無限ループ防止用の上限として `MAX_SUB_ISSUES_LIMIT`（500件）を新設し、到達時は `warn.sub_issue_list_limit` で警告する（ja/en）。この結果は4箇所が使うため、仮に欠落するとどれも静かに誤動作する: (1) `addSubIssue()` の422判別（既登録の子を「未登録」と誤判定し `error` に計上）、(2) `/todo list project <N>`（子一覧から欠落）、(3) `/todo unlink`（食い違いと誤判定し `--force` を要求）、(4) `weekly-project-audit`（棚卸しの走査対象から漏れる）。取得失敗時に `[]` を返す既存仕様（成功と失敗を区別しない）は本Issueのスコープ外として維持した
+
+---
+
 ## [v2.9.0] - 2026-08-23
 
 ### Changed

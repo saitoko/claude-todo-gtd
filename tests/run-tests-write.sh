@@ -1801,6 +1801,69 @@ assert_eq "W22-4: issues.update が1回呼ばれる（body のみ更新）" "1" 
 rm -f "$W1880_4_LOG"
 
 # ──────────────────────────────────────────
+# §W23  listSubIssues のページング対応（Issue #1881）
+# 前提: GitHub の sub-issue は現行仕様で「親1つにつき最大100件」（公式ドキュメント
+# "Adding sub-issues"、2026-08-23 確認）。したがって per_page:100 の単発リクエストでも
+# 実際には全件取得できており、本番で欠落は起きていなかった。本節は「上限が将来
+# 引き上げられても黙って欠落しない」ことを保証する防御的テストである。
+# 仮に欠落した場合、addSubIssueの422判別（本節の核心）に加え、
+# list project・weekly-project-audit・unlinkの計4箇所が影響を受ける
+# （呼び出し元の一覧はコード側コメント参照）。
+# 以下は「意図的破壊」で有効性を検証済み（COO完了報告に破壊時の FAIL 結果を記載）。
+# ──────────────────────────────────────────
+echo ""
+echo "§W23  listSubIssues のページング対応（Issue #1881）"
+
+# W23-1 【核心】101件超の親: 2ページ目にいる子も addSubIssue の422判別で「既登録」と
+# 正しく判定されること（ページング未対応だとpage1にいない子は誤って error 計上される）
+W1881_1_CHILD='{"number":41901,"id":941901,"title":"child","body":"project: #41902\n","labels":[]}'
+W1881_1_PARENT='{"number":41902,"labels":[{"name":"📁 project"}]}'
+# page1: 100件（対象の子は含まない）／page2: 1件（対象の子のみ、<100件で打ち切り）
+W1881_1_PAGE1=$(node -e "const a=[]; for(let i=0;i<100;i++) a.push({id:800000+i,number:800000+i}); process.stdout.write(JSON.stringify(a));")
+W1881_1_PAGE2='[{"id":941901,"number":41901}]'
+W1881_1_LOG=$(mktemp /tmp/todo-test-1881-1-XXXXXX.jsonl)
+: > "$W1881_1_LOG"
+W1881_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W1881_1_LOG" \
+  OCTOKIT_STUB_RESPONSES_ENV="{\"issues.listForRepo\":[{\"data\":[$W1881_1_CHILD]}],\"issues.get\":[{\"data\":$W1881_1_PARENT}],\"POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"__throw\":true,\"status\":422,\"message\":\"Validation Failed: sub_issue_id already assigned to a parent\"}],\"GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"data\":$W1881_1_PAGE1},{\"data\":$W1881_1_PAGE2}]}" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run migrate sub-issue 2>&1); W1881_1_EC=$?
+assert_exit_ok "W23-1 migrate 本実行(101件超・2ページ目に既登録): exit 0" "$W1881_1_EC"
+assert_contains "W23-1 【核心】2ページ目にいる子を既登録と正しく判定してスキップ計上" \
+  "✅ migrate sub-issue 完了: 0件登録 / 1件スキップ / 0件エラー" "$W1881_1_OUT"
+assert_eq "W23-1: GET sub_issues が2回呼ばれる（2ページ分取得）" "2" "$(log_count "$W1881_1_LOG" "GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues")"
+rm -f "$W1881_1_LOG"
+
+# W23-2 リグレッション: 1ページに収まる既存ケース（子2件）は従来どおりGET1回のみで完結する
+W1881_2_CHILD='{"number":41903,"id":941903,"title":"child2","body":"project: #41904\n","labels":[]}'
+W1881_2_PARENT='{"number":41904,"labels":[{"name":"📁 project"}]}'
+W1881_2_EXISTING='[{"id":941903,"number":41903},{"id":941999,"number":41999}]'
+W1881_2_LOG=$(mktemp /tmp/todo-test-1881-2-XXXXXX.jsonl)
+: > "$W1881_2_LOG"
+W1881_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W1881_2_LOG" \
+  OCTOKIT_STUB_RESPONSES_ENV="{\"issues.listForRepo\":[{\"data\":[$W1881_2_CHILD]}],\"issues.get\":[{\"data\":$W1881_2_PARENT}],\"POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"__throw\":true,\"status\":422,\"message\":\"Validation Failed: sub_issue_id already assigned to a parent\"}],\"GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"data\":$W1881_2_EXISTING}]}" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run migrate sub-issue 2>&1); W1881_2_EC=$?
+assert_exit_ok "W23-2 リグレッション(1ページ収まる・422既登録): exit 0" "$W1881_2_EC"
+assert_contains "W23-2: 従来どおり既登録スキップと判定される" \
+  "✅ migrate sub-issue 完了: 0件登録 / 1件スキップ / 0件エラー" "$W1881_2_OUT"
+assert_eq "W23-2: GET sub_issues は1回のみ（余分なページ取得をしない）" "1" "$(log_count "$W1881_2_LOG" "GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues")"
+rm -f "$W1881_2_LOG"
+
+# W23-3 上限ガード: sub-issue が MAX_SUB_ISSUES_LIMIT（500件）ちょうどに達した場合、
+# 一部欠落の可能性がある旨の警告を出す（list project 経由・POST不要で検証）
+W1881_3_PAGE=$(node -e "const a=[]; for(let i=0;i<100;i++) a.push({id:900000+i,number:900000+i}); process.stdout.write(JSON.stringify(a));")
+W1881_3_LOG=$(mktemp /tmp/todo-test-1881-3-XXXXXX.jsonl)
+: > "$W1881_3_LOG"
+W1881_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W1881_3_LOG" \
+  OCTOKIT_STUB_RESPONSES_ENV="{\"issues.listForRepo\":[{\"data\":[]}],\"GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"data\":$W1881_3_PAGE},{\"data\":$W1881_3_PAGE},{\"data\":$W1881_3_PAGE},{\"data\":$W1881_3_PAGE},{\"data\":$W1881_3_PAGE}]}" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run list project 41905 2>&1); W1881_3_EC=$?
+assert_exit_ok "W23-3 上限到達(500件ちょうど): exit 0" "$W1881_3_EC"
+assert_contains "W23-3: 上限到達の警告が出る" "sub-issue が 500 件の上限に達しました" "$W1881_3_OUT"
+assert_eq "W23-3: GET sub_issues が5回呼ばれる（500件=5ページ分取得して打ち切り）" "5" "$(log_count "$W1881_3_LOG" "GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues")"
+rm -f "$W1881_3_LOG"
+
+# ──────────────────────────────────────────
 # 結果サマリー（run-tests.sh から集計加算するための機械可読な行）
 # ──────────────────────────────────────────
 echo ""
