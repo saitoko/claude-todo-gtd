@@ -1463,6 +1463,38 @@ resume_condition を持つ Issue は 36-20 のとおり確認待ちとして扱�
 - 該当プロジェクトの親 Issue body に `reviewed_at: YYYY-MM-DD`（今日の日付）が書き込まれる
 - `/todo list` でそのプロジェクトに「最終レビュー: 0日前」が表示される
 
+### P-19. `weekly-project-audit` / `list project` が someday 格下げ済みの project を除外する（Issue #1846）
+
+前提:
+- `📁 project` ラベルを持つ Issue A（アクティブ、next 子タスクあり）
+- `📁 project` と `🌈 someday` を併せ持つ Issue B（`/todo move <n> someday` で休止化した project。`move` は project ラベルを剥がさない設計のため二重ラベルのまま残る）
+
+```
+/todo weekly-project-audit
+/todo list project
+```
+期待:
+- どちらの出力にも Issue A のみが列挙され、Issue B（休止中）は列挙されない
+- 「（休止中（someday）のプロジェクト 1件を除外）」のように除外件数が明示される（黙って件数が減らない）
+- `weekly-project-audit` のヘッダ「全N件」は除外後の件数（Issue A のみ = 1件）になる
+- `/todo list someday` では Issue B は従来どおり列挙される（除外対象外。someday の一覧としては正しい）
+- Issue B を `/todo move <n> next` 等で someday から外すと、次回の `weekly-project-audit` / `list project` に自動的に復帰する
+
+### P-20. プレーンな `/todo list` の Projects セクション、および `list project --json` の休止中 project 扱い（Issue #1846 フォローアップ）
+
+前提: P-19 と同じ Issue A（アクティブ）/ Issue B（休止中: `📁 project` + `🌈 someday`）
+
+```
+/todo list
+/todo list project --json
+```
+期待:
+- `/todo list` のプレーン出力（フィルタなし全体一覧）の Projects セクションは Issue B を含まず、`list project` と同じ件数になる（除外件数の明示つき）
+- 同じ出力内のフッターサマリー（`📊 ... / project: N件`）の project 件数も、Projects セクションの表示件数と一致する
+- `/todo list` の Someday/Maybe セクションには Issue B が引き続き列挙される（除外は Projects セクションのみに適用される設計）
+- `/todo list project --json` は Issue A・B の**両方**を返す（`--json` はあえて除外しない設計判断。理由は `DEVELOPMENT.md` 参照）
+- Issue B の JSON オブジェクトの `labels` フィールドに `"project"` と `"someday"` の両方が含まれ、消費側で休止中判定ができる
+
 ---
 
 ## 40. Phase 2 モバイル対応（iOS Shortcuts）
