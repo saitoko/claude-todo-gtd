@@ -1864,6 +1864,62 @@ assert_eq "W23-3: GET sub_issues が5回呼ばれる（500件=5ページ分取�
 rm -f "$W1881_3_LOG"
 
 # ──────────────────────────────────────────
+# §W24  runUnlink — sub-issue 一覧の GET 失敗時は --force の有無に関わらず
+# body を更新しない（Issue #1885）
+# 背景: listSubIssues() は GET 失敗を catch して[]を返す仕様のため、runUnlink が
+# 素直に呼ぶと「取得失敗」と「本当に子0件（=未登録）」を区別できない。区別を誤ると
+# --force 指定時に removeSubIssue を呼ばないまま body の project: 行だけ削除してしまい、
+# 実際には残っている親子関係が「解除済み」と誤記される（#1880 が修正したデータ喪失と
+# 同じ結果）。#1885 で listSubIssues に { throwOnError: true } を追加し、runUnlink は
+# GET 失敗時に例外を捕捉して body を一切更新せず終了するよう変更した。
+# 核心アサーションは W24-1（GET失敗時に issues.update が呼ばれないこと）。
+# ──────────────────────────────────────────
+echo ""
+echo "§W24  runUnlink — sub-issue 一覧のGET失敗時はbodyを更新しない（Issue #1885）"
+
+# W24-1 【核心】GET sub_issues 失敗 + --force指定: 取得失敗と「本当に未登録」を混同せず、
+# body を一切更新しない（issues.update が呼ばれない）
+W1885_1_LOG=$(mktemp /tmp/todo-test-1885-1-XXXXXX.jsonl)
+W1885_1_ISSUE='{"number":8705,"id":988705,"body":"project: #8700\n","labels":[]}'
+W1885_1_RESP="{\"issues.get\":[{\"data\":$W1885_1_ISSUE}],\"GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"__throw\":true,\"status\":500,\"message\":\"Internal Server Error\"}]}"
+W1885_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1885_1_RESP" OCTOKIT_STUB_LOG_ENV="$W1885_1_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run unlink 8705 --force 2>&1); W1885_1_EC=$?
+assert_exit_fail "W24-1 GET失敗(--force指定): exit非0" "$W1885_1_EC"
+assert_contains "W24-1: sub-issue一覧取得失敗の警告が出る" "sub-issue 一覧取得失敗" "$W1885_1_OUT"
+assert_contains "W24-1: bodyを更新していない旨のエラーが出る" "body は更新していません" "$W1885_1_OUT"
+assert_not_contains "W24-1: 誤って成功メッセージを出していない" "プロジェクト紐付け" "$W1885_1_OUT"
+assert_eq "W24-1: DELETE sub_issue は試みない" "0" "$(log_count "$W1885_1_LOG" "DELETE /repos/{owner}/{repo}/issues/{issue_number}/sub_issue")"
+assert_eq "W24-1 【核心】GET失敗時に issues.update が呼ばれない（--force指定でもbodyだけ消えるデータ喪失を防止）" "0" "$(log_count "$W1885_1_LOG" issues.update)"
+rm -f "$W1885_1_LOG"
+
+# W24-2 GET sub_issues 失敗 + --force なし: 従来どおりエラー終了し body は無傷
+# （この経路は#1885以前から「安全側」だったが、GET失敗経路として明示的にリグレッション確認する）
+W1885_2_LOG=$(mktemp /tmp/todo-test-1885-2-XXXXXX.jsonl)
+W1885_2_ISSUE='{"number":8706,"id":988706,"body":"project: #8700\n","labels":[]}'
+W1885_2_RESP="{\"issues.get\":[{\"data\":$W1885_2_ISSUE}],\"GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"__throw\":true,\"status\":500,\"message\":\"Internal Server Error\"}]}"
+W1885_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1885_2_RESP" OCTOKIT_STUB_LOG_ENV="$W1885_2_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run unlink 8706 2>&1); W1885_2_EC=$?
+assert_exit_fail "W24-2 GET失敗(--forceなし): exit非0" "$W1885_2_EC"
+assert_contains "W24-2: bodyを更新していない旨のエラーが出る" "body は更新していません" "$W1885_2_OUT"
+assert_eq "W24-2: issues.update が呼ばれない" "0" "$(log_count "$W1885_2_LOG" issues.update)"
+rm -f "$W1885_2_LOG"
+
+# W24-3 リグレッション: W22-4相当（GET成功・子0件・--force指定）は従来どおり
+# body のみ解除される（GET失敗との混同がないことの対照ケース）
+W1885_3_LOG=$(mktemp /tmp/todo-test-1885-3-XXXXXX.jsonl)
+W1885_3_ISSUE='{"number":8707,"id":988707,"body":"project: #8700\n","labels":[]}'
+W1885_3_RESP="{\"issues.get\":[{\"data\":$W1885_3_ISSUE}],\"GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"data\":[]}],\"issues.update\":[{}]}"
+W1885_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1885_3_RESP" OCTOKIT_STUB_LOG_ENV="$W1885_3_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run unlink 8707 --force 2>&1); W1885_3_EC=$?
+assert_exit_ok "W24-3 リグレッション: GET成功・子0件・--force指定はexit 0" "$W1885_3_EC"
+assert_contains "W24-3: body のみ解除した旨のメッセージが出る" "プロジェクト紐付け（body）のみ解除しました" "$W1885_3_OUT"
+assert_eq "W24-3: issues.update が1回呼ばれる（body のみ更新、GET成功時は従来動作を維持）" "1" "$(log_count "$W1885_3_LOG" issues.update)"
+rm -f "$W1885_3_LOG"
+
+# ──────────────────────────────────────────
 # 結果サマリー（run-tests.sh から集計加算するための機械可読な行）
 # ──────────────────────────────────────────
 echo ""

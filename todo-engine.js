@@ -361,6 +361,7 @@ const MESSAGES = {
     'link.unlinked': '✅ #{num} のプロジェクト紐付けを解除しました。',
     'error.unlink_mismatch': 'エラー: #{num} の body は project: #{parent} を指していますが、GitHub 上その親には sub-issue として登録されていません。body のみ解除する場合は /todo unlink {num} --force を実行してください。',
     'error.unlink_failed': 'エラー: #{num} の sub-issue 解除に失敗したため、body は更新していません。',
+    'error.unlink_list_failed': 'エラー: #{num} の sub-issue 一覧取得（親 #{parent}）に失敗したため、body は更新していません。時間をおいて再実行してください。',
     'link.unlinked_mismatch': '⚠️ #{num} のプロジェクト紐付け（body）のみ解除しました（GitHub 上の sub-issue 関係は元々ありませんでした）。',
     'audit.no_projects': '## 📁 プロジェクト棚卸し（0件）\n\nプロジェクトがありません。',
     'audit.header': '## 📁 プロジェクト棚卸し（全{n}件）',
@@ -725,6 +726,7 @@ const MESSAGES = {
     'link.unlinked': '✅ #{num} project link removed.',
     'error.unlink_mismatch': 'Error: #{num} body points to project: #{parent}, but it is not registered as a sub-issue of that parent on GitHub. To remove the body link only, run /todo unlink {num} --force.',
     'error.unlink_failed': 'Error: Failed to unlink sub-issue for #{num}; body was not updated.',
+    'error.unlink_list_failed': 'Error: Failed to fetch sub-issue list (parent #{parent}) for #{num}; body was not updated. Please retry later.',
     'link.unlinked_mismatch': '⚠️ #{num} project link (body) removed only (there was no matching sub-issue relation on GitHub).',
     'audit.no_projects': '## 📁 Project Inventory (0)\n\nNo projects.',
     'audit.header': '## 📁 Project Inventory ({n} total)',
@@ -3178,7 +3180,16 @@ async function addSubIssue(octokit, owner, repo, parentNumber, childInternalId) 
 // この結果は addSubIssue の422判別・list project・weekly-project-audit・
 // unlink の事前確認の4箇所が使うため、欠落するとどれも静かに誤動作する。
 // fetchAllOpen（MAX_OPEN_ISSUES_LIMIT）と同型の構造にしてある。
-async function listSubIssues(octokit, owner, repo, parentNumber) {
+//
+// 取得失敗時のデフォルト挙動は既存仕様（[]を返す）を維持する。addSubIssue の
+// 422判別・runList・runWeeklyProjectAudit の3箇所は「失敗時は空扱い」で実害が
+// ない設計のためシグネチャは変更しない。runUnlink だけは「取得失敗」と
+// 「本当に子0件」を区別する必要がある（#1885: 区別できないと --force 指定時に
+// body だけ削除され、親子関係が残ったままになるデータ喪失経路が開く）。
+// 呼び出し側で区別したい場合は { throwOnError: true } を渡すと、catch で
+// []を返す代わりに例外を再送出する。
+async function listSubIssues(octokit, owner, repo, parentNumber, opts = {}) {
+  const { throwOnError = false } = opts;
   const all = [];
   let page = 1;
   try {
@@ -3200,11 +3211,10 @@ async function listSubIssues(octokit, owner, repo, parentNumber) {
     }
     return all;
   } catch (e) {
-    // 取得失敗時は[]を返す既存仕様を維持（#1880で自己申告された「取得失敗」と
-    // 「本当に未登録」を区別できない問題は本Issue#1881のスコープ外。理由は
-    // 完了報告を参照）。ページ2以降で失敗した場合、既に取得済みのページ分も
-    // 含めて[]を返す（部分結果を返すと呼び出し側が「全件取得できた」と誤認しうるため）。
+    // ページ2以降で失敗した場合、既に取得済みのページ分も含めて[]を返す
+    // （部分結果を返すと呼び出し側が「全件取得できた」と誤認しうるため）。
     process.stderr.write(tpl('warn.sub_issue_list_failed', { msg: e.message })+'\n');
+    if (throwOnError) throw e;
     return [];
   }
 }
@@ -4940,7 +4950,20 @@ async function runUnlink(octokit, owner, repo, tokens) {
   // body の親が実際に GitHub 上でも親であるかを事前確認する。
   // body の project: #N は「そうあるべき」という記述に過ぎず、実態と食い違うことがある
   // （#1879 由来の登録失敗・プロジェクト付け替え時の body 直書き換え等）。
-  const existing = await listSubIssues(octokit, owner, repo, parentNum);
+  //
+  // GET が失敗すると []（=未登録扱い）と「本当に子0件」が区別できない。区別を
+  // 誤ると --force 指定時に removeSubIssue を呼ばないまま body の project: 行だけ
+  // 削除してしまい、実際には残っている親子関係が「解除済み」と誤記される
+  // （#1880 が修正したデータ喪失と同じ結果になる）。そのため throwOnError で
+  // 例外を再送出させ、GET 失敗時は --force の有無にかかわらず body を一切
+  // 更新せずに終了する（#1885）。
+  let existing;
+  try {
+    existing = await listSubIssues(octokit, owner, repo, parentNum, { throwOnError: true });
+  } catch (e) {
+    process.stderr.write(tpl('error.unlink_list_failed', { num, parent: parentNum })+'\n');
+    process.exit(1);
+  }
   const isRegistered = existing.some(s => s.id === issue.id);
 
   if (!isRegistered && !force) {
