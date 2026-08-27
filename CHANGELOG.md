@@ -8,9 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `routine` ラベルとチクラーファイル（tickler file）の説明を `todo.md` / `todo-manual.md` / `README.md` / `README.ja.md` に新設した（Issue #1883）。いずれも実装は存在するのに文書での説明が実質ゼロだった。(1) `routine` は `GTD_LABELS` で `next` / `waiting` / `someday` / `reference` と同格の一級カテゴリとして定義され、`today` / `dashboard` の専用表示区分・`list` の遅延マーカー・ステータスラインのカウントという専用ロジックを持つが、`todo.md` の frontmatter に列挙されるのみで本文の説明が4文書とも存在しなかった。`todo-manual.md` の「引き出しの種類」を5つから6つへ構成変更し、「6. 応用機能」に `today` / `dashboard` の3段階表示（今日のルーティン / ルーティン未実施 / 要確認）と判定基準を説明する節を新設した。あわせて `README.md` / `README.ja.md` の Features が `routine` を欠いたまま「6 categories」と件数を断言していた誤りを 7 に訂正した。(2) チクラーファイルは `--activate` / `--before` / `--depends-on` / `--resume-condition` / `review-someday` が個別コマンドとしてバラバラに並ぶだけで、「これらが1つの GTD プラクティスの実装であり、予約の実行役が `promote` である」ことに文書から到達できなかった。`todo-manual.md` に統合説明の節を新設し、`todo.md` には要点のみを置いた。個別の未掲載オプション（`tag rename` / `--before` / `--depends-on` / `--resume-condition` / `activate` 簡略形 / `promote` 単体行）も各文書へ補った
+
+- 個別フラグ6件（`--actual` / `--due-offset` / `--group` / `--label` / `--no-due` / `--no-estimate`）の説明を、掲載が漏れていた文書へ補った（Issue #1884）。実装が持つフラグ20件を `todo.md` / `todo-manual.md` / `README.md` / `README.ja.md` の4文書と突き合わせ、欠落していた17箇所を埋めたもの。`--label`（`add` に任意の汎用ラベルを付与する。存在しなければ色 `EDEDED` で自動作成される）は4文書とも未掲載だった。あわせて実装から確認した2点を注記した: `--label` で作成したラベルは `/todo label list` に現れない（`label list` は `@` で始まるコンテキストラベルのみを対象とするため。確認は `/todo show` または GitHub 側のラベル一覧で行う）、`--no-due` は `--group` と同時指定した場合に優先される
+- `#tag`（ハッシュタグ形式のラベル）の説明を4文書に新設した（Issue #1884）。`@ctx` が「どこで・何があるときにできるか」という場所・状況の軸であるのに対し、`#tag` は案件や人物など自由な分類軸を表すもう一系統のラベルで、`add` 時のトークン指定・`tag` / `untag`・`list #タグ名` でのフィルタの4経路から使える。実装は以前から存在し `help` にも `@ctx/#tag` と出ていたが、4文書での言及は0件だった。タグ名を数字のみにできない制約（`#42` のような Issue 番号参照との衝突を避けるため）と、`@` も `#` も付けないトークンが後方互換でコンテキスト扱いになる挙動もあわせて記載した
+
 ### Changed
 
 - `listSubIssues()` を `fetchAllOpen()` と同型のページング実装に変更した（Issue #1881）。**これは現時点で挙動の変わらない防御的な変更である**。GitHub の sub-issue は現行仕様で「親1つにつき最大100件」（公式ドキュメント "Adding sub-issues" に明記。2026-08-23 確認）のため、従来の `per_page: 100` の単発リクエストでも常に全件を取得できており、欠落は発生していなかった。この上限が将来引き上げられた場合に黙って欠落しないよう、あらかじめページングに寄せておくもの。無限ループ防止用の上限として `MAX_SUB_ISSUES_LIMIT`（500件）を新設し、到達時は `warn.sub_issue_list_limit` で警告する（ja/en）。この結果は4箇所が使うため、仮に欠落するとどれも静かに誤動作する: (1) `addSubIssue()` の422判別（既登録の子を「未登録」と誤判定し `error` に計上）、(2) `/todo list project <N>`（子一覧から欠落）、(3) `/todo unlink`（食い違いと誤判定し `--force` を要求）、(4) `weekly-project-audit`（棚卸しの走査対象から漏れる）。取得失敗時に `[]` を返す既存仕様（成功と失敗を区別しない）は本Issueのスコープ外として維持した
+
+### Fixed
+
+- `help()` に、実装済みなのに出力されていなかった3件を追加した（Issue #1906）。(1) `help.routine_hint`（`routine` ラベルは `--recur` と併用する旨のヒント）はロケール定義が ja/en 両方に存在するのに `help()` から一度も呼ばれておらず、出力されていなかった。v2.9.0 で修正した `--depends-on` の配線漏れとまったく同型。(2) `/todo activate <#> <date>`（`/todo edit <#> --activate <date>` の簡略形）は dispatcher に実体があるのにコマンド行がなかった。`help` の出力中に `activate` という文字列は複数回現れるが、いずれも `--activate` オプションや説明文の一部で、コマンド形としては一度も現れていなかった。(3) `/todo add <title>` は、GTD ラベルを伴わない英字始まりのタイトルにおいて誤入力ガードを回避する唯一の明示形であるにもかかわらず、コマンド形で掲載されていなかった（`add` の文字列自体は `/todo label list/add/delete` の行に現れるため、単純な文字列検索では欠落として検出されない）
+- `tests/run-tests.sh` に、`runMain` の dispatcher にあるコマンドがすべて `help()` の出力にコマンド形で現れることを日英両モードで検証するテストを新設した（Issue #1884）。従来の同期テストは dispatcher とタイトル誤爆ガードの2点しか対象にしておらず、`help()` はどの自動テストからも検証されていなかった。v2.9.0 で修正した「7コマンドが `help` に載っていない」はその穴から出たもの。実装はロケール定義を解析せず、実際にレンダリングされた `help` 出力に対して `/todo <コマンド名>` というコマンド形の有無を確認する（上記 (2) のように、ロケールキーは存在するのにコマンド形では現れないケースを部分一致では検知できないため）。掲載を省く対象は `close` と `dash` の2件のみで、いずれも `done` / `dashboard` へ委譲する別名であることを dispatcher の実装で確認している
 
 ---
 

@@ -4229,6 +4229,105 @@ node "$ENGINE" validate due '2028-02-29' 2>/dev/null; EC_1804_R4=$?
 assert_exit_ok "§48 リグレッション: validate due 2028-02-29 → exit 0（うるう年の2/29は引き続き許可）" "$EC_1804_R4"
 
 # ──────────────────────────────────────────
+# §49  runMain dispatcher と help() 出力の同期（Issue #1884-3/4, #1906）
+# 「コマンドを追加したのに help() に載せ忘れる」欠落を検知する第3のドリフトテスト
+# （既存の1646テストは dispatcher⇔ガード集合の2点同期のみ対象。help() は対象外だった）。
+# runMain の switch にある実コマンド名がすべて、実際にレンダリングされた
+# help() 出力（日本語・英語）に「/todo <cmd>」というコマンド形で現れることを確認する。
+# ──────────────────────────────────────────
+echo ""
+echo "§49  runMain dispatcher と help() 出力の同期（Issue #1884-3/4, #1906）"
+
+_G1884_TMP=$(mktemp /tmp/todo-test-help-drift-XXXXXX.js)
+cat > "$_G1884_TMP" << 'HELP_DRIFT_TEST_EOF'
+const fs = require('fs');
+const { execFileSync } = require('child_process');
+
+const enginePath = process.argv[2];
+const stubPath = process.argv[3];
+
+const src = fs.readFileSync(enginePath, 'utf8');
+const runMainMatch = src.match(/^async function runMain\(args\) \{[\s\S]*$/m);
+if (!runMainMatch) {
+  process.stderr.write('抽出失敗: runMain\n');
+  process.exit(1);
+}
+const caseLabels = [...new Set(
+  [...runMainMatch[0].matchAll(/case\s*'([a-zA-Z0-9_-]+)'\s*:/g)].map(m => m[1])
+)];
+
+// help() に個別のコマンド行として掲載しない正当な理由を持つコマンド（Issue #1884/#1906）。
+// 除外は「別のコマンド行で正しく代替表示されている」場合に限る。除外リストは検出漏れが
+// 隠れる場所そのものなので、内容が別名としてカバーされていることを dispatcher の実装を
+// 直接開いて確認したもの以外は入れない（'add' は当初除外候補として検討したが、
+// help() のどの行もコマンド形「/todo add」を表示していない真正の欠落だったため、
+// 除外にせず help.add_explicit を新設して本文へ追加した。詳細は該当行のコメント参照）。
+//  - 'close' : todo-engine.js の case 'done': case 'close': が同一処理(runDone)へ委譲する別名。
+//  - 'dash'  : todo-engine.js の case 'dashboard': case 'dash': が同一処理(runDashboard)へ委譲する別名。
+const EXCLUDED = new Set(['close', 'dash']);
+
+function escapeRegExp(s) { return s.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&'); }
+
+// 「/todo <cmd>」がコマンド形（直後が空白または行末）で現れるかを確認する。
+// 単純な部分一致では検知できない（例: 'activate' はオプション説明中に複数回登場するが
+// コマンド形では一度も登場しない、というケースを本テストは正しく FAIL させる必要がある）。
+function commandFormPresent(cmdName, text) {
+  const re = new RegExp('/todo\\s+' + escapeRegExp(cmdName) + '(?:\\s|$)', 'm');
+  return re.test(text);
+}
+
+function captureHelp(lang) {
+  const env = Object.assign({}, process.env, {
+    OCTOKIT_STUB_ENV: stubPath,
+    TODO_REPO_OWNER: 'test',
+    TODO_REPO_NAME: 'test',
+  });
+  if (lang === 'en') env.LANG_ENV = 'en';
+  return execFileSync(process.execPath, [enginePath, 'run', 'help'], { env, encoding: 'utf8' });
+}
+
+const helpJa = captureHelp('ja');
+const helpEn = captureHelp('en');
+
+const missingJa = [];
+const missingEn = [];
+for (const label of caseLabels) {
+  if (EXCLUDED.has(label)) continue;
+  if (!commandFormPresent(label, helpJa)) missingJa.push(label);
+  if (!commandFormPresent(label, helpEn)) missingEn.push(label);
+}
+
+process.stdout.write(JSON.stringify({ caseCount: caseLabels.length }));
+process.stderr.write('DRIFT_MISSING_HELP_JA:' + JSON.stringify(missingJa) + '\n');
+process.stderr.write('DRIFT_MISSING_HELP_EN:' + JSON.stringify(missingEn) + '\n');
+HELP_DRIFT_TEST_EOF
+
+_G1884_STDOUT=$(node "$_G1884_TMP" "$ENGINE" "$STUB_ENGINE_PATH" 2>"$_G1884_TMP.stderr")
+_G1884_EXIT=$?
+_G1884_STDERR=$(cat "$_G1884_TMP.stderr" 2>/dev/null)
+rm -f "$_G1884_TMP" "$_G1884_TMP.stderr"
+
+if [ "$_G1884_EXIT" -ne 0 ]; then
+  printf "  ❌ 1884/1906 help() ドリフト検知テスト実行失敗: %s / %s\n" "$_G1884_STDOUT" "$_G1884_STDERR"; FAIL=$((FAIL+2))
+else
+  # dispatcher の case 数が既知の38件から変化していないかの目安表示（増減自体は失敗要因にしない。
+  # 新規コマンド追加時は下記 DRIFT_MISSING チェックが本体の検知役を担う）
+  printf "  ℹ️  1884/1906: runMain switch case 数 = %s\n" "$(printf '%s' "$_G1884_STDOUT" | grep -o '"caseCount":[0-9]*' | grep -o '[0-9]*')"
+
+  if printf '%s' "$_G1884_STDERR" | grep -q 'DRIFT_MISSING_HELP_JA:\[\]'; then
+    printf "  ✅ 1884/1906: help()（日本語）に dispatcher コマンドが漏れなく反映されている（除外: close/dash）\n"; PASS=$((PASS+1))
+  else
+    printf "  ❌ 1884/1906: help()（日本語）に未反映の dispatcher コマンドがある: %s\n" "$_G1884_STDERR"; FAIL=$((FAIL+1))
+  fi
+
+  if printf '%s' "$_G1884_STDERR" | grep -q 'DRIFT_MISSING_HELP_EN:\[\]'; then
+    printf "  ✅ 1884/1906: help()（英語 LANG_ENV=en）に dispatcher コマンドが漏れなく反映されている（除外: close/dash）\n"; PASS=$((PASS+1))
+  else
+    printf "  ❌ 1884/1906: help()（英語 LANG_ENV=en）に未反映の dispatcher コマンドがある: %s\n" "$_G1884_STDERR"; FAIL=$((FAIL+1))
+  fi
+fi
+
+# ──────────────────────────────────────────
 # 書き込み系ハンドラのスタブベーステスト（run-tests-write.sh、Issue #1648）
 # 3,266行超に肥大化した本ファイルへの追記を避けるため別ファイルに分離し、
 # ここで子プロセスとして呼び出して結果を合算する。実行口は

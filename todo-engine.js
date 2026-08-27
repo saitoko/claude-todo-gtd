@@ -145,6 +145,7 @@ const MESSAGES = {
     'help.section_other': '### その他',
     'help.section_migrated': '### 統合済みコマンド',
     'help.add': '/todo [GTD] <タイトル> [--body "本文"] [--body-file <path>]  タスク追加（GTD省略時: inbox）',
+    'help.add_explicit': '/todo add <タイトル>             英字で始まるタイトルは add の明示が必須（例: /todo add My Task。add なしだとコマンド名と混同されエラー）',
     'help.list': '/todo list [フィルタ] [--json]   タスク一覧',
     'help.done': '/todo done <#> [--actual 時間] [--note "テキスト"]  タスク完了',
     'help.move': '/todo move <#> <GTD> [--note "テキスト"]  カテゴリ変更',
@@ -209,6 +210,7 @@ const MESSAGES = {
     'promote.pending_review': '⏸ #{num} 「{title}」activate日到来ですが再開条件の確認が必要です: {condition}',
     'promote.pending_summary': '⏸ {n}件が再開条件の確認待ちです（次回の週次レビューで確認してください）',
     'help.promote': '/todo promote                   activate日到来タスクをNEXTに昇格',
+    'help.activate_cmd': '/todo activate <#> <日付>       edit <#> --activate <日付> の簡略記法',
     'help.activate': '  --activate <日付>             指定日にNEXTへ自動昇格（例: 2026-05-01）',
     'help.before': '  --before <期間>               dueのN日前にNEXTへ自動昇格（例: 14d, 2w）',
     'help.depends_on': '  --depends-on <#N>            指定タスク完了時にNEXTへ自動昇格',
@@ -507,6 +509,7 @@ const MESSAGES = {
     'help.section_other': '### Other',
     'help.section_migrated': '### Merged Commands',
     'help.add': '/todo [GTD] <title> [--body "text"] [--body-file <path>]  Add task (default: inbox)',
+    'help.add_explicit': '/todo add <title>                Required for titles starting with a letter (e.g., /todo add My Task; without add it is misread as a command name and errors)',
     'help.list': '/todo list [filter] [--json]     List tasks',
     'help.done': '/todo done <#> [--actual time] [--note "text"]  Mark done',
     'help.move': '/todo move <#> <GTD> [--note "text"]  Change category',
@@ -571,6 +574,7 @@ const MESSAGES = {
     'promote.pending_review': '⏸ #{num} "{title}" activate date arrived but resume condition needs review: {condition}',
     'promote.pending_summary': '⏸ {n} task(s) awaiting resume condition review (check at your next weekly review)',
     'help.promote': '/todo promote                   Promote tasks whose activate date has arrived',
+    'help.activate_cmd': '/todo activate <#> <date>       Shorthand for edit <#> --activate <date>',
     'help.activate': '  --activate <date>             Auto-promote to NEXT on specified date',
     'help.before': '  --before <duration>           Auto-promote N days before due (e.g. 14d, 2w)',
     'help.depends_on': '  --depends-on <#N>            Auto-promote to NEXT when specified task is completed',
@@ -1835,10 +1839,18 @@ function help() {
 
   w(t('help.section_task')+'\n');
   w('```\n');
-  for (const k of ['add','list','done','move','edit','rename','due','desc','recur','priority','search']) {
+  // 'add_explicit' は 'add' の直後に配置（Issue #1884/#1906: COO再測定で判明した真正の欠落。
+  // help.add の汎用行「/todo [GTD] <タイトル>」は GTD ラベル同梱ケースをカバーするが、
+  // GTDラベルを伴わない英字タイトルで add を明示する用法は別途明記が必要）。
+  for (const k of ['add','add_explicit','list','done','move','edit','rename','due','desc','recur','priority','search']) {
     w(t('help.'+k)+'\n');
   }
-  w('```\n\n');
+  w('```\n');
+  w('\n');
+  // routine ラベル（GTD_LABELS の一種。add/move で使用）と recur コマンドの併用を促すヒント（Issue #1906）。
+  // このセクションに add/move/recur が並んでいるため、直下の脚注として配置する（desc_note と同じ脚注パターン）。
+  w(t('help.routine_hint')+'\n');
+  w('\n');
 
   w(t('help.section_context')+'\n');
   w('```\n');
@@ -1872,6 +1884,10 @@ function help() {
 
   w(t('help.activate_section_header')+'\n');
   w('```\n');
+  // activate <#> <日付> は edit <#> --activate <日付> の簡略記法（Issue #1906）。
+  // dispatcher の case 'activate'（run + edit --activate 委譲）に対応するコマンド行が
+  // これまで欠落していた。todo.md の該当テーブル行と文言を揃える。
+  w(t('help.activate_cmd')+'\n');
   w(t('help.activate')+'\n');
   w(t('help.before')+'\n');
   w(t('help.depends_on')+'\n');
@@ -3553,6 +3569,15 @@ async function createRecurIssue(octokit, owner, repo, issue) {
       if (days !== null) nextActivate = addDays(nextDate, -days);
     }
     // 繰り返しタスク再作成時はreviewed_atを空に（新サイクル開始）
+    //
+    // depends_on / resume_condition も意図的に引き継がない（Issue #1890 で検証・確定、2026-08-24）。
+    // - depends_on: 依存先タスクは完了済みのはず（depends_on 昇格ロジックがそれを前提にしている）。
+    //   次周期へ引き継ぐと「既にクローズされた Issue への依存」になり不整合を生む。
+    // - resume_condition: `/todo promote` の自動昇格を抑止するためのフィールド（Issue #1299 由来）。
+    //   「条件が満たされるまで再開しない」という保留の意味を持つため、周期が来たら必ず実行する
+    //   recur とは意味論が相容れない。
+    // 実データでも裏付け済み: Issue 400件を走査して recur との併用は0件だった
+    //   （recur 32件 / depends_on 4件 / resume_condition 5件、重複なし）。
     const body = buildBody({
       due:      nextDate,
       recur:    issue.recur,

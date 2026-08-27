@@ -8,14 +8,14 @@ GitHub Issues をバックエンドに使った、Claude Code 用の GTD（Getti
 
 ## 特徴
 
-- **GTD メソッド準拠** — inbox / next / waiting / someday / project / reference の6カテゴリで仕分け
+- **GTD メソッド準拠** — inbox / next / routine / waiting / someday / project / reference の7カテゴリで仕分け
 - **40+ コマンド** — タスクCRUD、一括操作、週次レビュー、テンプレート、統計まで網羅
 - **多言語対応** — 日本語（デフォルト）と英語に対応。`LANG_ENV=en` で英語モード
 - **日本語ネイティブ** — `--due 明日`、`--due 来週金曜`、`--due 3日後` など日本語で日付指定可能
 - **英語日付対応** — `--due tomorrow`、`--due "next week"`、`--due "in 3 days"` など英語でも指定可能（言語設定に関係なく常に使用可）
 - **コンテキスト管理** — `@PC` `@会社` `@外出中` で場所・状況に応じたフィルタリング
 - **優先度** — p1（緊急）/ p2（重要）/ p3（通常）の3段階
-- **繰り返しタスク** — daily / weekly / monthly / weekdays の4パターン
+- **繰り返しタスク** — daily / weekly / monthly / weekdays の4パターン。`routine` カテゴリで管理され、実施漏れも検知
 - **セキュリティ対策** — シェルインジェクション・プロンプトインジェクション対策を8ルールで実装
 - **1,351+ テスト** — ローカルユニットテスト + GitHub統合テストで品質を担保
 - **サーバー不要** — GitHub Issues API + ローカルファイルのみで動作
@@ -160,8 +160,12 @@ export LANG_ENV=en
 | `--priority` | 優先度 | `--priority p1` |
 | `--estimate` | 見積時間 | `--estimate 2h`, `--estimate 30m` |
 | `--activate` | 昇格予定日（その日に next へ自動浮上） | `--activate 2026-05-01` |
-| `--before` | due の N 日前を activate として自動計算 | `--before 14d` |
+| `--before` | due の N 日前を activate として自動計算（`--due` が必須） | `--before 14d` |
 | `--depends-on` | 依存タスク完了時に next へ自動昇格 | `--depends-on 42` |
+| `--resume-condition` | 再開条件をフリーテキストで記録。設定中は `/todo promote` が自動昇格せず確認待ちとして通知する | `--resume-condition "為替が110円を切ったら"` |
+| `--actual` | （`done` に付与）完了時に実績時間を記録 | `/todo done 5 --actual 1h30m` |
+| `--label` | `@context`/`#tag` とは別枠の汎用ラベルを付与（未存在なら自動作成） | `--label follow-up` |
+| `#tag` | `@context` とは別軸の自由なタグ（下記「コンテキスト・ラベル」参照） | `#GW` |
 
 **日付入力パターン一覧は「日付入力パターン」セクションを参照してください。**
 
@@ -174,7 +178,11 @@ export LANG_ENV=en
 | `/todo list @PC` | コンテキストでフィルタ |
 | `/todo list p1` | 優先度でフィルタ |
 | `/todo list next @PC` | 複数条件のANDフィルタ |
+| `/todo list #tag` | タグでフィルタ |
 | `/todo list project 7` | プロジェクト配下のタスク表示 |
+| `/todo list --group` | GTDカテゴリ別ではなく期限別にグループ分け表示（期限超過／今日／明日／今週／来週以降／期限なし） |
+| `/todo list --no-due` | 期限未設定のタスクだけを表示（`--group` より優先） |
+| `/todo list --no-estimate` | 見積もり未設定のタスクだけを表示 |
 | `/todo search <keyword>` | オープンタスクをキーワード検索 |
 | `/todo stats` | タスク統計（カテゴリ別・優先度別・期限状況・完了実績） |
 | `/todo show <#> [--json]` | 個別タスクの詳細表示 |
@@ -186,6 +194,7 @@ export LANG_ENV=en
 |---------|------|
 | `/todo move <#> <GTD> [--note "テキスト"]` | GTDカテゴリを変更。`--note` を指定するとラベル変更後にコメントを追加（降格理由等） |
 | `/todo done <#> [--note "テキスト"]` | タスクを完了（繰り返しは自動で次回分を作成。プロジェクトの次タスク昇格候補も提示）。`--note` を指定すると close 後にコメントを追加（振り返りメモ等） |
+| `/todo done <#> --actual <時間>` | 完了時に実績時間を記録（例：`--actual 1h30m`）。`report` の見積 vs 実績集計に使われる |
 
 ### 編集
 
@@ -201,14 +210,20 @@ export LANG_ENV=en
 
 ### コンテキスト・ラベル
 
+`@context` と `#tag` は別系統のラベルです。`@context` は「どこで・何があるときにできるか」を表す軸（例：`@PC`、`@外出中`）。`#tag` は場所・状況とは無関係な自由な分類軸（例：`#GW`、`#プロジェクトX`）で、GTDカテゴリをまたいで案件・人物単位にタスクをまとめたいときに使います。どちらもタスク作成時に指定できるほか、`tag`/`untag` で後から追加・削除できます。タグ名は数字だけにはできません（`#42` のような Issue 番号参照と区別するため）。
+
 | コマンド | 説明 |
 |---------|------|
 | `/todo tag <#> @ctx1 @ctx2` | コンテキストを追加 |
+| `/todo tag <#> #tag1 #tag2` | タグを追加（同じコマンドで `@ctx` と混在指定も可） |
 | `/todo untag <#> @ctx` | コンテキストを削除 |
+| `/todo untag <#> #tag` | タグを削除 |
 | `/todo tag rename @old @new` | コンテキスト名を一括リネーム |
 | `/todo label list` | 全コンテキストラベル一覧 |
 | `/todo label add @name [--color hex]` | コンテキストラベル作成 |
 | `/todo label delete @name` | コンテキストラベル削除 |
+
+> `/todo label list/add/delete` が管理するのは `@context` ラベルのみです。`#tag` 専用の管理サブコマンドはなく、追加・削除は `tag`/`untag`、フィルタは `/todo list #tag` で行います。
 
 ### プロジェクト管理
 
@@ -223,7 +238,8 @@ export LANG_ENV=en
 
 | コマンド | 説明 |
 |---------|------|
-| `/todo promote` | activate 日到来タスクを next に一括昇格 |
+| `/todo promote` | activate 日到来タスクを next に一括昇格（`--resume-condition` 設定済みのタスクは自動昇格せず確認待ちとして通知） |
+| `/todo activate <#> <日付>` | `/todo edit <#> --activate <日付>` の簡略形 |
 | `/todo review-someday <#>` | someday タスクの見直し日を記録（30日超で ⚠️ 表示） |
 
 ### 一括操作
@@ -251,7 +267,7 @@ export LANG_ENV=en
 |---------|------|
 | `/todo template list` | テンプレート一覧 |
 | `/todo template show <name>` | テンプレート詳細表示 |
-| `/todo template save <name> [options]` | テンプレート保存（インラインまたは対話形式） |
+| `/todo template save <name> [options]` | テンプレート保存（インラインまたは対話形式）。テンプレート専用オプション `--due-offset <N>`: テンプレートを使った日から N日後を自動的に期日に設定（`--due` と同時指定時は `--due-offset` が優先） |
 | `/todo template save <name> from <#>` | 既存タスクからテンプレート作成 |
 | `/todo template use <name> [title]` | テンプレートからタスク作成 |
 | `/todo template delete <name>` | テンプレート削除 |
