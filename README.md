@@ -166,6 +166,9 @@ Environment variable: LANG_ENV=en
 | `--before` | Auto-calculate `--activate` as N days before `--due` (requires `--due`) | `--before 14d` |
 | `--depends-on` | Auto-promote to next when the dependency task is completed | `--depends-on 42` |
 | `--resume-condition` | Records a resume condition as free text; while set, `/todo promote` won't auto-promote and reports it for review instead | `--resume-condition "USD/JPY drops below 110"` |
+| `--actual` | (with `done`) Record actual time spent on completion | `/todo done 5 --actual 1h30m` |
+| `--label` | Attach a general-purpose label, separate from `@context`/`#tag` (auto-created if it doesn't exist) | `--label follow-up` |
+| `#tag` | Free-form tag, separate from `@context` (see "Context & Labels" below) | `#GW` |
 
 ### List & Search
 
@@ -176,7 +179,11 @@ Environment variable: LANG_ENV=en
 | `/todo list @PC` | Filter by context |
 | `/todo list p1` | Filter by priority |
 | `/todo list next @PC` | AND filter with multiple conditions |
+| `/todo list #tag` | Filter by tag |
 | `/todo list project 7` | Show tasks under a project |
+| `/todo list --group` | Group results by due date instead of GTD category (overdue / today / tomorrow / this week / later / no due) |
+| `/todo list --no-due` | Show only tasks with no due date set (takes priority over `--group`) |
+| `/todo list --no-estimate` | Show only tasks with no estimate set |
 | `/todo search <keyword>` | Search open tasks by keyword |
 | `/todo stats` | Task statistics (by category, priority, due status, completion record) |
 | `/todo show <#> [--json]` | Show details for a single task |
@@ -188,6 +195,7 @@ Environment variable: LANG_ENV=en
 |---------|-------------|
 | `/todo move <#> <GTD> [--note "text"]` | Change GTD category. `--note` appends a comment after the label change (e.g. reason for demotion) |
 | `/todo done <#> [--note "text"]` | Complete a task (recurring tasks auto-create the next occurrence; project next-task hints are shown). `--note` appends a comment after closing (e.g. retrospective notes) |
+| `/todo done <#> --actual <time>` | Record actual time spent when completing (e.g. `--actual 1h30m`); used by `report`'s estimate-vs-actual summary |
 
 ### Edit
 
@@ -203,14 +211,20 @@ Environment variable: LANG_ENV=en
 
 ### Context & Labels
 
+`@context` and `#tag` are two separate labeling systems. `@context` answers "where / under what situation can I do this?" (e.g. `@PC`, `@errands`). `#tag` is a free-form classification axis not tied to location or situation (e.g. `#GW`, `#project-x`) — useful for grouping tasks by initiative or person across GTD categories. Both can be attached at creation time, or added/removed later with `tag`/`untag`. Tag names can't be numbers-only (to avoid colliding with `#42`-style issue references).
+
 | Command | Description |
 |---------|-------------|
 | `/todo tag <#> @ctx1 @ctx2` | Add context |
+| `/todo tag <#> #tag1 #tag2` | Add tag (can be mixed with `@ctx` in the same command) |
 | `/todo untag <#> @ctx` | Remove context |
+| `/todo untag <#> #tag` | Remove tag |
 | `/todo tag rename @old @new` | Bulk-rename a context across all tasks |
 | `/todo label list` | List all context labels |
 | `/todo label add @name [--color hex]` | Create a context label |
 | `/todo label delete @name` | Delete a context label |
+
+> `/todo label list/add/delete` only manage `@context` labels. There's no separate management subcommand for `#tag` — add/remove it via `tag`/`untag`, or filter with `/todo list #tag`.
 
 ### Project Management
 
@@ -254,7 +268,7 @@ Environment variable: LANG_ENV=en
 |---------|-------------|
 | `/todo template list` | List templates |
 | `/todo template show <name>` | Show template details |
-| `/todo template save <name> [options]` | Save a template (inline or interactively) |
+| `/todo template save <name> [options]` | Save a template (inline or interactively). Template-only option: `--due-offset <N>` sets the due date to N days after the day the template is used (overrides `--due` if both are given) |
 | `/todo template save <name> from <#>` | Create a template from an existing task |
 | `/todo template use <name> [title]` | Create a task from a template |
 | `/todo template delete <name>` | Delete a template |

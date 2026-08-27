@@ -84,8 +84,8 @@ GTD ラベルは `next` / `routine` / `inbox` / `waiting` / `someday` / `referen
 
 | コマンド | 引数 | 説明 |
 |---------|------|------|
-| `add` / GTDキーワード | `[GTD] <タイトル> [@ctx...] [--due 日付] [--desc テキスト] [--body "本文"] [--body-file <path>] [--recur パターン] [--project 番号] [--priority p1\|p2\|p3] [--estimate 時間]` | タスク追加（GTD省略時: inbox）。`--body`/`--body-file` で本文を直接指定可能（`--body-file` が優先）。英字で始まるタイトルは `add` を明示必須（例: `/todo add My Task`）。英字で始まる引数を `add` なしで渡すとコマンド名と混同されエラーになる。タイトルが `list`/`help`/`project`/`counts` 等の単一トークンかつ既知コマンド名と完全一致する場合（例: `/todo project list`）もゴミIssue化を防ぐため誤爆ガードが発火する（`add` を明示すれば通る） |
-| `list` | `[GTD] [@ctx] [p1\|p2\|p3] [project <番号>] [--group] [--no-due] [--no-estimate]` | タスク一覧（フィルタ組み合わせ可）。`--group` で期限別グルーピング表示。`--no-due` で期限未設定のタスクのみ表示（`--group` より優先）。`--no-estimate` で見積もり未設定のタスクのみ表示 |
+| `add` / GTDキーワード | `[GTD] <タイトル> [@ctx...] [#tag...] [--due 日付] [--desc テキスト] [--body "本文"] [--body-file <path>] [--recur パターン] [--project 番号] [--priority p1\|p2\|p3] [--estimate 時間] [--label 名前]` | タスク追加（GTD省略時: inbox）。`--body`/`--body-file` で本文を直接指定可能（`--body-file` が優先）。`--label` は `@ctx`/`#tag` とは別枠の汎用ラベルを付与（未存在なら自動作成）。英字で始まるタイトルは `add` を明示必須（例: `/todo add My Task`）。英字で始まる引数を `add` なしで渡すとコマンド名と混同されエラーになる。タイトルが `list`/`help`/`project`/`counts` 等の単一トークンかつ既知コマンド名と完全一致する場合（例: `/todo project list`）もゴミIssue化を防ぐため誤爆ガードが発火する（`add` を明示すれば通る） |
+| `list` | `[GTD] [@ctx] [#tag] [p1\|p2\|p3] [project <番号>] [--group] [--no-due] [--no-estimate]` | タスク一覧（フィルタ組み合わせ可）。`--group` で期限別グルーピング表示。`--no-due` で期限未設定のタスクのみ表示（`--group` より優先）。`--no-estimate` で見積もり未設定のタスクのみ表示 |
 | `done` | `<#> [--actual 時間] [--note "テキスト"]` | タスク完了（recurあれば次のIssue自動作成）。`--note` を指定すると close 後にコメントを追加（振り返りメモ等） |
 | `move` | `<#> <GTD> [--note "テキスト"]` | GTDカテゴリ変更。`--note` を指定するとラベル変更後にコメントを追加（降格理由等） |
 | `edit` | `<#> [--due 日付] [--desc テキスト] [--recur パターン\|clear] [--priority p1\|p2\|p3\|clear] [--project 番号] [--estimate 時間]` | 複数フィールド一括編集 |
@@ -103,9 +103,9 @@ GTD ラベルは `next` / `routine` / `inbox` / `waiting` / `someday` / `referen
 
 | コマンド | 引数 | 説明 |
 |---------|------|------|
-| `tag` | `<#> @ctx...` | コンテキスト追加 |
+| `tag` | `<#> @ctx...\|#tag...` | コンテキスト・タグ追加（`@`/`#`混在可）。`#tag` は場所・状況を表す `@ctx` とは別の自由な分類軸 |
 | `tag rename` | `<旧名> <新名>` | コンテキスト名を全タスク横断でリネーム（`label rename` と処理内容は同じ） |
-| `untag` | `<#> @ctx...` | コンテキスト削除 |
+| `untag` | `<#> @ctx...\|#tag...` | コンテキスト・タグ削除 |
 | `label` | `list\|add <名前> [--color hex]\|delete <名前>\|rename <旧> <新>` | ラベル管理 |
 
 ### コメント操作
@@ -158,7 +158,7 @@ GTD ラベルは `next` / `routine` / `inbox` / `waiting` / `someday` / `referen
 |---------|------|
 | `template list` | テンプレート一覧 |
 | `template show <名前>` | テンプレート詳細 |
-| `template save <名前> [GTD] [@ctx...] [--*フラグ]` | テンプレート保存（インライン） |
+| `template save <名前> [GTD] [@ctx...] [--*フラグ]` | テンプレート保存（インライン）。`--due-offset <N>` はテンプレート専用フラグで、使用日から N日後を自動的に期日に設定する（`--due` と同時指定時は `--due-offset` が優先） |
 | `template save <名前> from <#>` | 既存IssueからTemplate作成 |
 | `template use <名前> [タイトル上書き]` | テンプレートからIssue作成 |
 | `template delete <名前>` | テンプレート削除 |
