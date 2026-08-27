@@ -76,6 +76,10 @@ MCP_MODEでは `bash ~/.claude/todo.sh` は呼び出さない。GitHub MCP ツ�
 
 ## コマンド一覧（基本形式: `bash ~/.claude/todo.sh <command> [args]`）
 
+### GTD カテゴリ
+
+GTD ラベルは `next` / `routine` / `inbox` / `waiting` / `someday` / `reference` の6種類（`project` は独立した親カテゴリ）。`routine` は繰り返しタスク専用のカテゴリで、単体では機能せず `--recur` とセットで使う（例: `add routine "日報を書く" --recur daily`）。`today`/`dashboard` には routine 専用の表示区分があり、実施漏れが期日超過とは別枠で通知される。詳細は `todo-manual.md` の「引き出しの種類」を参照。
+
 ### タスク管理
 
 | コマンド | 引数 | 説明 |
@@ -100,6 +104,7 @@ MCP_MODEでは `bash ~/.claude/todo.sh` は呼び出さない。GitHub MCP ツ�
 | コマンド | 引数 | 説明 |
 |---------|------|------|
 | `tag` | `<#> @ctx...` | コンテキスト追加 |
+| `tag rename` | `<旧名> <新名>` | コンテキスト名を全タスク横断でリネーム（`label rename` と処理内容は同じ） |
 | `untag` | `<#> @ctx...` | コンテキスト削除 |
 | `label` | `list\|add <名前> [--color hex]\|delete <名前>\|rename <旧> <新>` | ラベル管理 |
 
@@ -114,6 +119,8 @@ MCP_MODEでは `bash ~/.claude/todo.sh` は呼び出さない。GitHub MCP ツ�
 
 ### 一括操作・読み取り・分析
 
+> **チクラーファイル（時限式の引き出し）**: `--activate` / `--before` / `--depends-on` / `--resume-condition` / `review-someday` は、いずれも「いつ・何をきっかけに next へ戻すか」を予約するための同一システムの一部。予約の実行（一括昇格）は `promote` が担う。詳細は `todo-manual.md` の「チクラーファイル」を参照。
+
 | コマンド | 説明 |
 |---------|------|
 | `bulk <done\|move\|tag\|untag\|priority> <#>...` | 複数Issue一括操作（`bulk done` はリカレンス再作成・依存タスク昇格も個別 `done` と同様に実行） |
@@ -122,7 +129,10 @@ MCP_MODEでは `bash ~/.claude/todo.sh` は呼び出さない。GitHub MCP ツ�
 | `schema` | `--json` 出力のフィールド定義を表示 |
 | `edit <#> --activate <日付>` | フォローアップ日（自動昇格日）を設定。waiting タスクに活用（例: `bash ~/.claude/todo.sh edit 42 --activate 4/22`） |
 | `activate <#> <日付>` | `edit <#> --activate <日付>` の簡略記法 |
+| `edit <#> --before <期間>` | due の N 日前を自動計算して activate に設定（`--due` が必須。例: `14d`、`2w`） |
+| `edit <#> --depends-on <#N>` | 指定タスクが完了したタイミングで自動的に next へ昇格 |
 | `edit <#> --resume-condition <テキスト>` | 再開条件（フリーテキスト）を設定。`promote` は activate 到来かつ resume_condition 設定済みの Issue を機械的に自動昇格せず、確認待ちとして通知のみ行う（`clear` でクリア。週次レビュー時に resume_condition が設定済みかつ activate 到来のタスクを一覧し、条件が満たされたか自分で確認してから `promote` または `edit --activate` で再設定して昇格させる運用） |
+| `promote` | activate 到来タスクを一括で next へ昇格（`project` ラベル・既に next のものはスキップ。resume_condition 設定済みは自動昇格せず確認待ちとして通知） |
 | `review-someday <番号>` | somedayタスクの見直し日(reviewed_at)を今日に更新 |
 | `today` | 今日のタスク（期限超過＋今日期限） |
 | `eisenhower` | アイゼンハワーマトリクス（next タスクを重要×緊急の4象限で表示） |

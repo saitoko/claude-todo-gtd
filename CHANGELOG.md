@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `routine` ラベルとチクラーファイル（tickler file）の説明を `todo.md` / `todo-manual.md` / `README.md` / `README.ja.md` に新設した（Issue #1883）。いずれも実装は存在するのに文書での説明が実質ゼロだった。(1) `routine` は `GTD_LABELS` で `next` / `waiting` / `someday` / `reference` と同格の一級カテゴリとして定義され、`today` / `dashboard` の専用表示区分・`list` の遅延マーカー・ステータスラインのカウントという専用ロジックを持つが、`todo.md` の frontmatter に列挙されるのみで本文の説明が4文書とも存在しなかった。`todo-manual.md` の「引き出しの種類」を5つから6つへ構成変更し、「6. 応用機能」に `today` / `dashboard` の3段階表示（今日のルーティン / ルーティン未実施 / 要確認）と判定基準を説明する節を新設した。あわせて `README.md` / `README.ja.md` の Features が `routine` を欠いたまま「6 categories」と件数を断言していた誤りを 7 に訂正した。(2) チクラーファイルは `--activate` / `--before` / `--depends-on` / `--resume-condition` / `review-someday` が個別コマンドとしてバラバラに並ぶだけで、「これらが1つの GTD プラクティスの実装であり、予約の実行役が `promote` である」ことに文書から到達できなかった。`todo-manual.md` に統合説明の節を新設し、`todo.md` には要点のみを置いた。個別の未掲載オプション（`tag rename` / `--before` / `--depends-on` / `--resume-condition` / `activate` 簡略形 / `promote` 単体行）も各文書へ補った
+
 ### Changed
 
 - `listSubIssues()` を `fetchAllOpen()` と同型のページング実装に変更した（Issue #1881）。**これは現時点で挙動の変わらない防御的な変更である**。GitHub の sub-issue は現行仕様で「親1つにつき最大100件」（公式ドキュメント "Adding sub-issues" に明記。2026-08-23 確認）のため、従来の `per_page: 100` の単発リクエストでも常に全件を取得できており、欠落は発生していなかった。この上限が将来引き上げられた場合に黙って欠落しないよう、あらかじめページングに寄せておくもの。無限ループ防止用の上限として `MAX_SUB_ISSUES_LIMIT`（500件）を新設し、到達時は `warn.sub_issue_list_limit` で警告する（ja/en）。この結果は4箇所が使うため、仮に欠落するとどれも静かに誤動作する: (1) `addSubIssue()` の422判別（既登録の子を「未登録」と誤判定し `error` に計上）、(2) `/todo list project <N>`（子一覧から欠落）、(3) `/todo unlink`（食い違いと誤判定し `--force` を要求）、(4) `weekly-project-audit`（棚卸しの走査対象から漏れる）。取得失敗時に `[]` を返す既存仕様（成功と失敗を区別しない）は本Issueのスコープ外として維持した

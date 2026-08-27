@@ -8,13 +8,13 @@ Just type `/todo` to add, manage, and review tasks entirely from the terminal.
 
 ## Features
 
-- **GTD methodology** — 6 categories: inbox / next / waiting / someday / project / reference
+- **GTD methodology** — 7 categories: inbox / next / routine / waiting / someday / project / reference
 - **40+ commands** — Task CRUD, bulk operations, weekly review, templates, statistics, project audit, tickler file
 - **Multilingual** — Japanese (default) and English supported. Set `LANG_ENV=en` for English
 - **Flexible date input** — `--due tomorrow`, `--due "next friday"`, `--due "in 3 days"` (Japanese dates also work regardless of language setting)
 - **Context management** — `@PC` `@office` `@errands` for location/situation-based filtering
 - **Priority levels** — p1 (urgent) / p2 (important) / p3 (normal)
-- **Recurring tasks** — daily / weekly / monthly / weekdays
+- **Recurring tasks** — daily / weekly / monthly / weekdays, tracked under the `routine` category with catch-up detection for missed occurrences
 - **Security** — Shell injection and prompt injection protection with 8 rules
 - **1,351+ tests** — Local unit tests + GitHub integration tests
 - **No server required** — GitHub Issues API + local files only
@@ -163,8 +163,9 @@ Environment variable: LANG_ENV=en
 | `--priority` | Priority | `--priority p1` |
 | `--estimate` | Time estimate | `--estimate 2h`, `--estimate 30m` |
 | `--activate` | Scheduled promotion date (auto-promotes to next on that date) | `--activate 2026-05-01` |
-| `--before` | Auto-calculate `--activate` as N days before `--due` | `--before 14d` |
+| `--before` | Auto-calculate `--activate` as N days before `--due` (requires `--due`) | `--before 14d` |
 | `--depends-on` | Auto-promote to next when the dependency task is completed | `--depends-on 42` |
+| `--resume-condition` | Records a resume condition as free text; while set, `/todo promote` won't auto-promote and reports it for review instead | `--resume-condition "USD/JPY drops below 110"` |
 
 ### List & Search
 
@@ -224,7 +225,8 @@ Environment variable: LANG_ENV=en
 
 | Command | Description |
 |---------|-------------|
-| `/todo promote` | Bulk-promote tasks whose activate date has arrived to next |
+| `/todo promote` | Bulk-promote tasks whose activate date has arrived to next (tasks with `--resume-condition` set are held and reported instead of auto-promoted) |
+| `/todo activate <#> <date>` | Shorthand for `/todo edit <#> --activate <date>` |
 | `/todo review-someday <#>` | Record a review date for a someday task (⚠️ shown after 30+ days without review) |
 
 ### Bulk Operations

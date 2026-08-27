@@ -8,14 +8,14 @@ GitHub Issues をバックエンドに使った、Claude Code 用の GTD（Getti
 
 ## 特徴
 
-- **GTD メソッド準拠** — inbox / next / waiting / someday / project / reference の6カテゴリで仕分け
+- **GTD メソッド準拠** — inbox / next / routine / waiting / someday / project / reference の7カテゴリで仕分け
 - **40+ コマンド** — タスクCRUD、一括操作、週次レビュー、テンプレート、統計まで網羅
 - **多言語対応** — 日本語（デフォルト）と英語に対応。`LANG_ENV=en` で英語モード
 - **日本語ネイティブ** — `--due 明日`、`--due 来週金曜`、`--due 3日後` など日本語で日付指定可能
 - **英語日付対応** — `--due tomorrow`、`--due "next week"`、`--due "in 3 days"` など英語でも指定可能（言語設定に関係なく常に使用可）
 - **コンテキスト管理** — `@PC` `@会社` `@外出中` で場所・状況に応じたフィルタリング
 - **優先度** — p1（緊急）/ p2（重要）/ p3（通常）の3段階
-- **繰り返しタスク** — daily / weekly / monthly / weekdays の4パターン
+- **繰り返しタスク** — daily / weekly / monthly / weekdays の4パターン。`routine` カテゴリで管理され、実施漏れも検知
 - **セキュリティ対策** — シェルインジェクション・プロンプトインジェクション対策を8ルールで実装
 - **1,351+ テスト** — ローカルユニットテスト + GitHub統合テストで品質を担保
 - **サーバー不要** — GitHub Issues API + ローカルファイルのみで動作
@@ -160,8 +160,9 @@ export LANG_ENV=en
 | `--priority` | 優先度 | `--priority p1` |
 | `--estimate` | 見積時間 | `--estimate 2h`, `--estimate 30m` |
 | `--activate` | 昇格予定日（その日に next へ自動浮上） | `--activate 2026-05-01` |
-| `--before` | due の N 日前を activate として自動計算 | `--before 14d` |
+| `--before` | due の N 日前を activate として自動計算（`--due` が必須） | `--before 14d` |
 | `--depends-on` | 依存タスク完了時に next へ自動昇格 | `--depends-on 42` |
+| `--resume-condition` | 再開条件をフリーテキストで記録。設定中は `/todo promote` が自動昇格せず確認待ちとして通知する | `--resume-condition "為替が110円を切ったら"` |
 
 **日付入力パターン一覧は「日付入力パターン」セクションを参照してください。**
 
@@ -223,7 +224,8 @@ export LANG_ENV=en
 
 | コマンド | 説明 |
 |---------|------|
-| `/todo promote` | activate 日到来タスクを next に一括昇格 |
+| `/todo promote` | activate 日到来タスクを next に一括昇格（`--resume-condition` 設定済みのタスクは自動昇格せず確認待ちとして通知） |
+| `/todo activate <#> <日付>` | `/todo edit <#> --activate <日付>` の簡略形 |
 | `/todo review-someday <#>` | someday タスクの見直し日を記録（30日超で ⚠️ 表示） |
 
 ### 一括操作

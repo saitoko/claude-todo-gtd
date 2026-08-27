@@ -3553,6 +3553,15 @@ async function createRecurIssue(octokit, owner, repo, issue) {
       if (days !== null) nextActivate = addDays(nextDate, -days);
     }
     // 繰り返しタスク再作成時はreviewed_atを空に（新サイクル開始）
+    //
+    // depends_on / resume_condition も意図的に引き継がない（Issue #1890 で検証・確定、2026-08-24）。
+    // - depends_on: 依存先タスクは完了済みのはず（depends_on 昇格ロジックがそれを前提にしている）。
+    //   次周期へ引き継ぐと「既にクローズされた Issue への依存」になり不整合を生む。
+    // - resume_condition: `/todo promote` の自動昇格を抑止するためのフィールド（Issue #1299 由来）。
+    //   「条件が満たされるまで再開しない」という保留の意味を持つため、周期が来たら必ず実行する
+    //   recur とは意味論が相容れない。
+    // 実データでも裏付け済み: Issue 400件を走査して recur との併用は0件だった
+    //   （recur 32件 / depends_on 4件 / resume_condition 5件、重複なし）。
     const body = buildBody({
       due:      nextDate,
       recur:    issue.recur,
