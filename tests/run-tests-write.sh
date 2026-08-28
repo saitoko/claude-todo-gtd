@@ -125,7 +125,7 @@ log_lines_for_method() {
 # ──────────────────────────────────────────
 echo "§W0  Octokit スタブ単体スモークテスト"
 
-W0_LOG=$(mktemp /tmp/todo-test-stub-w0-XXXXXX.jsonl)
+W0_LOG=$(mktemp /tmp/todo-test-stub-w0-XXXXXX)
 : > "$W0_LOG"
 
 W0_OUT=$(STUB_PATH="$STUB" LOG_PATH="$W0_LOG" node -e "
@@ -198,7 +198,7 @@ echo "§W1  runDone — スタブベース振る舞いテスト"
 # issues.create の body まで実際に伝播していることを確認する。
 # #1660修正後: fetchAllOpen（issues.listForRepo）がproject/dependsOn有無に関わらず
 # 常に呼ばれるようになるため空応答を1件用意する
-W1_LOG=$(mktemp /tmp/todo-test-w1-XXXXXX.jsonl)
+W1_LOG=$(mktemp /tmp/todo-test-w1-XXXXXX)
 W1_RESP='{"issues.get":[{"data":{"number":301,"id":9301,"title":"Weekly Report","body":"due: 2026-03-01\nrecur: weekly\n","labels":[{"name":"🎯 next"}]}}],"issues.update":[{}],"issues.create":[{"data":{"number":9999}}],"issues.listForRepo":[{"data":[]}]}'
 W1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1_RESP" OCTOKIT_STUB_LOG_ENV="$W1_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
@@ -215,7 +215,7 @@ assert_contains "runDone 正常系: issues.create body に catchup後のdueが�
 rm -f "$W1_LOG"
 
 # W1-2 異常系: 番号なし → バリデーションエラー、API呼び出しゼロ（副作用なし確認）
-W1B_LOG=$(mktemp /tmp/todo-test-w1b-XXXXXX.jsonl)
+W1B_LOG=$(mktemp /tmp/todo-test-w1b-XXXXXX)
 : > "$W1B_LOG"
 W1B_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W1B_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
@@ -236,7 +236,7 @@ echo "§W2  runBulk done — スタブベース振る舞いテスト"
 # 実際のAPI呼び出しログで確認する（#1642回帰の実効テスト化）。
 # #1660修正後: 各Issueのpostdone処理でfetchAllOpen（issues.listForRepo）が呼ばれるため、
 # 2件（Issueごとに1回）の空応答を用意する
-W2_LOG=$(mktemp /tmp/todo-test-w2-XXXXXX.jsonl)
+W2_LOG=$(mktemp /tmp/todo-test-w2-XXXXXX)
 W2_RESP='{"issues.get":[{"data":{"number":401,"id":9401,"title":"Simple Task","body":"","labels":[{"name":"📥 inbox"}]}},{"data":{"number":402,"id":9402,"title":"Weekly Task 2","body":"due: 2026-04-01\nrecur: weekly\n","labels":[{"name":"🎯 next"}]}}],"issues.update":[{},{}],"issues.create":[{"data":{"number":8888}}],"issues.listForRepo":[{"data":[]},{"data":[]}]}'
 W2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W2_RESP" OCTOKIT_STUB_LOG_ENV="$W2_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
@@ -250,7 +250,7 @@ assert_eq "runBulk done 正常系: issues.create 呼び出し1回（#402のみre
 rm -f "$W2_LOG"
 
 # W2-2 異常系: Issue番号未指定 → バリデーションエラー、API呼び出しゼロ
-W2B_LOG=$(mktemp /tmp/todo-test-w2b-XXXXXX.jsonl)
+W2B_LOG=$(mktemp /tmp/todo-test-w2b-XXXXXX)
 : > "$W2B_LOG"
 W2B_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W2B_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
@@ -299,7 +299,7 @@ assert_contains "runView list: myview あり" "myview" "$VLIST_OUT"
 assert_contains "runView list: workctx あり" "workctx" "$VLIST_OUT"
 
 VUSE_RESP='{"issues.listForRepo":[{"data":[{"number":701,"title":"Sample","body":"","labels":[{"name":"🎯 next"},{"name":"@PC"},{"name":"p1"}],"updated_at":"2026-04-01T00:00:00Z"}]}]}'
-VUSE_LOG=$(mktemp /tmp/todo-test-w3-use-XXXXXX.jsonl)
+VUSE_LOG=$(mktemp /tmp/todo-test-w3-use-XXXXXX)
 VUSE_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$VUSE_RESP" OCTOKIT_STUB_LOG_ENV="$VUSE_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
   node "$ENGINE" run view use myview 2>&1); VUSE_EC=$?
@@ -323,7 +323,7 @@ assert_contains "runView delete 再削除: エラーに対象名（myview）が�
 assert_not_contains "runView delete 再削除: エラーが'delete'という名前を誤って指していない" 'ビュー「delete」は存在しません' "$VDEL2_OUT"
 
 # W3-2 異常系: 存在しないビューを use → API呼び出しなしで即エラー（vdata存在チェックがfetchAllOpenより先）
-VUSE_MISS_LOG=$(mktemp /tmp/todo-test-w3-missuse-XXXXXX.jsonl)
+VUSE_MISS_LOG=$(mktemp /tmp/todo-test-w3-missuse-XXXXXX)
 : > "$VUSE_MISS_LOG"
 VUSE_MISS_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$VUSE_MISS_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
@@ -362,7 +362,7 @@ echo ""
 echo "§W4  runAdd — スタブベース振る舞いテスト"
 
 # W4-1 正常系: GTDキーワード先頭省略記法 + context/tag/priorityラベル作成順序 + before計算
-W4_LOG=$(mktemp /tmp/todo-test-w4-XXXXXX.jsonl)
+W4_LOG=$(mktemp /tmp/todo-test-w4-XXXXXX)
 W4_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{},{},{}],"issues.create":[{"data":{"number":5001,"html_url":"https://github.com/test-owner/test-repo/issues/5001"}}]}'
 W4_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W4_RESP" OCTOKIT_STUB_LOG_ENV="$W4_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
@@ -379,7 +379,7 @@ assert_contains "runAdd 正常系: issues.create labels に4件（GTD+context+ta
 rm -f "$W4_LOG"
 
 # W4-2 異常系: タイトル空 → エラー、ラベル作成（ensureLabel等）は一切呼ばれない（副作用の過不足検証）
-W4B_LOG=$(mktemp /tmp/todo-test-w4b-XXXXXX.jsonl)
+W4B_LOG=$(mktemp /tmp/todo-test-w4b-XXXXXX)
 : > "$W4B_LOG"
 W4B_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W4B_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
@@ -396,7 +396,7 @@ echo ""
 echo "§W5  runEdit — スタブベース振る舞いテスト"
 
 # W5-1 正常系: due変更 + before指定によるactivate再計算 + priority変更
-W5_LOG=$(mktemp /tmp/todo-test-w5-XXXXXX.jsonl)
+W5_LOG=$(mktemp /tmp/todo-test-w5-XXXXXX)
 W5_RESP='{"issues.get":[{"data":{"number":601,"id":9601,"title":"Old Title","body":"due: 2026-04-01\n","labels":[{"name":"🎯 next"},{"name":"p3"}]}}],"issues.removeLabel":[{}],"GET /repos/{owner}/{repo}/labels/{name}":[{}],"issues.addLabels":[{}],"issues.update":[{}]}'
 W5_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W5_RESP" OCTOKIT_STUB_LOG_ENV="$W5_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
@@ -414,7 +414,7 @@ assert_contains "runEdit 正常系: issues.update body に新dueとactivateが�
 rm -f "$W5_LOG"
 
 # W5-2 異常系: --before指定だがdueなし → エラー、issues.get のみ実行され更新系は一切呼ばれない
-W5B_LOG=$(mktemp /tmp/todo-test-w5b-XXXXXX.jsonl)
+W5B_LOG=$(mktemp /tmp/todo-test-w5b-XXXXXX)
 W5B_RESP='{"issues.get":[{"data":{"number":602,"id":9602,"title":"No due task","body":"","labels":[{"name":"📥 inbox"}]}}]}'
 W5B_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W5B_RESP" OCTOKIT_STUB_LOG_ENV="$W5B_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
@@ -431,7 +431,7 @@ rm -f "$W5B_LOG"
 # 破壊された中途半端な状態でエラー終了することがなくなった。
 # issues.get（issue本体の取得）はpriority検証より前の共通フローで既に1回呼ばれているため
 # 1回のまま、removeLabel/addLabels/issues.update（body更新）は全て0回になる。
-W5C_LOG=$(mktemp /tmp/todo-test-w5c-XXXXXX.jsonl)
+W5C_LOG=$(mktemp /tmp/todo-test-w5c-XXXXXX)
 W5C_RESP='{"issues.get":[{"data":{"number":603,"id":9603,"title":"Task","body":"due: 2026-04-01\n","labels":[{"name":"🎯 next"},{"name":"p1"}]}}]}'
 W5C_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W5C_RESP" OCTOKIT_STUB_LOG_ENV="$W5C_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
@@ -451,7 +451,7 @@ echo ""
 echo "§W6  runPriority — スタブベース振る舞いテスト"
 
 # W6-1 正常系
-W6_LOG=$(mktemp /tmp/todo-test-w6-XXXXXX.jsonl)
+W6_LOG=$(mktemp /tmp/todo-test-w6-XXXXXX)
 W6_RESP='{"issues.get":[{"data":{"number":701,"id":9701,"title":"Task","body":"","labels":[{"name":"🎯 next"},{"name":"p1"}]}}],"issues.removeLabel":[{}],"GET /repos/{owner}/{repo}/labels/{name}":[{}],"issues.addLabels":[{}]}'
 W6_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W6_RESP" OCTOKIT_STUB_LOG_ENV="$W6_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
@@ -467,7 +467,7 @@ rm -f "$W6_LOG"
 # W6-2（Issue #1652 修正後）: validate-before-mutate。
 # runPriority は validatePriority() を issues.get（issue本体取得）より前に呼ぶよう
 # 修正したため、不正値指定時はAPI呼び出しが一切発生しない（0回）ことを確認する。
-W6C_LOG=$(mktemp /tmp/todo-test-w6c-XXXXXX.jsonl)
+W6C_LOG=$(mktemp /tmp/todo-test-w6c-XXXXXX)
 : > "$W6C_LOG"
 W6C_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W6C_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
@@ -486,7 +486,7 @@ echo "§W7  runTag rename — スタブベース振る舞いテスト（renameCt
 # 旧 TAG_RENAME_DELEGATES はソースgrep（「renameCtxLabel という文字列が runTag 本文に
 # 含まれるか」のみ確認）だった。置換後は実際に ensureLabel→fetchAllOpen→(addLabels→
 # removeLabel)→deleteLabel という呼び出し列が発生することをログで確認する。
-W7_LOG=$(mktemp /tmp/todo-test-w7-XXXXXX.jsonl)
+W7_LOG=$(mktemp /tmp/todo-test-w7-XXXXXX)
 W7_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{}],"issues.listForRepo":[{"data":[{"number":801,"title":"Task A","body":"","labels":[{"name":"@oldctx"}],"updated_at":""}]}],"issues.addLabels":[{}],"issues.removeLabel":[{}],"issues.deleteLabel":[{}]}'
 W7_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W7_RESP" OCTOKIT_STUB_LOG_ENV="$W7_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
@@ -533,7 +533,7 @@ echo "§W9  api done-issue — スタブベース振る舞いテスト（Web版 
 # W9-1 正常系: recur設定ありのissueをdone-issueで閉じると次周期のissueが作成される（skipなし）
 # #1660修正後: recurのみでproject/dependsOnがなくても depends_on 昇格チェックのため
 # fetchAllOpen（issues.listForRepo）が呼ばれるようになるため、空応答を1件用意する。
-W9_1_LOG=$(mktemp /tmp/todo-test-w9-1-XXXXXX.jsonl)
+W9_1_LOG=$(mktemp /tmp/todo-test-w9-1-XXXXXX)
 W9_1_RESP='{"issues.get":[{"data":{"number":900,"id":9900,"title":"Weekly Report","body":"due: 2026-04-05\nrecur: weekly\n","labels":[{"name":"🎯 next"}]}}],"issues.update":[{}],"issues.create":[{"data":{"number":9001}}],"issues.listForRepo":[{"data":[]}]}'
 W9_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W9_1_RESP" OCTOKIT_STUB_LOG_ENV="$W9_1_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
@@ -554,7 +554,7 @@ rm -f "$W9_1_LOG"
 # #1660修正後: depends_on昇格チェックは完了Issue自身のproject/dependsOn有無にかかわらず
 # 常にfetchAllOpen（issues.listForRepo）を実行するようになったため、呼び出し回数は0→1に変わる
 # （他のオープンIssueがこの完了Issueに依存していないかを確認するための呼び出し）。
-W9_2_LOG=$(mktemp /tmp/todo-test-w9-2-XXXXXX.jsonl)
+W9_2_LOG=$(mktemp /tmp/todo-test-w9-2-XXXXXX)
 W9_2_RESP='{"issues.get":[{"data":{"number":950,"id":9950,"title":"Simple Task","body":"","labels":[{"name":"📥 inbox"}]}}],"issues.update":[{}],"issues.listForRepo":[{"data":[]}]}'
 W9_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W9_2_RESP" OCTOKIT_STUB_LOG_ENV="$W9_2_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
@@ -569,7 +569,7 @@ rm -f "$W9_2_LOG"
 
 # W9-3 境界値: 期限超過issueのcatch-up skip挙動（nextDueCatchUpの既存挙動がdone-issue経由でも壊れていないか）
 # #1660修正後: fetchAllOpen が project/dependsOn 有無に関わらず呼ばれるため空応答を1件用意する
-W9_3_LOG=$(mktemp /tmp/todo-test-w9-3-XXXXXX.jsonl)
+W9_3_LOG=$(mktemp /tmp/todo-test-w9-3-XXXXXX)
 W9_3_RESP='{"issues.get":[{"data":{"number":960,"id":9960,"title":"Overdue Weekly","body":"due: 2026-03-01\nrecur: weekly\n","labels":[{"name":"🎯 next"}]}}],"issues.update":[{}],"issues.create":[{"data":{"number":9002}}],"issues.listForRepo":[{"data":[]}]}'
 W9_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W9_3_RESP" OCTOKIT_STUB_LOG_ENV="$W9_3_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
@@ -581,7 +581,7 @@ assert_eq "done-issue 境界値: issues.create 呼び出し1回" "1" "$(log_coun
 rm -f "$W9_3_LOG"
 
 # W9-4 境界値: depends_on昇格がdone-issue経由でも従来通り動くか（postDoneProcessing共通後処理の実効検証）
-W9_4_LOG=$(mktemp /tmp/todo-test-w9-4-XXXXXX.jsonl)
+W9_4_LOG=$(mktemp /tmp/todo-test-w9-4-XXXXXX)
 W9_4_RESP='{"issues.get":[{"data":{"number":500,"id":9500,"title":"Depends Task","body":"depends_on: #10\n","labels":[{"name":"🎯 next"}]}}],"issues.update":[{}],"issues.listForRepo":[{"data":[{"number":501,"title":"Some other task","body":"depends_on: #500\n","labels":[{"name":"🌈 someday"}],"updated_at":""}]}],"issues.removeLabel":[{}],"issues.addLabels":[{}]}'
 W9_4_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W9_4_RESP" OCTOKIT_STUB_LOG_ENV="$W9_4_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
@@ -597,7 +597,7 @@ assert_contains "done-issue 境界値: addLabels対象が#501にnext" '"issue_nu
 rm -f "$W9_4_LOG"
 
 # W9-5 異常系: 番号なし → バリデーションエラー、API呼び出しゼロ（副作用なし確認）
-W9_5_LOG=$(mktemp /tmp/todo-test-w9-5-XXXXXX.jsonl)
+W9_5_LOG=$(mktemp /tmp/todo-test-w9-5-XXXXXX)
 : > "$W9_5_LOG"
 W9_5_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W9_5_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
@@ -609,7 +609,7 @@ rm -f "$W9_5_LOG"
 
 # W9-6 セキュリティ/異常系: 存在しないIssue番号 → GitHub 404エラーがそのまま伝播し、非0で終了する
 # （close-issue 等の既存 api サブコマンドと同じく特別なハンドリングを追加していないことの確認）
-W9_6_LOG=$(mktemp /tmp/todo-test-w9-6-XXXXXX.jsonl)
+W9_6_LOG=$(mktemp /tmp/todo-test-w9-6-XXXXXX)
 W9_6_RESP='{"issues.get":[{"__throw":true,"status":404,"message":"Not Found"}]}'
 W9_6_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W9_6_RESP" OCTOKIT_STUB_LOG_ENV="$W9_6_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
@@ -634,7 +634,7 @@ echo "§W10  postDoneProcessing — depends_on昇格ガードの独立修正（#
 
 # W10-1 正常系: 完了Issueがproject/dependsOnどちらも持たなくても、それに依存する
 # 他のオープンIssueが正しくnextへ昇格すること（#1299/#1275と同型の回帰テスト）
-W10_1_LOG=$(mktemp /tmp/todo-test-w10-1-XXXXXX.jsonl)
+W10_1_LOG=$(mktemp /tmp/todo-test-w10-1-XXXXXX)
 W10_1_RESP='{"issues.get":[{"data":{"number":700,"id":9700,"title":"Root Task (no project/dependsOn)","body":"","labels":[{"name":"📥 inbox"}]}}],"issues.update":[{}],"issues.listForRepo":[{"data":[{"number":701,"title":"Dependent Task","body":"depends_on: #700\n","labels":[{"name":"🌈 someday"}],"updated_at":""}]}],"issues.removeLabel":[{}],"issues.addLabels":[{}]}'
 W10_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W10_1_RESP" OCTOKIT_STUB_LOG_ENV="$W10_1_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
@@ -649,7 +649,7 @@ rm -f "$W10_1_LOG"
 
 # W10-2 正常系: 完了Issueがprojectを持つ場合、depends_on昇格とプロジェクト次タスク
 # 昇格候補ヒントの両方が引き続き動作すること（既存挙動の回帰確認）
-W10_2_LOG=$(mktemp /tmp/todo-test-w10-2-XXXXXX.jsonl)
+W10_2_LOG=$(mktemp /tmp/todo-test-w10-2-XXXXXX)
 W10_2_RESP='{"issues.get":[{"data":{"number":710,"id":9710,"title":"Project Root Task","body":"project: #300\n","labels":[{"name":"🎯 next"}]}},{"data":{"number":300,"title":"Project X"}}],"issues.update":[{}],"issues.listForRepo":[{"data":[{"number":711,"title":"Project Sibling Task","body":"project: #300\n","labels":[{"name":"🌈 someday"}],"updated_at":""},{"number":712,"title":"Depends On Root","body":"depends_on: #710\n","labels":[{"name":"📥 inbox"}],"updated_at":""}]}],"issues.removeLabel":[{}],"issues.addLabels":[{}]}'
 W10_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W10_2_RESP" OCTOKIT_STUB_LOG_ENV="$W10_2_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
@@ -662,7 +662,7 @@ assert_eq "W10-2 正常系: issues.listForRepo 呼び出し1回（depends_on昇�
 rm -f "$W10_2_LOG"
 
 # W10-3 境界値: 依存する側が既にnextの場合は昇格スキップされること（既存ロジックの確認）
-W10_3_LOG=$(mktemp /tmp/todo-test-w10-3-XXXXXX.jsonl)
+W10_3_LOG=$(mktemp /tmp/todo-test-w10-3-XXXXXX)
 W10_3_RESP='{"issues.get":[{"data":{"number":720,"id":9720,"title":"Root Task 2","body":"","labels":[{"name":"📥 inbox"}]}}],"issues.update":[{}],"issues.listForRepo":[{"data":[{"number":721,"title":"Already Next Task","body":"depends_on: #720\n","labels":[{"name":"🎯 next"}],"updated_at":""}]}]}'
 W10_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W10_3_RESP" OCTOKIT_STUB_LOG_ENV="$W10_3_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
@@ -688,7 +688,7 @@ echo "§W11  runAdd — parseArgs タグ判定の空白制約（#タイトルが
 
 # W11-1 正常系: スペースを含む「#1299 ...」がタイトル全体で1トークンの場合、
 # タグ扱いされずタイトルとして正しく保存されること
-W11_1_LOG=$(mktemp /tmp/todo-test-w11-1-XXXXXX.jsonl)
+W11_1_LOG=$(mktemp /tmp/todo-test-w11-1-XXXXXX)
 # GET .../labels/{name} は既定優先度(p3)のensureLabel呼び出し分（runAddは優先度未指定時もp3ラベルをensureする）
 W11_1_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{}],"issues.create":[{"data":{"number":6001,"html_url":"https://github.com/test-owner/test-repo/issues/6001"}}]}'
 W11_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W11_1_RESP" OCTOKIT_STUB_LOG_ENV="$W11_1_LOG" \
@@ -701,7 +701,7 @@ rm -f "$W11_1_LOG"
 
 # W11-2 正常系: 純粋な「#1299」（スペースなし単体）は従来通りタイトルの一部として扱われること
 # （既存動作の回帰確認。#42のようなIssue番号表記はもともと除外対象）
-W11_2_LOG=$(mktemp /tmp/todo-test-w11-2-XXXXXX.jsonl)
+W11_2_LOG=$(mktemp /tmp/todo-test-w11-2-XXXXXX)
 # GET .../labels/{name} は既定優先度(p3)のensureLabel呼び出し分
 W11_2_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{}],"issues.create":[{"data":{"number":6002,"html_url":"https://github.com/test-owner/test-repo/issues/6002"}}]}'
 W11_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W11_2_RESP" OCTOKIT_STUB_LOG_ENV="$W11_2_LOG" \
@@ -714,7 +714,7 @@ rm -f "$W11_2_LOG"
 
 # W11-3 正常系: 「#urgent」（スペースなし単体、genuineな単語タグ）は従来通りタグとして
 # 正しく認識されること（既存動作の回帰確認）
-W11_3_LOG=$(mktemp /tmp/todo-test-w11-3-XXXXXX.jsonl)
+W11_3_LOG=$(mktemp /tmp/todo-test-w11-3-XXXXXX)
 # GET .../labels/{name} は #urgentタグ + 既定優先度(p3)の2回分のensureLabel呼び出し
 W11_3_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{},{}],"issues.create":[{"data":{"number":6003,"html_url":"https://github.com/test-owner/test-repo/issues/6003"}}]}'
 W11_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W11_3_RESP" OCTOKIT_STUB_LOG_ENV="$W11_3_LOG" \
@@ -728,7 +728,7 @@ rm -f "$W11_3_LOG"
 
 # W11-4 境界値: タイトル全体がタグ扱いされ得る内容のみの場合、意図通り
 # 「タイトルが空です」エラーになること（#urgent単体のみを渡すケース）
-W11_4_LOG=$(mktemp /tmp/todo-test-w11-4-XXXXXX.jsonl)
+W11_4_LOG=$(mktemp /tmp/todo-test-w11-4-XXXXXX)
 : > "$W11_4_LOG"
 W11_4_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W11_4_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
@@ -751,7 +751,7 @@ echo "§W12  tag/bulk tag — 不正ラベル名が検証なく新規作成さ�
 # 出力は通常の成功メッセージと区別がつかず、静かに永続的な副作用が残るのが問題だった。
 
 # W12-1 境界値: '--' 区切りを渡すとオプション誤指定として拒否され、API に到達しないこと
-W12_1_LOG=$(mktemp /tmp/todo-test-w12-1-XXXXXX.jsonl)
+W12_1_LOG=$(mktemp /tmp/todo-test-w12-1-XXXXXX)
 : > "$W12_1_LOG"
 W12_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W12_1_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
@@ -762,7 +762,7 @@ assert_eq "W12-1 境界値: API呼び出しゼロ（ラベル作成・付与と�
 rm -f "$W12_1_LOG"
 
 # W12-2 境界値: 記号のみのコンテキスト名（'@--'）が拒否されること
-W12_2_LOG=$(mktemp /tmp/todo-test-w12-2-XXXXXX.jsonl)
+W12_2_LOG=$(mktemp /tmp/todo-test-w12-2-XXXXXX)
 : > "$W12_2_LOG"
 W12_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W12_2_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
@@ -773,7 +773,7 @@ assert_eq "W12-2 境界値: API呼び出しゼロ（ensureLabel より前に検�
 rm -f "$W12_2_LOG"
 
 # W12-3 境界値: 記号のみのタグ名（'#--'）が拒否されること
-W12_3_LOG=$(mktemp /tmp/todo-test-w12-3-XXXXXX.jsonl)
+W12_3_LOG=$(mktemp /tmp/todo-test-w12-3-XXXXXX)
 : > "$W12_3_LOG"
 W12_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W12_3_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
@@ -784,7 +784,7 @@ assert_eq "W12-3 境界値: API呼び出しゼロ" "0" "$(wc -l < "$W12_3_LOG" |
 rm -f "$W12_3_LOG"
 
 # W12-4 正常系: 既存ラベル（GET 200）を付与したときは新規作成の通知を出さないこと
-W12_4_LOG=$(mktemp /tmp/todo-test-w12-4-XXXXXX.jsonl)
+W12_4_LOG=$(mktemp /tmp/todo-test-w12-4-XXXXXX)
 W12_4_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{}],"issues.addLabels":[{}]}'
 W12_4_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W12_4_RESP" OCTOKIT_STUB_LOG_ENV="$W12_4_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
@@ -796,7 +796,7 @@ rm -f "$W12_4_LOG"
 
 # W12-5 正常系: 未登録ラベル（GET 404）を付与したときは新規作成を明示すること
 # 打ち間違いが静かに新ラベル化されるのを、呼び出し側が出力で気づけるようにする
-W12_5_LOG=$(mktemp /tmp/todo-test-w12-5-XXXXXX.jsonl)
+W12_5_LOG=$(mktemp /tmp/todo-test-w12-5-XXXXXX)
 W12_5_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{"__throw":true,"status":404,"message":"Not Found"}],"issues.createLabel":[{}],"issues.addLabels":[{}]}'
 W12_5_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W12_5_RESP" OCTOKIT_STUB_LOG_ENV="$W12_5_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
@@ -816,7 +816,7 @@ echo ""
 echo "§W13  recur 曜日・日付固定サフィックス — スタブベース振る舞いテスト"
 
 # W13-1 正常系: run show --json で recur がコロンごと保持されて出力されること
-W13_1_LOG=$(mktemp /tmp/todo-test-w13-1-XXXXXX.jsonl)
+W13_1_LOG=$(mktemp /tmp/todo-test-w13-1-XXXXXX)
 W13_1_RESP='{"issues.get":[{"data":{"number":1701,"id":97001,"title":"Weekly Review","body":"due: 2026-08-10\nrecur: weekly:sat\n","labels":[{"name":"🎯 next"}]}}]}'
 W13_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W13_1_RESP" OCTOKIT_STUB_LOG_ENV="$W13_1_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
@@ -826,7 +826,7 @@ assert_contains "W13-1 正常系: recur にコロンが保持される（renderI
 rm -f "$W13_1_LOG"
 
 # W13-2 正常系: run recur <#> weekly:sat が成功しbodyにコロン付きで保存されること
-W13_2_LOG=$(mktemp /tmp/todo-test-w13-2-XXXXXX.jsonl)
+W13_2_LOG=$(mktemp /tmp/todo-test-w13-2-XXXXXX)
 W13_2_RESP='{"issues.get":[{"data":{"number":1702,"id":97002,"title":"Task","body":"","labels":[{"name":"🎯 next"}]}}],"issues.update":[{}]}'
 W13_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W13_2_RESP" OCTOKIT_STUB_LOG_ENV="$W13_2_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
@@ -837,7 +837,7 @@ assert_contains "W13-2 正常系: issues.update body に recur: weekly:sat が�
 rm -f "$W13_2_LOG"
 
 # W13-3 正常系: run edit <#> --recur monthly:15 が成功しbodyにコロン付きで保存されること
-W13_3_LOG=$(mktemp /tmp/todo-test-w13-3-XXXXXX.jsonl)
+W13_3_LOG=$(mktemp /tmp/todo-test-w13-3-XXXXXX)
 W13_3_RESP='{"issues.get":[{"data":{"number":1703,"id":97003,"title":"Task","body":"","labels":[{"name":"🎯 next"}]}}],"issues.update":[{}]}'
 W13_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W13_3_RESP" OCTOKIT_STUB_LOG_ENV="$W13_3_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
@@ -850,7 +850,7 @@ rm -f "$W13_3_LOG"
 # W13-4 正常系: recur: weekly:sat の done → postDoneProcessing が厳密加算方式で
 # 次回due(2026-08-15)を計算し、recurがコロンごと次Issueに引き継がれること
 # （ユーザー承認済み検証例そのもの。期限超過なし=skippedメッセージが出ないことも確認）
-W13_4_LOG=$(mktemp /tmp/todo-test-w13-4-XXXXXX.jsonl)
+W13_4_LOG=$(mktemp /tmp/todo-test-w13-4-XXXXXX)
 W13_4_RESP='{"issues.get":[{"data":{"number":1704,"id":97004,"title":"Weekly Review","body":"due: 2026-08-06\nrecur: weekly:sat\n","labels":[{"name":"🎯 next"}]}}],"issues.update":[{}],"issues.create":[{"data":{"number":9704}}],"issues.listForRepo":[{"data":[]}]}'
 W13_4_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W13_4_RESP" OCTOKIT_STUB_LOG_ENV="$W13_4_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-06 \
@@ -863,7 +863,7 @@ rm -f "$W13_4_LOG"
 
 # W13-5 正常系: recur: monthly:31 の done → 1/31完了で対象日(31日)が2月に存在しないため
 # 2/28にクランプされ、recurの指定日(31)自体は保持されたまま次Issueに引き継がれること
-W13_5_LOG=$(mktemp /tmp/todo-test-w13-5-XXXXXX.jsonl)
+W13_5_LOG=$(mktemp /tmp/todo-test-w13-5-XXXXXX)
 W13_5_RESP='{"issues.get":[{"data":{"number":1705,"id":97005,"title":"Month-end Task","body":"due: 2026-01-31\nrecur: monthly:31\n","labels":[{"name":"🎯 next"}]}}],"issues.update":[{}],"issues.create":[{"data":{"number":9705}}],"issues.listForRepo":[{"data":[]}]}'
 W13_5_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W13_5_RESP" OCTOKIT_STUB_LOG_ENV="$W13_5_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-01-31 \
@@ -877,7 +877,7 @@ rm -f "$W13_5_LOG"
 # 不正なrecur値（weekly:INVALID）が書き込まれた状態で done を実行した場合、
 # postDoneProcessing内のvalidateRecurが検知してexit 1し、周期再作成（issues.create）が
 # 行われないこと（既存の防御ラインが新パターンでも機能し続けることの回帰確認）
-W13_6_LOG=$(mktemp /tmp/todo-test-w13-6-XXXXXX.jsonl)
+W13_6_LOG=$(mktemp /tmp/todo-test-w13-6-XXXXXX)
 W13_6_RESP='{"issues.get":[{"data":{"number":1706,"id":97006,"title":"Corrupted Recur Task","body":"due: 2026-08-06\nrecur: weekly:INVALID\n","labels":[{"name":"🎯 next"}]}}],"issues.update":[{}]}'
 W13_6_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W13_6_RESP" OCTOKIT_STUB_LOG_ENV="$W13_6_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-06 \
@@ -895,7 +895,7 @@ echo "§W12  resume_condition — add/edit/promote スタブベース振る舞�
 echo "  （Issue #1299由来の欠陥修正: activate到来のみで実質的な再開条件を無視して昇格していた）"
 
 # W12-1 正常系: runAdd --resume-condition で新規Issue body に resume_condition が反映される
-W12_1_LOG=$(mktemp /tmp/todo-test-w12-1-XXXXXX.jsonl)
+W12_1_LOG=$(mktemp /tmp/todo-test-w12-1-XXXXXX)
 W12_1_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{}],"issues.create":[{"data":{"number":7001,"html_url":"https://github.com/test-owner/test-repo/issues/7001"}}]}'
 W12_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W12_1_RESP" OCTOKIT_STUB_LOG_ENV="$W12_1_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-03 \
@@ -905,7 +905,7 @@ assert_contains "W12-1 正常系: issues.create body に resume_condition が反
 rm -f "$W12_1_LOG"
 
 # W12-2 異常系: runAdd --resume-condition に改行を含む値 → validateResumeCondition でエラー終了、issues.createは呼ばれない
-W12_2_LOG=$(mktemp /tmp/todo-test-w12-2-XXXXXX.jsonl)
+W12_2_LOG=$(mktemp /tmp/todo-test-w12-2-XXXXXX)
 : > "$W12_2_LOG"
 W12_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W12_2_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-03 \
@@ -916,7 +916,7 @@ assert_eq "W12-2 異常系: issues.create は呼ばれない（副作用なし�
 rm -f "$W12_2_LOG"
 
 # W12-3 正常系: runEdit --resume-condition で既存Issueに再開条件を後付け
-W12_3_LOG=$(mktemp /tmp/todo-test-w12-3-XXXXXX.jsonl)
+W12_3_LOG=$(mktemp /tmp/todo-test-w12-3-XXXXXX)
 W12_3_RESP='{"issues.get":[{"data":{"number":1299,"id":91299,"title":"サンプルタスク","body":"activate: 2026-07-15\n","labels":[{"name":"🌈 someday"}]}}],"issues.update":[{}]}'
 W12_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W12_3_RESP" OCTOKIT_STUB_LOG_ENV="$W12_3_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-03 \
@@ -927,7 +927,7 @@ assert_contains "W12-3 正常系: issues.update body に resume_condition 行が
 rm -f "$W12_3_LOG"
 
 # W12-4 正常系: runEdit --resume-condition clear で再開条件を除去（activate等の他フィールドは保持）
-W12_4_LOG=$(mktemp /tmp/todo-test-w12-4-XXXXXX.jsonl)
+W12_4_LOG=$(mktemp /tmp/todo-test-w12-4-XXXXXX)
 W12_4_RESP='{"issues.get":[{"data":{"number":1299,"id":91299,"title":"サンプルタスク","body":"activate: 2026-07-15\nresume_condition: 検索流入が回復したら\n","labels":[{"name":"🌈 someday"}]}}],"issues.update":[{}]}'
 W12_4_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W12_4_RESP" OCTOKIT_STUB_LOG_ENV="$W12_4_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-03 \
@@ -938,7 +938,7 @@ assert_contains "W12-4 正常系: issues.update body から resume_condition 行
 rm -f "$W12_4_LOG"
 
 # W12-5 異常系: runEdit --resume-condition に改行を含む値 → エラー終了、issues.updateは呼ばれない
-W12_5_LOG=$(mktemp /tmp/todo-test-w12-5-XXXXXX.jsonl)
+W12_5_LOG=$(mktemp /tmp/todo-test-w12-5-XXXXXX)
 W12_5_RESP='{"issues.get":[{"data":{"number":1300,"id":91300,"title":"Task","body":"","labels":[{"name":"📥 inbox"}]}}]}'
 W12_5_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W12_5_RESP" OCTOKIT_STUB_LOG_ENV="$W12_5_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-03 \
@@ -950,7 +950,7 @@ rm -f "$W12_5_LOG"
 
 # W12-6 正常系（本設計の核）: resume_condition あり + activate到来 → 機械的自動昇格をスキップし
 # 確認待ちメッセージのみ出力する。addLabels/removeLabelは一切呼ばれない（Issue #1299の再現・修正確認）
-W12_6_LOG=$(mktemp /tmp/todo-test-w12-6-XXXXXX.jsonl)
+W12_6_LOG=$(mktemp /tmp/todo-test-w12-6-XXXXXX)
 W12_6_RESP='{"issues.listForRepo":[{"data":[{"number":1299,"title":"サンプルタスク","body":"activate: 2026-07-15\nresume_condition: example.comの検索流入が観測できるレベルに育ったとき\n","labels":[{"name":"📥 inbox"}],"updated_at":""}]}]}'
 W12_6_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W12_6_RESP" OCTOKIT_STUB_LOG_ENV="$W12_6_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-03 \
@@ -965,7 +965,7 @@ rm -f "$W12_6_LOG"
 
 # W12-7 リグレッション: resume_condition なし + activate到来 → 既存どおり機械的にnextへ昇格する
 # （resume_condition機能追加による既存挙動への影響がないことの確認）
-W12_7_LOG=$(mktemp /tmp/todo-test-w12-7-XXXXXX.jsonl)
+W12_7_LOG=$(mktemp /tmp/todo-test-w12-7-XXXXXX)
 W12_7_RESP='{"issues.listForRepo":[{"data":[{"number":1301,"title":"通常のチクラータスク","body":"activate: 2026-07-15\n","labels":[{"name":"📥 inbox"}],"updated_at":""}]}],"issues.removeLabel":[{}],"issues.addLabels":[{}]}'
 W12_7_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W12_7_RESP" OCTOKIT_STUB_LOG_ENV="$W12_7_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-03 \
@@ -977,7 +977,7 @@ assert_eq "W12-7 リグレッション: issues.addLabels 呼び出し1回（従�
 rm -f "$W12_7_LOG"
 
 # W12-8 境界値: resume_condition あり + 昇格(promoted)なしの混在 → サマリーに両方の件数が表示される
-W12_8_LOG=$(mktemp /tmp/todo-test-w12-8-XXXXXX.jsonl)
+W12_8_LOG=$(mktemp /tmp/todo-test-w12-8-XXXXXX)
 W12_8_RESP='{"issues.listForRepo":[{"data":[{"number":1299,"title":"Pending Task","body":"activate: 2026-07-15\nresume_condition: 検索流入が回復したら\n","labels":[{"name":"📥 inbox"}],"updated_at":""},{"number":1301,"title":"Normal Task","body":"activate: 2026-07-15\n","labels":[{"name":"📥 inbox"}],"updated_at":""}]}],"issues.removeLabel":[{}],"issues.addLabels":[{}]}'
 W12_8_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W12_8_RESP" OCTOKIT_STUB_LOG_ENV="$W12_8_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-03 \
@@ -993,7 +993,7 @@ rm -f "$W12_8_LOG"
 
 # W12-9 境界値: resume_condition あり + activate未到来（未来日） → 既存の「activate未到来はpromote対象外」
 # 動作がresume_condition追加後も維持されること（新規エラーにしない・pending扱いにもしない）
-W12_9_LOG=$(mktemp /tmp/todo-test-w12-9-XXXXXX.jsonl)
+W12_9_LOG=$(mktemp /tmp/todo-test-w12-9-XXXXXX)
 W12_9_RESP='{"issues.listForRepo":[{"data":[{"number":1400,"title":"Future Task","body":"activate: 2099-01-01\nresume_condition: 何かの条件\n","labels":[{"name":"📥 inbox"}],"updated_at":""}]}]}'
 W12_9_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W12_9_RESP" OCTOKIT_STUB_LOG_ENV="$W12_9_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-03 \
@@ -1004,7 +1004,7 @@ assert_not_contains "W12-9 境界値: #1400 への言及がない（走査対象
 rm -f "$W12_9_LOG"
 
 # W12-10 正常系: runShow --json に resumeCondition フィールドが含まれる
-W12_10_LOG=$(mktemp /tmp/todo-test-w12-10-XXXXXX.jsonl)
+W12_10_LOG=$(mktemp /tmp/todo-test-w12-10-XXXXXX)
 W12_10_RESP='{"issues.get":[{"data":{"number":1299,"id":91299,"title":"サンプルタスク","body":"activate: 2026-07-15\nresume_condition: example.comの検索流入が観測できるレベルに育ったとき\n","labels":[{"name":"🌈 someday"}]}}]}'
 W12_10_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W12_10_RESP" OCTOKIT_STUB_LOG_ENV="$W12_10_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
@@ -1022,7 +1022,7 @@ echo ""
 echo "§W14  show の state/closedAt 表示 — スタブベース振る舞いテスト（Issue #1746）"
 
 # W14-1 正常系: closed Issue を show（人間向け出力）→ 状態行が表示され完了日が入る
-W14_1_LOG=$(mktemp /tmp/todo-test-w14-1-XXXXXX.jsonl)
+W14_1_LOG=$(mktemp /tmp/todo-test-w14-1-XXXXXX)
 W14_1_RESP='{"issues.get":[{"data":{"number":1740,"id":91740,"title":"完了済みタスク","body":"","labels":[{"name":"🎯 next"}],"state":"closed","closed_at":"2026-08-09T09:29:00Z"}}]}'
 W14_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W14_1_RESP" OCTOKIT_STUB_LOG_ENV="$W14_1_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
@@ -1032,7 +1032,7 @@ assert_contains "W14-1 正常系: 状態行に完了・クローズ日が表示�
 rm -f "$W14_1_LOG"
 
 # W14-2 正常系: open Issue を show（人間向け出力）→ 状態行は表示されない（冗長回避）
-W14_2_LOG=$(mktemp /tmp/todo-test-w14-2-XXXXXX.jsonl)
+W14_2_LOG=$(mktemp /tmp/todo-test-w14-2-XXXXXX)
 W14_2_RESP='{"issues.get":[{"data":{"number":1746,"id":91746,"title":"未完了タスク","body":"","labels":[{"name":"🎯 next"}],"state":"open","closed_at":null}}]}'
 W14_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W14_2_RESP" OCTOKIT_STUB_LOG_ENV="$W14_2_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
@@ -1042,7 +1042,7 @@ assert_not_contains "W14-2 正常系: open では状態行が表示されない�
 rm -f "$W14_2_LOG"
 
 # W14-3 正常系: closed Issue を show --json → state:"closed" と closedAt が含まれる
-W14_3_LOG=$(mktemp /tmp/todo-test-w14-3-XXXXXX.jsonl)
+W14_3_LOG=$(mktemp /tmp/todo-test-w14-3-XXXXXX)
 W14_3_RESP='{"issues.get":[{"data":{"number":1740,"id":91740,"title":"完了済みタスク","body":"","labels":[{"name":"🎯 next"}],"state":"closed","closed_at":"2026-08-09T09:29:00Z"}}]}'
 W14_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W14_3_RESP" OCTOKIT_STUB_LOG_ENV="$W14_3_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
@@ -1053,7 +1053,7 @@ assert_contains "W14-3 正常系: JSON応答に closedAt が含まれる" '"clos
 rm -f "$W14_3_LOG"
 
 # W14-4 正常系: open Issue を show --json → state:"open"、closedAt は null
-W14_4_LOG=$(mktemp /tmp/todo-test-w14-4-XXXXXX.jsonl)
+W14_4_LOG=$(mktemp /tmp/todo-test-w14-4-XXXXXX)
 W14_4_RESP='{"issues.get":[{"data":{"number":1746,"id":91746,"title":"未完了タスク","body":"","labels":[{"name":"🎯 next"}],"state":"open","closed_at":null}}]}'
 W14_4_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W14_4_RESP" OCTOKIT_STUB_LOG_ENV="$W14_4_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
@@ -1071,7 +1071,7 @@ rm -f "$W14_4_LOG"
 # ──────────────────────────────────────────
 
 # W15-1: show（人間向け出力）— 実証データそのまま（#1739）
-W15_1_LOG=$(mktemp /tmp/todo-test-w15-1-XXXXXX.jsonl)
+W15_1_LOG=$(mktemp /tmp/todo-test-w15-1-XXXXXX)
 W15_1_RESP='{"issues.get":[{"data":{"number":1739,"id":91739,"title":"検証用 recur Undo確認 1656","body":"","labels":[{"name":"🎯 next"}],"state":"closed","closed_at":"2026-08-08T23:32:23Z"}}]}'
 W15_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W15_1_RESP" OCTOKIT_STUB_LOG_ENV="$W15_1_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
@@ -1082,7 +1082,7 @@ assert_not_contains "W15-1 正常系: UTC日付（2026-08-08）のままでは�
 rm -f "$W15_1_LOG"
 
 # W15-2: archive list — closedAt の表示日付がJST基準になる
-W15_2_LOG=$(mktemp /tmp/todo-test-w15-2-XXXXXX.jsonl)
+W15_2_LOG=$(mktemp /tmp/todo-test-w15-2-XXXXXX)
 W15_2_RESP='{"issues.listForRepo":[{"data":[{"number":1739,"title":"境界またぎ","state":"closed","closed_at":"2026-08-08T23:32:23Z","labels":[],"pull_request":null}]}]}'
 W15_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W15_2_RESP" OCTOKIT_STUB_LOG_ENV="$W15_2_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
@@ -1325,7 +1325,7 @@ echo "§W20  runMigrateSubIssue の sub_issue_id 正当性・422判別（Issue #
 #   （fetchAllOpen の map から id を外すとこのテストは FAIL する＝欠陥1の回帰検知）
 W1879_1_CHILD='{"number":31900,"id":931900,"title":"child","body":"project: #31901\n","labels":[]}'
 W1879_1_PARENT='{"number":31901,"labels":[{"name":"📁 project"}]}'
-W1879_1_LOG=$(mktemp /tmp/todo-test-1879-1-XXXXXX.jsonl)
+W1879_1_LOG=$(mktemp /tmp/todo-test-1879-1-XXXXXX)
 : > "$W1879_1_LOG"
 W1879_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W1879_1_LOG" \
   OCTOKIT_STUB_RESPONSES_ENV="{\"issues.listForRepo\":[{\"data\":[$W1879_1_CHILD]}],\"issues.get\":[{\"data\":$W1879_1_PARENT}],\"POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{}]}" \
@@ -1343,7 +1343,7 @@ rm -f "$W1879_1_LOG"
 W1879_2_CHILD='{"number":31902,"id":931902,"title":"child2","body":"project: #31903\n","labels":[]}'
 W1879_2_PARENT='{"number":31903,"labels":[{"name":"📁 project"}]}'
 W1879_2_EXISTING='[{"id":931902,"number":31902}]'
-W1879_2_LOG=$(mktemp /tmp/todo-test-1879-2-XXXXXX.jsonl)
+W1879_2_LOG=$(mktemp /tmp/todo-test-1879-2-XXXXXX)
 : > "$W1879_2_LOG"
 W1879_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W1879_2_LOG" \
   OCTOKIT_STUB_RESPONSES_ENV="{\"issues.listForRepo\":[{\"data\":[$W1879_2_CHILD]}],\"issues.get\":[{\"data\":$W1879_2_PARENT}],\"POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"__throw\":true,\"status\":422,\"message\":\"Validation Failed: sub_issue_id already assigned to a parent\"}],\"GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"data\":$W1879_2_EXISTING}]}" \
@@ -1358,7 +1358,7 @@ rm -f "$W1879_2_LOG"
 #   （addSubIssue を「422は無条件skip」に戻すとこのテストは FAIL する＝欠陥2の回帰検知）
 W1879_3_CHILD='{"number":31904,"id":931904,"title":"child3","body":"project: #31905\n","labels":[]}'
 W1879_3_PARENT='{"number":31905,"labels":[{"name":"📁 project"}]}'
-W1879_3_LOG=$(mktemp /tmp/todo-test-1879-3-XXXXXX.jsonl)
+W1879_3_LOG=$(mktemp /tmp/todo-test-1879-3-XXXXXX)
 : > "$W1879_3_LOG"
 W1879_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W1879_3_LOG" \
   OCTOKIT_STUB_RESPONSES_ENV="{\"issues.listForRepo\":[{\"data\":[$W1879_3_CHILD]}],\"issues.get\":[{\"data\":$W1879_3_PARENT}],\"POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"__throw\":true,\"status\":422,\"message\":\"Validation Failed: sub_issue_id already assigned to a different parent\"}],\"GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"data\":[]}]}" \
@@ -1390,7 +1390,7 @@ echo "§W21  状態整合性の順序統一 — validate-before-mutate / create-
 #   旧実装（close→create順）だとこの状況でissues.createは0回のまま次周期が永久に失われるため、
 #   「issues.create が1回呼ばれている（次周期Issueが失われていない）」がこのテストの核心。
 #   （createRecurIssueの呼び出し順をpostDoneProcessing側=close後に戻すとFAILする＝欠陥の回帰検知）
-W1652_B1_LOG=$(mktemp /tmp/todo-test-1652-b1-XXXXXX.jsonl)
+W1652_B1_LOG=$(mktemp /tmp/todo-test-1652-b1-XXXXXX)
 W1652_B1_RESP='{"issues.get":[{"data":{"number":90101,"id":990101,"title":"Recur Task","body":"due: 2026-04-01\nrecur: weekly\n","labels":[{"name":"🎯 next"}]}}],"issues.create":[{"data":{"number":90111}}],"issues.update":[{"__throw":true,"status":500,"message":"boom"}]}'
 W1652_B1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1652_B1_RESP" OCTOKIT_STUB_LOG_ENV="$W1652_B1_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
@@ -1408,7 +1408,7 @@ rm -f "$W1652_B1_LOG"
 # #1652-B2: runDone — recurなし・close失敗のケース。newIssueNumberが無いので通常のエラーに
 #   フォールバックし、close_failed_after_recur系のメッセージにはならないことを確認する
 #   （newIssueNumber分岐の判定漏れ回帰検知）。
-W1652_B2_LOG=$(mktemp /tmp/todo-test-1652-b2-XXXXXX.jsonl)
+W1652_B2_LOG=$(mktemp /tmp/todo-test-1652-b2-XXXXXX)
 W1652_B2_RESP='{"issues.get":[{"data":{"number":90102,"id":990102,"title":"No Recur Task","body":"","labels":[{"name":"🎯 next"}]}}],"issues.update":[{"__throw":true,"status":500,"message":"boom2"}]}'
 W1652_B2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1652_B2_RESP" OCTOKIT_STUB_LOG_ENV="$W1652_B2_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
@@ -1423,7 +1423,7 @@ rm -f "$W1652_B2_LOG"
 #   成功した#90201は通常どおり完了・recur再作成され、失敗した#90202は
 #   per-item errorとして計上され、newIssueNumberがエラーメッセージに含まれる。
 #   他のIssueの処理が巻き込まれて止まらないこと（bulk本来の独立処理保証）も確認する。
-W1652_B3_LOG=$(mktemp /tmp/todo-test-1652-b3-XXXXXX.jsonl)
+W1652_B3_LOG=$(mktemp /tmp/todo-test-1652-b3-XXXXXX)
 W1652_B3_RESP='{"issues.get":[{"data":{"number":90201,"id":990201,"title":"Bulk Recur OK","body":"due: 2026-04-01\nrecur: weekly\n","labels":[{"name":"🎯 next"}]}},{"data":{"number":90202,"id":990202,"title":"Bulk Recur Close Fail","body":"due: 2026-04-01\nrecur: weekly\n","labels":[{"name":"🎯 next"}]}}],"issues.create":[{"data":{"number":90211}},{"data":{"number":90212}}],"issues.update":[{},{"__throw":true,"status":500,"message":"boom3"}],"issues.listForRepo":[{"data":[]}]}'
 W1652_B3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1652_B3_RESP" OCTOKIT_STUB_LOG_ENV="$W1652_B3_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
@@ -1439,7 +1439,7 @@ rm -f "$W1652_B3_LOG"
 
 # #1652-B4: api done-issue — close失敗時、apiMain経由でも新Issue番号を含むエラーになること
 #   （Web版done()経路。#1669のdone-issue専用サブコマンドの回帰確認を兼ねる）
-W1652_B4_LOG=$(mktemp /tmp/todo-test-1652-b4-XXXXXX.jsonl)
+W1652_B4_LOG=$(mktemp /tmp/todo-test-1652-b4-XXXXXX)
 W1652_B4_RESP='{"issues.get":[{"data":{"number":90301,"id":990301,"title":"API Recur Task","body":"due: 2026-04-01\nrecur: weekly\n","labels":[{"name":"🎯 next"}]}}],"issues.create":[{"data":{"number":90311}}],"issues.update":[{"__throw":true,"status":500,"message":"boom4"}]}'
 W1652_B4_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1652_B4_RESP" OCTOKIT_STUB_LOG_ENV="$W1652_B4_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
@@ -1496,7 +1496,7 @@ echo "§W17  activate のカレンダー妥当性チェック（Issue #1803）"
 
 W17_ADD_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{}],"issues.create":[{"data":{"number":17001,"html_url":"https://example.com/17001"}}]}'
 
-W17_1_LOG=$(mktemp /tmp/todo-test-w17-1-XXXXXX.jsonl)
+W17_1_LOG=$(mktemp /tmp/todo-test-w17-1-XXXXXX)
 W17_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W17_ADD_RESP" OCTOKIT_STUB_LOG_ENV="$W17_1_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-11 \
   node "$ENGINE" run add next --activate 2026-13-01 Sample task title 2>&1); W17_1_EC=$?
@@ -1505,7 +1505,7 @@ assert_contains "W17-1 runAdd 異常系: エラーメッセージに元の入力
 assert_eq "W17-1 runAdd 異常系: issues.create は呼ばれない（副作用なし確認）" "0" "$(log_count "$W17_1_LOG" issues.create)"
 rm -f "$W17_1_LOG"
 
-W17_2_LOG=$(mktemp /tmp/todo-test-w17-2-XXXXXX.jsonl)
+W17_2_LOG=$(mktemp /tmp/todo-test-w17-2-XXXXXX)
 W17_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W17_ADD_RESP" OCTOKIT_STUB_LOG_ENV="$W17_2_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-11 \
   node "$ENGINE" run add next --activate 2026-02-30 Sample task title 2>&1); W17_2_EC=$?
@@ -1514,7 +1514,7 @@ assert_contains "W17-2 runAdd 異常系: エラーメッセージに元の入力
 assert_eq "W17-2 runAdd 異常系: issues.create は呼ばれない" "0" "$(log_count "$W17_2_LOG" issues.create)"
 rm -f "$W17_2_LOG"
 
-W17_3_LOG=$(mktemp /tmp/todo-test-w17-3-XXXXXX.jsonl)
+W17_3_LOG=$(mktemp /tmp/todo-test-w17-3-XXXXXX)
 W17_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W17_ADD_RESP" OCTOKIT_STUB_LOG_ENV="$W17_3_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-11 \
   node "$ENGINE" run add next --activate 2026-02-29 Sample task title 2>&1); W17_3_EC=$?
@@ -1524,7 +1524,7 @@ assert_eq "W17-3 runAdd 異常系: issues.create は呼ばれない" "0" "$(log_
 rm -f "$W17_3_LOG"
 
 # W17-4 リグレッション: 正常な activate 指定は従来どおり通ること
-W17_4_LOG=$(mktemp /tmp/todo-test-w17-4-XXXXXX.jsonl)
+W17_4_LOG=$(mktemp /tmp/todo-test-w17-4-XXXXXX)
 W17_4_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W17_ADD_RESP" OCTOKIT_STUB_LOG_ENV="$W17_4_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-11 \
   node "$ENGINE" run add next --activate 2026-09-01 Sample task title 2>&1); W17_4_EC=$?
@@ -1538,7 +1538,7 @@ rm -f "$W17_4_LOG"
 # 既存の W4-1（run add next @office '#urgent' --p1 --due 2026-04-10 --before 3d ...）で
 # 「昇格予定: 2026-04-07」が exit 0 で得られることを既に確認済みだが、本セクションでも
 # 月末を跨ぐケースで明示的に再確認する。
-W17_5_LOG=$(mktemp /tmp/todo-test-w17-5-XXXXXX.jsonl)
+W17_5_LOG=$(mktemp /tmp/todo-test-w17-5-XXXXXX)
 W17_5_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W17_ADD_RESP" OCTOKIT_STUB_LOG_ENV="$W17_5_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2028-02-20 \
   node "$ENGINE" run add next --due 2028-03-01 --before 5d Sample task title 2>&1); W17_5_EC=$?
@@ -1550,7 +1550,7 @@ rm -f "$W17_5_LOG"
 W17_EDIT_ISSUE='{"number":17101,"id":9917101,"title":"Existing task","body":"","labels":[{"name":"🎯 next"}]}'
 W17_EDIT_RESP="{\"issues.get\":[{\"data\":$W17_EDIT_ISSUE}]}"
 
-W17_6_LOG=$(mktemp /tmp/todo-test-w17-6-XXXXXX.jsonl)
+W17_6_LOG=$(mktemp /tmp/todo-test-w17-6-XXXXXX)
 W17_6_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W17_EDIT_RESP" OCTOKIT_STUB_LOG_ENV="$W17_6_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-11 \
   node "$ENGINE" run edit 17101 --activate 2026-13-01 2>&1); W17_6_EC=$?
@@ -1560,7 +1560,7 @@ assert_eq "W17-6 runEdit 異常系: issues.get のみ実行（1回）" "1" "$(lo
 assert_eq "W17-6 runEdit 異常系: issues.update は呼ばれない（副作用なし確認）" "0" "$(log_count "$W17_6_LOG" issues.update)"
 rm -f "$W17_6_LOG"
 
-W17_7_LOG=$(mktemp /tmp/todo-test-w17-7-XXXXXX.jsonl)
+W17_7_LOG=$(mktemp /tmp/todo-test-w17-7-XXXXXX)
 W17_7_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W17_EDIT_RESP" OCTOKIT_STUB_LOG_ENV="$W17_7_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-11 \
   node "$ENGINE" run edit 17101 --activate 2026-02-30 2>&1); W17_7_EC=$?
@@ -1568,7 +1568,7 @@ assert_exit_fail "W17-7 runEdit 異常系(#1803): --activate 2026-02-30（2月�
 assert_eq "W17-7 runEdit 異常系: issues.update は呼ばれない" "0" "$(log_count "$W17_7_LOG" issues.update)"
 rm -f "$W17_7_LOG"
 
-W17_8_LOG=$(mktemp /tmp/todo-test-w17-8-XXXXXX.jsonl)
+W17_8_LOG=$(mktemp /tmp/todo-test-w17-8-XXXXXX)
 W17_8_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W17_EDIT_RESP" OCTOKIT_STUB_LOG_ENV="$W17_8_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-11 \
   node "$ENGINE" run edit 17101 --activate 2026-02-29 2>&1); W17_8_EC=$?
@@ -1578,7 +1578,7 @@ rm -f "$W17_8_LOG"
 
 # W17-9 リグレッション: runEdit で正常な activate 指定は従来どおり通ること
 W17_9_RESP="{\"issues.get\":[{\"data\":$W17_EDIT_ISSUE}],\"issues.update\":[{}]}"
-W17_9_LOG=$(mktemp /tmp/todo-test-w17-9-XXXXXX.jsonl)
+W17_9_LOG=$(mktemp /tmp/todo-test-w17-9-XXXXXX)
 W17_9_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W17_9_RESP" OCTOKIT_STUB_LOG_ENV="$W17_9_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-08-11 \
   node "$ENGINE" run edit 17101 --activate 2026-09-01 2>&1); W17_9_EC=$?
@@ -1609,7 +1609,7 @@ W1846_LIST='[
 
 # W18-1: weekly-project-audit → 休止中(someday併記)projectは走査対象から除外され、
 # 除外件数が利用者に見える形で明示される
-W1846_1_LOG=$(mktemp /tmp/todo-test-w1846-1-XXXXXX.jsonl)
+W1846_1_LOG=$(mktemp /tmp/todo-test-w1846-1-XXXXXX)
 W1846_1_RESP="{\"issues.listForRepo\":[{\"data\":$W1846_LIST}],\"GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"data\":[]}]}"
 W1846_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1846_1_RESP" OCTOKIT_STUB_LOG_ENV="$W1846_1_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
@@ -1624,7 +1624,7 @@ assert_eq "W18-1: 休止中projectには sub_issues API が呼ばれない（走
 rm -f "$W1846_1_LOG"
 
 # W18-2: list project（フィルタのみ、番号なし）→ 休止中projectが除外され、除外件数が明示される
-W1846_2_LOG=$(mktemp /tmp/todo-test-w1846-2-XXXXXX.jsonl)
+W1846_2_LOG=$(mktemp /tmp/todo-test-w1846-2-XXXXXX)
 W1846_2_RESP="{\"issues.listForRepo\":[{\"data\":$W1846_LIST}]}"
 W1846_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1846_2_RESP" OCTOKIT_STUB_LOG_ENV="$W1846_2_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
@@ -1638,7 +1638,7 @@ rm -f "$W1846_2_LOG"
 
 # W18-3 リグレッション: list someday（通常のsomeday一覧）は従来どおり
 # project併記かどうかに関わらず someday タスクをすべて列挙する（除外対象外の確認）
-W1846_3_LOG=$(mktemp /tmp/todo-test-w1846-3-XXXXXX.jsonl)
+W1846_3_LOG=$(mktemp /tmp/todo-test-w1846-3-XXXXXX)
 W1846_3_RESP="{\"issues.listForRepo\":[{\"data\":$W1846_LIST}]}"
 W1846_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1846_3_RESP" OCTOKIT_STUB_LOG_ENV="$W1846_3_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
@@ -1653,7 +1653,7 @@ rm -f "$W1846_3_LOG"
 # renderIssueList のsomedayマーカー（'  ⚠️'+line.slice(2)）により、Projects セクションの
 # 行フォーマット「  #番号  タイトル」（⚠️を挟まない）と someday セクションの行フォーマット
 # 「  ⚠️#番号  タイトル」（⚠️を挟む）は区別できるため、not_containsで厳密に判定する。
-W1846_4_LOG=$(mktemp /tmp/todo-test-w1846-4-XXXXXX.jsonl)
+W1846_4_LOG=$(mktemp /tmp/todo-test-w1846-4-XXXXXX)
 W1846_4_RESP="{\"issues.listForRepo\":[{\"data\":$W1846_LIST}]}"
 W1846_4_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1846_4_RESP" OCTOKIT_STUB_LOG_ENV="$W1846_4_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
@@ -1671,7 +1671,7 @@ rm -f "$W1846_4_LOG"
 # 休止中判定は各要素の labels フィールドに project と someday が両方含まれることで
 # 消費側が行える設計のため、新規フィールドは追加しない。既存消費者不在を確認済み
 # （関連リポジトリをgrepしても該当なし）。
-W1846_5_LOG=$(mktemp /tmp/todo-test-w1846-5-XXXXXX.jsonl)
+W1846_5_LOG=$(mktemp /tmp/todo-test-w1846-5-XXXXXX)
 W1846_5_LIST='[
   {"number":30101,"title":"Active Project","updated_at":"2026-04-01T00:00:00Z","body":"","labels":[{"name":"📁 project"}]},
   {"number":30103,"title":"Paused Project","updated_at":"2026-04-01T00:00:00Z","body":"","labels":[{"name":"📁 project"},{"name":"🌈 someday"}]}
@@ -1695,7 +1695,7 @@ rm -f "$W1846_5_LOG"
 # ──────────────────────────────────────────
 
 # W19-1: run list --json（issueToJsonObj 経由）
-W1854_1_LOG=$(mktemp /tmp/todo-test-w1854-1-XXXXXX.jsonl)
+W1854_1_LOG=$(mktemp /tmp/todo-test-w1854-1-XXXXXX)
 W1854_1_LIST='[
   {"number":40101,"title":"est-2h","updated_at":"2026-04-01T00:00:00Z","body":"estimate: 2h","labels":[{"name":"🎯 next"}]},
   {"number":40102,"title":"est-1h30m","updated_at":"2026-04-01T00:00:00Z","body":"estimate: 1h30m","labels":[{"name":"🎯 next"}]},
@@ -1715,7 +1715,7 @@ assert_contains "W19-1: estimate:abc（不正値）の estimateFormatted は nul
 rm -f "$W1854_1_LOG"
 
 # W19-2: run show <#> --json（runShow の jsonMode 分岐経由。issueToJsonObj とは別のコードパス）
-W1854_2_LOG=$(mktemp /tmp/todo-test-w1854-2-XXXXXX.jsonl)
+W1854_2_LOG=$(mktemp /tmp/todo-test-w1854-2-XXXXXX)
 W1854_2_RESP='{"issues.get":[{"data":{"number":40201,"id":940201,"title":"est-2h-show","body":"estimate: 2h","labels":[{"name":"🎯 next"}]}}]}'
 W1854_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1854_2_RESP" OCTOKIT_STUB_LOG_ENV="$W1854_2_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
@@ -1725,7 +1725,7 @@ assert_contains "W19-2: show --json estimate:2h の estimateFormatted は 2h（�
 rm -f "$W1854_2_LOG"
 
 # W19-3: run show <#>（非json）の見積もり表示。不正値は「（形式不正）」を添えて表示する
-W1854_3_LOG=$(mktemp /tmp/todo-test-w1854-3-XXXXXX.jsonl)
+W1854_3_LOG=$(mktemp /tmp/todo-test-w1854-3-XXXXXX)
 W1854_3_RESP='{"issues.get":[{"data":{"number":40301,"id":940301,"title":"est-invalid-show","body":"estimate: abc","labels":[{"name":"🎯 next"}]}}]}'
 W1854_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1854_3_RESP" OCTOKIT_STUB_LOG_ENV="$W1854_3_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
@@ -1746,7 +1746,7 @@ echo ""
 echo "§W22  runUnlink — sub-issue 解除失敗/食い違い時に body を消さない（Issue #1880）"
 
 # W22-1 正常系（リグレッション）: body の親と GitHub 上の親が一致 → DELETE成功 → body更新
-W1880_1_LOG=$(mktemp /tmp/todo-test-w1880-1-XXXXXX.jsonl)
+W1880_1_LOG=$(mktemp /tmp/todo-test-w1880-1-XXXXXX)
 W1880_1_ISSUE='{"number":8701,"id":988701,"body":"project: #8700\n","labels":[]}'
 W1880_1_RESP="{\"issues.get\":[{\"data\":$W1880_1_ISSUE}],\"GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"data\":[{\"id\":988701}]}],\"DELETE /repos/{owner}/{repo}/issues/{issue_number}/sub_issue\":[{}],\"issues.update\":[{}]}"
 W1880_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1880_1_RESP" OCTOKIT_STUB_LOG_ENV="$W1880_1_LOG" \
@@ -1761,7 +1761,7 @@ assert_not_contains "W22-1: issues.update の body に project: 行が残って�
 rm -f "$W1880_1_LOG"
 
 # W22-2 【核心】DELETE失敗（Not Found、実事故の再現）: body を更新してはいけない
-W1880_2_LOG=$(mktemp /tmp/todo-test-w1880-2-XXXXXX.jsonl)
+W1880_2_LOG=$(mktemp /tmp/todo-test-w1880-2-XXXXXX)
 W1880_2_ISSUE='{"number":8702,"id":988702,"body":"project: #8700\n","labels":[]}'
 W1880_2_RESP="{\"issues.get\":[{\"data\":$W1880_2_ISSUE}],\"GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"data\":[{\"id\":988702}]}],\"DELETE /repos/{owner}/{repo}/issues/{issue_number}/sub_issue\":[{\"__throw\":true,\"status\":404,\"message\":\"Not Found - https://docs.github.com/rest/issues/sub-issues#remove-sub-issue\"}]}"
 W1880_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1880_2_RESP" OCTOKIT_STUB_LOG_ENV="$W1880_2_LOG" \
@@ -1775,7 +1775,7 @@ assert_eq "W22-2 【核心】DELETE失敗時に issues.update が呼ばれない
 rm -f "$W1880_2_LOG"
 
 # W22-3 body の親とGitHub上の親が食い違う（--forceなし）: 黙ってbodyを消さずエラー終了する
-W1880_3_LOG=$(mktemp /tmp/todo-test-w1880-3-XXXXXX.jsonl)
+W1880_3_LOG=$(mktemp /tmp/todo-test-w1880-3-XXXXXX)
 W1880_3_ISSUE='{"number":8703,"id":988703,"body":"project: #8700\n","labels":[]}'
 W1880_3_RESP="{\"issues.get\":[{\"data\":$W1880_3_ISSUE}],\"GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"data\":[]}]}"
 W1880_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1880_3_RESP" OCTOKIT_STUB_LOG_ENV="$W1880_3_LOG" \
@@ -1788,7 +1788,7 @@ assert_eq "W22-3: issues.update が呼ばれない（bodyは無傷）" "0" "$(lo
 rm -f "$W1880_3_LOG"
 
 # W22-4 body の親とGitHub上の親が食い違う（--force指定）: body のみ明示的に解除する
-W1880_4_LOG=$(mktemp /tmp/todo-test-w1880-4-XXXXXX.jsonl)
+W1880_4_LOG=$(mktemp /tmp/todo-test-w1880-4-XXXXXX)
 W1880_4_ISSUE='{"number":8704,"id":988704,"body":"project: #8700\n","labels":[]}'
 W1880_4_RESP="{\"issues.get\":[{\"data\":$W1880_4_ISSUE}],\"GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"data\":[]}],\"issues.update\":[{}]}"
 W1880_4_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1880_4_RESP" OCTOKIT_STUB_LOG_ENV="$W1880_4_LOG" \
@@ -1821,7 +1821,7 @@ W1881_1_PARENT='{"number":41902,"labels":[{"name":"📁 project"}]}'
 # page1: 100件（対象の子は含まない）／page2: 1件（対象の子のみ、<100件で打ち切り）
 W1881_1_PAGE1=$(node -e "const a=[]; for(let i=0;i<100;i++) a.push({id:800000+i,number:800000+i}); process.stdout.write(JSON.stringify(a));")
 W1881_1_PAGE2='[{"id":941901,"number":41901}]'
-W1881_1_LOG=$(mktemp /tmp/todo-test-1881-1-XXXXXX.jsonl)
+W1881_1_LOG=$(mktemp /tmp/todo-test-1881-1-XXXXXX)
 : > "$W1881_1_LOG"
 W1881_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W1881_1_LOG" \
   OCTOKIT_STUB_RESPONSES_ENV="{\"issues.listForRepo\":[{\"data\":[$W1881_1_CHILD]}],\"issues.get\":[{\"data\":$W1881_1_PARENT}],\"POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"__throw\":true,\"status\":422,\"message\":\"Validation Failed: sub_issue_id already assigned to a parent\"}],\"GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"data\":$W1881_1_PAGE1},{\"data\":$W1881_1_PAGE2}]}" \
@@ -1837,7 +1837,7 @@ rm -f "$W1881_1_LOG"
 W1881_2_CHILD='{"number":41903,"id":941903,"title":"child2","body":"project: #41904\n","labels":[]}'
 W1881_2_PARENT='{"number":41904,"labels":[{"name":"📁 project"}]}'
 W1881_2_EXISTING='[{"id":941903,"number":41903},{"id":941999,"number":41999}]'
-W1881_2_LOG=$(mktemp /tmp/todo-test-1881-2-XXXXXX.jsonl)
+W1881_2_LOG=$(mktemp /tmp/todo-test-1881-2-XXXXXX)
 : > "$W1881_2_LOG"
 W1881_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W1881_2_LOG" \
   OCTOKIT_STUB_RESPONSES_ENV="{\"issues.listForRepo\":[{\"data\":[$W1881_2_CHILD]}],\"issues.get\":[{\"data\":$W1881_2_PARENT}],\"POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"__throw\":true,\"status\":422,\"message\":\"Validation Failed: sub_issue_id already assigned to a parent\"}],\"GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"data\":$W1881_2_EXISTING}]}" \
@@ -1852,7 +1852,7 @@ rm -f "$W1881_2_LOG"
 # W23-3 上限ガード: sub-issue が MAX_SUB_ISSUES_LIMIT（500件）ちょうどに達した場合、
 # 一部欠落の可能性がある旨の警告を出す（list project 経由・POST不要で検証）
 W1881_3_PAGE=$(node -e "const a=[]; for(let i=0;i<100;i++) a.push({id:900000+i,number:900000+i}); process.stdout.write(JSON.stringify(a));")
-W1881_3_LOG=$(mktemp /tmp/todo-test-1881-3-XXXXXX.jsonl)
+W1881_3_LOG=$(mktemp /tmp/todo-test-1881-3-XXXXXX)
 : > "$W1881_3_LOG"
 W1881_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W1881_3_LOG" \
   OCTOKIT_STUB_RESPONSES_ENV="{\"issues.listForRepo\":[{\"data\":[]}],\"GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"data\":$W1881_3_PAGE},{\"data\":$W1881_3_PAGE},{\"data\":$W1881_3_PAGE},{\"data\":$W1881_3_PAGE},{\"data\":$W1881_3_PAGE}]}" \
@@ -1879,7 +1879,7 @@ echo "§W24  runUnlink — sub-issue 一覧のGET失敗時はbodyを更新しな
 
 # W24-1 【核心】GET sub_issues 失敗 + --force指定: 取得失敗と「本当に未登録」を混同せず、
 # body を一切更新しない（issues.update が呼ばれない）
-W1885_1_LOG=$(mktemp /tmp/todo-test-1885-1-XXXXXX.jsonl)
+W1885_1_LOG=$(mktemp /tmp/todo-test-1885-1-XXXXXX)
 W1885_1_ISSUE='{"number":8705,"id":988705,"body":"project: #8700\n","labels":[]}'
 W1885_1_RESP="{\"issues.get\":[{\"data\":$W1885_1_ISSUE}],\"GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"__throw\":true,\"status\":500,\"message\":\"Internal Server Error\"}]}"
 W1885_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1885_1_RESP" OCTOKIT_STUB_LOG_ENV="$W1885_1_LOG" \
@@ -1895,7 +1895,7 @@ rm -f "$W1885_1_LOG"
 
 # W24-2 GET sub_issues 失敗 + --force なし: 従来どおりエラー終了し body は無傷
 # （この経路は#1885以前から「安全側」だったが、GET失敗経路として明示的にリグレッション確認する）
-W1885_2_LOG=$(mktemp /tmp/todo-test-1885-2-XXXXXX.jsonl)
+W1885_2_LOG=$(mktemp /tmp/todo-test-1885-2-XXXXXX)
 W1885_2_ISSUE='{"number":8706,"id":988706,"body":"project: #8700\n","labels":[]}'
 W1885_2_RESP="{\"issues.get\":[{\"data\":$W1885_2_ISSUE}],\"GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"__throw\":true,\"status\":500,\"message\":\"Internal Server Error\"}]}"
 W1885_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1885_2_RESP" OCTOKIT_STUB_LOG_ENV="$W1885_2_LOG" \
@@ -1908,7 +1908,7 @@ rm -f "$W1885_2_LOG"
 
 # W24-3 リグレッション: W22-4相当（GET成功・子0件・--force指定）は従来どおり
 # body のみ解除される（GET失敗との混同がないことの対照ケース）
-W1885_3_LOG=$(mktemp /tmp/todo-test-1885-3-XXXXXX.jsonl)
+W1885_3_LOG=$(mktemp /tmp/todo-test-1885-3-XXXXXX)
 W1885_3_ISSUE='{"number":8707,"id":988707,"body":"project: #8700\n","labels":[]}'
 W1885_3_RESP="{\"issues.get\":[{\"data\":$W1885_3_ISSUE}],\"GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"data\":[]}],\"issues.update\":[{}]}"
 W1885_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1885_3_RESP" OCTOKIT_STUB_LOG_ENV="$W1885_3_LOG" \

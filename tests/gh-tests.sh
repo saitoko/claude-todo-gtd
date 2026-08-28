@@ -1130,7 +1130,7 @@ echo ""
 echo "§AB  Custom Views 統合テスト（Pro機能）"
 # ─────────────────────────────────────────────
 
-TEST_VFILE=$(mktemp /tmp/todo-test-views-gh-XXXXXX.json)
+TEST_VFILE=$(mktemp /tmp/todo-test-views-gh-XXXXXX)
 printf '{}' > "$TEST_VFILE"
 
 # save

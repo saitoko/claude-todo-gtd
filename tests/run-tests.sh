@@ -11,8 +11,27 @@ STUB_ENGINE_PATH="$SCRIPT_DIR/stubs/octokit-stub.js"  # Octokit注入シーム�
   # GH_TOKEN=dummy + 実 @octokit/rest 解決に依存していた「run」系バリデーションのみの
   # テスト（実API呼び出しに到達しないもの）を、OCTOKIT_STUB_ENV 経由の環境非依存な形に
   # 置換するために使う。
-TEMP_TFILE=$(mktemp /tmp/todo-test-templates-XXXXXX.json)
-printf '{}' > "$TEMP_TFILE"
+TEMP_TFILE=$(mktemp /tmp/todo-test-templates-XXXXXX)
+# Issue #1882 根本原因（2026-08-27 判明）: macOS(BSD) の mktemp は、末尾以外に置いた
+# XXXXXX を展開せずリテラルな固定ファイル名を返す（例: "...-XXXXXX.json" のように
+# XXXXXX の後に拡張子を続けると、"XXXXXX" はテンプレートとして認識されずそのまま
+# 固定文字列になる）。そのため §11 用の一時ファイル名が実行のたびに同一になり、
+# 並行実行された別プロセスの `rm -f "$TEMP_TFILE"` に巻き込まれて消える競合が起きて
+# いた（mktemp コマンド自体は失敗していない）。本修正で XXXXXX を末尾に置き正しく
+# ランダム化したため、この競合は解消される。以下の存在チェックは、ディスク容量
+# 不足・権限不足など mktemp が本当に失敗する別ケースへの防御として残す。
+if [ -z "${TEMP_TFILE}" ] || [ ! -f "${TEMP_TFILE}" ]; then
+  printf '❌ [致命的エラー] mktemp によるテンプレート用一時ファイルの作成に失敗しました\n' >&2
+  printf '   TEMP_TFILE=[%s]\n' "${TEMP_TFILE:-<空文字列>}" >&2
+  printf '   考えられる原因: /tmp の空き容量不足・権限不足・mktemp コマンド自体の異常\n' >&2
+  printf '   $TMPDIR=[%s] / df -h /tmp の結果:\n' "${TMPDIR:-未設定}" >&2
+  df -h /tmp >&2 2>/dev/null || true
+  exit 1
+fi
+if ! printf '{}' > "${TEMP_TFILE}"; then
+  printf '❌ [致命的エラー] テンプレート用一時ファイルへの初期化書き込みに失敗しました: %s\n' "${TEMP_TFILE}" >&2
+  exit 1
+fi
 PASS=0
 FAIL=0
 SKIP=0
@@ -23,6 +42,44 @@ TEST_TODAY="2026-04-05"  # 日曜日
 # ────────────────────────────────────────────
 # ヘルパー
 # ────────────────────────────────────────────
+
+# Issue #1882 診断フック: §11 テンプレートファイル操作の実行区間でのみ
+# 有効化する。区間内で assert が FAIL したとき、$TEMP_TFILE の状態
+# （存在・サイズ・内容）を1回だけ出力に残し、次に再現したときの切り分けを
+# 即座にできるようにする。区間外（他の約1300件）では何も出力しない。
+TEMPLATE_DIAG_ACTIVE=0
+TEMPLATE_DIAG_DUMPED=0
+
+dump_template_diag() {
+  [ "${TEMPLATE_DIAG_ACTIVE}" -eq 1 ] || return 0
+  [ "${TEMPLATE_DIAG_DUMPED}" -eq 1 ] && return 0
+  TEMPLATE_DIAG_DUMPED=1
+  printf "     ─── [診断/Issue #1882] TEMP_TFILE の状態 ───\n"
+  if [ -z "${TEMP_TFILE}" ]; then
+    printf "     TEMP_TFILE: <空文字列>（mktemp 失敗の疑い）\n"
+    printf "     ──────────────────────────────\n"
+    return 0
+  fi
+  printf "     TEMP_TFILE: %s\n" "${TEMP_TFILE}"
+  if [ ! -e "${TEMP_TFILE}" ]; then
+    printf "     存在: しない\n"
+    printf "     ──────────────────────────────\n"
+    return 0
+  fi
+  local diag_size
+  diag_size=$(wc -c < "${TEMP_TFILE}" 2>/dev/null | tr -d ' ')
+  printf "     存在: する / サイズ: %s bytes\n" "${diag_size:-不明}"
+  if [ -n "${diag_size}" ] && [ "${diag_size}" -le 2000 ] 2>/dev/null; then
+    printf "     内容:\n"
+    sed 's/^/       /' "${TEMP_TFILE}"
+  else
+    printf "     内容（先頭2000バイト）:\n"
+    head -c 2000 "${TEMP_TFILE}" | sed 's/^/       /'
+    printf "\n"
+  fi
+  printf "     ──────────────────────────────\n"
+}
+
 assert_eq() {
   local desc="$1" expected="$2" actual="$3"
   if [ "$actual" = "$expected" ]; then
@@ -32,6 +89,7 @@ assert_eq() {
     printf "     期待: [%s]\n" "$expected"
     printf "     実際: [%s]\n" "$actual"
     FAIL=$((FAIL+1))
+    dump_template_diag
   fi
 }
 
@@ -44,6 +102,7 @@ assert_contains() {
     printf "     パターン [%s] が含まれていない\n" "$pattern"
     printf "     実際: [%s]\n" "$actual"
     FAIL=$((FAIL+1))
+    dump_template_diag
   fi
 }
 
@@ -54,6 +113,7 @@ assert_not_contains() {
     printf "     パターン [%s] が含まれてはいけない\n" "$pattern"
     printf "     実際: [%s]\n" "$actual"
     FAIL=$((FAIL+1))
+    dump_template_diag
   else
     printf "  ✅ %s\n" "$desc"; PASS=$((PASS+1))
   fi
@@ -65,6 +125,7 @@ assert_exit_ok() {
     printf "  ✅ %s\n" "$desc"; PASS=$((PASS+1))
   else
     printf "  ❌ %s (exit: %s)\n" "$desc" "$exit_code"; FAIL=$((FAIL+1))
+    dump_template_diag
   fi
 }
 
@@ -74,6 +135,7 @@ assert_exit_fail() {
     printf "  ✅ %s\n" "$desc"; PASS=$((PASS+1))
   else
     printf "  ❌ %s (エラーが期待されたが exit 0)\n" "$desc"; FAIL=$((FAIL+1))
+    dump_template_diag
   fi
 }
 
@@ -462,6 +524,36 @@ assert_eq "全フィールド空: BODY空文字" "" "$body"
 echo ""
 echo "§11  テンプレートファイル操作（一時ファイル使用）"
 
+# Issue #1882: この区間に入る直前に TEMP_TFILE の前提条件（存在・読み書き可能・
+# 有効なJSON）を確認する。ここを通過すればトップの mktemp 検証と合わせて
+# 二重に保証されるため、以降で FAIL が出た場合は「§11の中で状態が壊れた」と
+# 切り分けられる。
+if [ -z "${TEMP_TFILE}" ] || [ ! -f "${TEMP_TFILE}" ] || [ ! -r "${TEMP_TFILE}" ] || [ ! -w "${TEMP_TFILE}" ]; then
+  printf '❌ [致命的エラー] §11 開始時点で TEMP_TFILE が読み書き可能な通常ファイルではありません\n' >&2
+  printf '   TEMP_TFILE=[%s]\n' "${TEMP_TFILE:-<空文字列>}" >&2
+  printf '   存在: %s\n' "$([ -e "${TEMP_TFILE}" ] && echo はい || echo いいえ)" >&2
+  exit 1
+fi
+if ! TFILE_ENV="${TEMP_TFILE}" node -e '
+    const fs = require("fs");
+    try {
+      JSON.parse(fs.readFileSync(process.env.TFILE_ENV, "utf8"));
+    } catch (e) {
+      process.stderr.write("invalid JSON: " + e.message + "\n");
+      process.exit(1);
+    }
+  ' 2>/tmp/todo-test-tfile-precheck-err.$$; then
+  printf '❌ [致命的エラー] §11 開始時点で TEMP_TFILE の内容が有効な JSON ではありません\n' >&2
+  printf '   TEMP_TFILE=%s\n' "${TEMP_TFILE}" >&2
+  printf '   node エラー: %s\n' "$(cat /tmp/todo-test-tfile-precheck-err.$$ 2>/dev/null)" >&2
+  printf '   内容（先頭500バイト）: %s\n' "$(head -c 500 "${TEMP_TFILE}" 2>/dev/null)" >&2
+  rm -f /tmp/todo-test-tfile-precheck-err.$$
+  exit 1
+fi
+rm -f /tmp/todo-test-tfile-precheck-err.$$
+TEMPLATE_DIAG_ACTIVE=1
+TEMPLATE_DIAG_DUMPED=0
+
 # template save（インライン）
 result=$(TFILE_ENV="$TEMP_TFILE" TNAME_ENV="週次レポート" GTD_ENV="next" \
   CONTEXTS_ENV='["@PC"]' DUE_OFFSET_ENV="" DUE_ENV="" RECUR_ENV="weekly" \
@@ -614,6 +706,9 @@ if(!data[name]){ process.stdout.write('エラー: テンプレート「'+name+'�
 JSEOF
 )
 assert_contains "template delete 存在しない: エラー" "存在しません" "$result"
+
+# Issue #1882 診断フックはこの区間限定。§12 以降は TEMP_TFILE を使わないため無効化する。
+TEMPLATE_DIAG_ACTIVE=0
 
 # ──────────────────────────────────────────
 # § 12  テンプレート due-offset 計算 (シナリオ 9-5)
@@ -1548,7 +1643,7 @@ assert_contains "en: report By Category"           "Completed by Category" "$RPT
 assert_contains "en: report Current Status"        "Current Task Status" "$RPT_EN_OUT"
 
 # template English
-TEMP_TFILE_EN=$(mktemp /tmp/todo-test-templates-en-XXXXXX.json)
+TEMP_TFILE_EN=$(mktemp /tmp/todo-test-templates-en-XXXXXX)
 printf '{}' > "$TEMP_TFILE_EN"
 REAL_HOME="$HOME"
 FAKE_HOME=$(mktemp -d /tmp/todo-test-home-en-XXXXXX)
@@ -1577,6 +1672,9 @@ if [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* ]]; then
   if [ -n "$REAL_USERPROFILE" ]; then export USERPROFILE="$REAL_USERPROFILE"; else unset USERPROFILE; fi
 fi
 rm -rf "$FAKE_HOME" 2>/dev/null || true
+# Issue #1882: TEMP_TFILE_EN は対になる cleanup が元から無く、実行のたび /tmp に
+# 残り続けていた（FAKE_HOME 側には上の rm -rf がある）。ここで併せて後始末する。
+rm -f "$TEMP_TFILE_EN" 2>/dev/null || true
 
 # Verify default (ja) still works
 LIST_JA_OUT=$(OPEN_ENV="$LIST_MOCK" TODAY_ENV="$TEST_TODAY" node "$ENGINE" list-all)
@@ -2588,7 +2686,7 @@ else
 fi
 
 # BUG1321-A-3: --label の値が extra に残らない / labels に格納される（一時ファイル経由）
-_BUG1321_TMP=$(mktemp /tmp/test-parseargs-XXXXXX.js)
+_BUG1321_TMP=$(mktemp /tmp/test-parseargs-XXXXXX)
 cat > "$_BUG1321_TMP" << 'PARSEARGS_TEST_EOF'
 // parseArgs 単体テスト（BUG1321-A-3/A-4）
 const fs = require('fs');
@@ -2629,7 +2727,7 @@ assert_eq "BUG1321-A-4: --label の値が labels 配列に格納される" '["@c
 rm -f "$_BUG1321_TMP"
 
 # BUG1321-A-5: --label が複数回指定されたとき全て格納される
-_BUG1321_A5_TMP=$(mktemp /tmp/test-parseargs-a5-XXXXXX.js)
+_BUG1321_A5_TMP=$(mktemp /tmp/test-parseargs-a5-XXXXXX)
 cat > "$_BUG1321_A5_TMP" << 'A5_EOF'
 const fs = require('fs');
 const src = fs.readFileSync(process.argv[2], 'utf8');
@@ -2646,7 +2744,7 @@ assert_eq "BUG1321-A-5: --label が複数指定されたとき全て labels に�
 rm -f "$_BUG1321_A5_TMP"
 
 # BUG1321-A-6: --label なしの場合 labels は空配列
-_BUG1321_A6_TMP=$(mktemp /tmp/test-parseargs-a6-XXXXXX.js)
+_BUG1321_A6_TMP=$(mktemp /tmp/test-parseargs-a6-XXXXXX)
 cat > "$_BUG1321_A6_TMP" << 'A6_EOF'
 const fs = require('fs');
 const src = fs.readFileSync(process.argv[2], 'utf8');
@@ -2663,7 +2761,7 @@ assert_eq "BUG1321-A-6: --label なしの場合 labels は空配列" '[]' "$BUG1
 rm -f "$_BUG1321_A6_TMP"
 
 # BUG1321-A-7: --label の後ろに他オプションが続いても正しくパースされる（境界値）
-_BUG1321_A7_TMP=$(mktemp /tmp/test-parseargs-a7-XXXXXX.js)
+_BUG1321_A7_TMP=$(mktemp /tmp/test-parseargs-a7-XXXXXX)
 cat > "$_BUG1321_A7_TMP" << 'A7_EOF'
 const fs = require('fs');
 const src = fs.readFileSync(process.argv[2], 'utf8');
@@ -2768,7 +2866,7 @@ else
 fi
 
 # BUG1329-2: --p3 がタイトルに混入せず priority にパースされる
-_BUG1329_2_TMP=$(mktemp /tmp/bug1329-2-XXXXXX.js)
+_BUG1329_2_TMP=$(mktemp /tmp/bug1329-2-XXXXXX)
 cat > "$_BUG1329_2_TMP" << 'JSEOF'
 const src = require('fs').readFileSync(process.argv[2], 'utf8');
 const match = src.match(/^function parseArgs[\s\S]+?^}/m);
@@ -2792,7 +2890,7 @@ assert_eq "BUG1329-2: --p3 が priority としてパースされる" 'p3' "$_BUG
 rm -f "$_BUG1329_2_TMP"
 
 # BUG1329-3: --p1 ショートハンド
-_BUG1329_3_TMP=$(mktemp /tmp/bug1329-3-XXXXXX.js)
+_BUG1329_3_TMP=$(mktemp /tmp/bug1329-3-XXXXXX)
 cat > "$_BUG1329_3_TMP" << 'JSEOF'
 const src = require('fs').readFileSync(process.argv[2], 'utf8');
 const match = src.match(/^function parseArgs[\s\S]+?^}/m);
@@ -2816,7 +2914,7 @@ assert_eq "BUG1329-3: --p1 が priority としてパースされる" 'p1' "$_BUG
 rm -f "$_BUG1329_3_TMP"
 
 # BUG1329-4: --p2 ショートハンド（--label / @context / --desc との組み合わせ）
-_BUG1329_4_TMP=$(mktemp /tmp/bug1329-4-XXXXXX.js)
+_BUG1329_4_TMP=$(mktemp /tmp/bug1329-4-XXXXXX)
 cat > "$_BUG1329_4_TMP" << 'JSEOF'
 const src = require('fs').readFileSync(process.argv[2], 'utf8');
 const match = src.match(/^function parseArgs[\s\S]+?^}/m);
@@ -2843,7 +2941,7 @@ assert_eq "BUG1329-4: --p2 + 他オプション混在で priority が正しく�
 rm -f "$_BUG1329_4_TMP"
 
 # BUG1329-5: --p3 がタイトル末尾位置でも混入しない（実害パターン再現）
-_BUG1329_5_TMP=$(mktemp /tmp/bug1329-5-XXXXXX.js)
+_BUG1329_5_TMP=$(mktemp /tmp/bug1329-5-XXXXXX)
 cat > "$_BUG1329_5_TMP" << 'JSEOF'
 const src = require('fs').readFileSync(process.argv[2], 'utf8');
 const match = src.match(/^function parseArgs[\s\S]+?^}/m);
@@ -2882,7 +2980,7 @@ else
 fi
 
 # T-13-nocreate: 既存ラベル（GET 200）のとき createLabel を呼ばないこと（Node.js モック）
-_BUG1326_TMP=$(mktemp /tmp/test-ensure-label-XXXXXX.js)
+_BUG1326_TMP=$(mktemp /tmp/test-ensure-label-XXXXXX)
 cat > "$_BUG1326_TMP" << 'ENSURE_LABEL_TEST_EOF'
 // ensureLabel モックテスト（BUG1326）
 const fs = require('fs');
@@ -2990,7 +3088,7 @@ else
 fi
 
 # T-18 〜 T-20: カスタムロガーの動作確認（Node.js インラインテスト）
-_BUG1328_TMP=$(mktemp /tmp/todo-test-logger-XXXXXX.js)
+_BUG1328_TMP=$(mktemp /tmp/todo-test-logger-XXXXXX)
 cat > "$_BUG1328_TMP" << 'LOGGER_TEST_EOF'
 const ENGINE_PATH = process.argv[2];
 const src = require('fs').readFileSync(ENGINE_PATH, 'utf8');
@@ -3134,7 +3232,7 @@ echo "--- Phase 2 リファクタリングテスト（buildBody オブジェク�
 
 # Node.js 内部 API（buildBody / parseBodyObj）を直接呼ぶインラインテスト群
 # 一時 JS ファイルに書き出してから node 実行（heredoc + $() の入れ子問題を回避）
-PHASE2_JS=$(mktemp /tmp/todo-phase2-test-XXXXXX.js)
+PHASE2_JS=$(mktemp /tmp/todo-phase2-test-XXXXXX)
 cat > "$PHASE2_JS" << 'JSEOF'
 const path = process.env.ENGINE_PATH;
 const fs = require('fs');
@@ -3498,7 +3596,7 @@ assert_contains "1646: /todo next LIST → ガードメッセージに元の大�
 # --- 非発火パターン（純粋関数 reservedTitleGuardWord を抽出して直接呼び出し）---
 # runAdd 経路（ensureLabel/issues.create 等の実API呼び出し）を経由せずに検証するため、
 # CLI 直接実行ではなくソースからガード関連コードを抽出して単体テストする。
-_G1646_TMP=$(mktemp /tmp/todo-test-reserved-guard-XXXXXX.js)
+_G1646_TMP=$(mktemp /tmp/todo-test-reserved-guard-XXXXXX)
 cat > "$_G1646_TMP" << 'RESERVED_GUARD_TEST_EOF'
 const fs = require('fs');
 const src = fs.readFileSync(process.argv[2], 'utf8');
@@ -3747,7 +3845,7 @@ echo ""
 echo "▶ Issue #1695: Web環境実行不能対応（TODO_REPO_OWNER/NAME未設定ガード・401検知）"
 
 # T-22: 両方未設定 → error.repo_not_configured が出力され、GitHub API は一度も呼ばれない
-T22_LOG=$(mktemp /tmp/todo-test-t22-XXXXXX.jsonl); : > "$T22_LOG"
+T22_LOG=$(mktemp /tmp/todo-test-t22-XXXXXX); : > "$T22_LOG"
 T22_OUT=$(env -u TODO_REPO_OWNER -u TODO_REPO_NAME OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" OCTOKIT_STUB_LOG_ENV="$T22_LOG" \
   node "$ENGINE" run add next "test" 2>&1); T22_EC=$?
 assert_exit_fail "T-22: TODO_REPO_OWNER/NAME 両方未設定 → exit 1" "$T22_EC"
@@ -4238,7 +4336,7 @@ assert_exit_ok "§48 リグレッション: validate due 2028-02-29 → exit 0�
 echo ""
 echo "§49  runMain dispatcher と help() 出力の同期（Issue #1884-3/4, #1906）"
 
-_G1884_TMP=$(mktemp /tmp/todo-test-help-drift-XXXXXX.js)
+_G1884_TMP=$(mktemp /tmp/todo-test-help-drift-XXXXXX)
 cat > "$_G1884_TMP" << 'HELP_DRIFT_TEST_EOF'
 const fs = require('fs');
 const { execFileSync } = require('child_process');
