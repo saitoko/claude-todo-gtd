@@ -2333,21 +2333,27 @@ else
 fi
 
 # ────────────────────────────────────────────
-# P1-23 todo.md: weekly-review Step 2 に Pinned hint が追加されている
+# P1-23 週次レビュー Step 2 に Pinned hint が記載されている
 # ────────────────────────────────────────────
-if grep -q "Pinned hint" "$TODO_MD" 2>/dev/null; then
-  printf "  ✅ P1-23: todo.md weekly-review Step 2 に Pinned hint が追加されている\n"; PASS=$((PASS+1))
+# 記載先はリポジトリによって異なる。上流では weekly-review.md へ集約されており、
+# 本リポジトリ単体では todo.md 側に記載がある。同じスクリプトがどちらの構成でも
+# 動くよう、存在する側を参照する（存在しないパスを固定で見に行くと、ファイルを
+# コピーして同期したときに参照先ごと持ち込まれてテストが壊れる）。
+WEEKLY_REVIEW_MD="$SCRIPT_DIR/../../weekly-review/weekly-review.md"
+[ -f "$WEEKLY_REVIEW_MD" ] || WEEKLY_REVIEW_MD="$TODO_MD"
+if grep -q "Pinned hint" "$WEEKLY_REVIEW_MD" 2>/dev/null; then
+  printf "  ✅ P1-23: 週次レビュー Step 2 に Pinned hint が記載されている\n"; PASS=$((PASS+1))
 else
-  printf "  ❌ P1-23: todo.md に Pinned hint が見つからない\n"; FAIL=$((FAIL+1))
+  printf "  ❌ P1-23: Pinned hint が見つからない (%s)\n" "$WEEKLY_REVIEW_MD"; FAIL=$((FAIL+1))
 fi
 
 # ────────────────────────────────────────────
-# P1-24 todo.md: weekly-review Step 4 に migrate sub-issue ヒントが追加されている
+# P1-24 週次レビュー Step 4 に migrate sub-issue ヒントが記載されている
 # ────────────────────────────────────────────
-if grep -q "migrate sub-issue --dry-run" "$TODO_MD" 2>/dev/null; then
-  printf "  ✅ P1-24: todo.md weekly-review Step 4 に migrate sub-issue ヒントが追加されている\n"; PASS=$((PASS+1))
+if grep -q "migrate sub-issue --dry-run" "$WEEKLY_REVIEW_MD" 2>/dev/null; then
+  printf "  ✅ P1-24: 週次レビュー Step 4 に migrate sub-issue ヒントが記載されている\n"; PASS=$((PASS+1))
 else
-  printf "  ❌ P1-24: todo.md に migrate sub-issue --dry-run が見つからない\n"; FAIL=$((FAIL+1))
+  printf "  ❌ P1-24: migrate sub-issue --dry-run が見つからない (%s)\n" "$WEEKLY_REVIEW_MD"; FAIL=$((FAIL+1))
 fi
 
 # ────────────────────────────────────────────
