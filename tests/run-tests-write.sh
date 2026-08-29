@@ -97,6 +97,56 @@ assert_no_japanese() {
   fi
 }
 
+# assert_regex: JS正規表現（文字列で渡す）にactualがマッチすることを検証する（Issue #455）。
+# TODO_TIMING の出力フォーマット（[timing] total <N>ms (github <N>ms / parse <N>ms)）のように
+# 数値部分が可変な行を固定文字列一致では検証できないため。
+assert_regex() {
+  local desc="$1" pattern_src="$2" actual="$3"
+  local matched
+  matched=$(PATTERN="$pattern_src" TEXT="$actual" node -e "
+    process.stdout.write(new RegExp(process.env.PATTERN, 'm').test(process.env.TEXT || '') ? 'yes' : 'no')
+  ")
+  if [ "$matched" = "yes" ]; then
+    printf "  ✅ %s\n" "$desc"; PASS=$((PASS+1))
+  else
+    printf "  ❌ %s\n" "$desc"
+    printf "     正規表現 [%s] にマッチしない\n" "$pattern_src"
+    printf "     実際: [%s]\n" "$actual"
+    FAIL=$((FAIL+1))
+  fi
+}
+
+# extract_timing_field: stderr中の [timing] 行から total/github/parse のms値（整数）を取り出す
+extract_timing_field() {
+  local text="$1" field="$2"
+  TEXT="$text" FIELD="$field" node -e "
+    const m = (process.env.TEXT || '').match(/\[timing\] total (\d+)ms \(github (\d+)ms \/ parse (\d+)ms\)/);
+    if (!m) { process.stdout.write(''); process.exit(0); }
+    const map = { total: m[1], github: m[2], parse: m[3] };
+    process.stdout.write(map[process.env.FIELD] || '');
+  "
+}
+
+# assert_le: 数値比較（a <= b）
+assert_le() {
+  local desc="$1" a="$2" b="$3"
+  if [ -n "$a" ] && [ -n "$b" ] && [ "$a" -le "$b" ] 2>/dev/null; then
+    printf "  ✅ %s (%s <= %s)\n" "$desc" "$a" "$b"; PASS=$((PASS+1))
+  else
+    printf "  ❌ %s (%s <= %s ではない)\n" "$desc" "$a" "$b"; FAIL=$((FAIL+1))
+  fi
+}
+
+# assert_lt: 数値比較（a < b）
+assert_lt() {
+  local desc="$1" a="$2" b="$3"
+  if [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ] 2>/dev/null; then
+    printf "  ✅ %s (%s < %s)\n" "$desc" "$a" "$b"; PASS=$((PASS+1))
+  else
+    printf "  ❌ %s (%s < %s ではない)\n" "$desc" "$a" "$b"; FAIL=$((FAIL+1))
+  fi
+}
+
 # 指定メソッドの JSONL 呼び出し件数を数える
 log_count() {
   local logfile="$1" method="$2"
@@ -1918,6 +1968,140 @@ assert_exit_ok "W24-3 リグレッション: GET成功・子0件・--force指定
 assert_contains "W24-3: body のみ解除した旨のメッセージが出る" "プロジェクト紐付け（body）のみ解除しました" "$W1885_3_OUT"
 assert_eq "W24-3: issues.update が1回呼ばれる（body のみ更新、GET成功時は従来動作を維持）" "1" "$(log_count "$W1885_3_LOG" issues.update)"
 rm -f "$W1885_3_LOG"
+
+# ──────────────────────────────────────────
+# §W25  /todo コマンド実行時間計測（TODO_TIMING、Issue #455）
+# 純粋関数（computeGithubMs）の単体テストは run-tests.sh §50 参照。
+# こちらは Octokit スタブ経由の統合的な振る舞いを検証する。
+# ──────────────────────────────────────────
+echo ""
+echo "§W25  TODO_TIMING 実行時間計測 — スタブベース振る舞いテスト（Issue #455）"
+
+TIMING_LINE_RE='\[timing\] total [0-9]+ms \(github [0-9]+ms / parse [0-9]+ms\)'
+
+# W25-1 基本フォーマット確認 + github<=total（逐次1回呼び出し: run list next → fetchAllOpen 1回）
+W25_1_ERR=$(mktemp /tmp/todo-test-1455-1-err-XXXXXX)
+W25_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV='{"issues.listForRepo":[{"data":[]}]}' \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODO_TIMING=1 \
+  node "$ENGINE" run list next 2>"$W25_1_ERR"); W25_1_EC=$?
+W25_1_ERRTEXT=$(cat "$W25_1_ERR" 2>/dev/null); rm -f "$W25_1_ERR"
+assert_exit_ok "W25-1 run list next + TODO_TIMING=1: exit 0" "$W25_1_EC"
+assert_regex "W25-1: stderrに [timing] 行が正しいフォーマットで出力される" "$TIMING_LINE_RE" "$W25_1_ERRTEXT"
+W25_1_TOTAL=$(extract_timing_field "$W25_1_ERRTEXT" total)
+W25_1_GITHUB=$(extract_timing_field "$W25_1_ERRTEXT" github)
+assert_le "W25-1: github <= total（区間統合の不変条件）" "$W25_1_GITHUB" "$W25_1_TOTAL"
+
+# W25-2 並行呼び出し（Promise.all）での区間統合ロジック検証: run today は
+# fetchAllOpen/fetchRecentClosed の2回の issues.listForRepo を並行実行する。
+# スタブに __delayMs:60 を仕込み、単純合計（約120ms）ではなく実際の壁時計時間
+# （並行実行のため約60〜80ms）に近い値になることを確認する（Issue #455 設計書の
+# 自己申告リスク「区間統合と単純合計の区別力が低い」への対処: 遅延なしでは
+# 検証できないため、本テストでは意図的にスタブへ人工遅延を仕込む）。
+W25_2_ERR=$(mktemp /tmp/todo-test-1455-2-err-XXXXXX)
+W25_2_RESP='{"issues.listForRepo":[{"__delayMs":60,"data":[]},{"__delayMs":60,"data":[]}]}'
+W25_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W25_2_RESP" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODO_TIMING=1 TODAY=2026-08-29 \
+  node "$ENGINE" run today 2>"$W25_2_ERR"); W25_2_EC=$?
+W25_2_ERRTEXT=$(cat "$W25_2_ERR" 2>/dev/null); rm -f "$W25_2_ERR"
+assert_exit_ok "W25-2 run today(並行呼び出し) + TODO_TIMING=1: exit 0" "$W25_2_EC"
+W25_2_TOTAL=$(extract_timing_field "$W25_2_ERRTEXT" total)
+W25_2_GITHUB=$(extract_timing_field "$W25_2_ERRTEXT" github)
+assert_le "W25-2: github <= total（並行呼び出しでも不変条件を維持・parseが負値にならない）" "$W25_2_GITHUB" "$W25_2_TOTAL"
+# 単純合計なら120ms超になるはずのところ、区間統合により100ms未満に収まることを確認
+# （2並行呼び出しの重なりを1回分に畳めていることの直接証拠。CIジッタを見込み閾値は緩め）
+assert_lt "W25-2: github が単純合計(約120ms)より十分小さい（区間統合が機能している証拠）" "$W25_2_GITHUB" "100"
+
+# W25-3 apiMain経路（direct api / run api の両方）— stdout(機械可読JSON)は
+# TODO_TIMING有無で完全一致、stderrに[timing]行が出ることを確認
+API_RESP='{"issues.listForRepo":[{"data":[]}]}'
+W25_3A_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$API_RESP" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODO_TIMING=1 \
+  node "$ENGINE" api list-issues 2>/dev/null)
+W25_3A_ERR=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$API_RESP" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODO_TIMING=1 \
+  node "$ENGINE" api list-issues 2>&1 1>/dev/null)
+W25_3A_NOTIMING=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$API_RESP" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" api list-issues 2>/dev/null)
+assert_regex "W25-3: 直接 api list-issues + TODO_TIMING=1 → stderrに[timing]行" "$TIMING_LINE_RE" "$W25_3A_ERR"
+assert_eq "W25-3: 直接 api 経由 — stdout(JSON)はTODO_TIMING有無で完全一致" "$W25_3A_NOTIMING" "$W25_3A_OUT"
+
+W25_3B_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$API_RESP" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODO_TIMING=1 \
+  node "$ENGINE" run api list-issues 2>/dev/null)
+W25_3B_ERR=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$API_RESP" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODO_TIMING=1 \
+  node "$ENGINE" run api list-issues 2>&1 1>/dev/null)
+W25_3B_NOTIMING=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$API_RESP" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run api list-issues 2>/dev/null)
+assert_regex "W25-3: run api list-issues + TODO_TIMING=1 → stderrに[timing]行" "$TIMING_LINE_RE" "$W25_3B_ERR"
+assert_eq "W25-3: run api 経由 — stdout(JSON)はTODO_TIMING有無で完全一致" "$W25_3B_NOTIMING" "$W25_3B_OUT"
+
+# W25-4 help/schema（Octokitは生成されるがAPI呼び出しは発生しない経路）→ github は常に0
+W25_4A_ERR=$(OCTOKIT_STUB_ENV="$STUB" TODO_TIMING=1 node "$ENGINE" run help 2>&1 1>/dev/null)
+assert_regex "W25-4: run help + TODO_TIMING=1 → [timing]行が出る" "$TIMING_LINE_RE" "$W25_4A_ERR"
+assert_eq "W25-4: run help はAPI呼び出しなし → github 0ms" "0" "$(extract_timing_field "$W25_4A_ERR" github)"
+
+W25_4B_ERR=$(OCTOKIT_STUB_ENV="$STUB" TODO_TIMING=1 node "$ENGINE" run schema 2>&1 1>/dev/null)
+assert_regex "W25-4: run schema + TODO_TIMING=1 → [timing]行が出る" "$TIMING_LINE_RE" "$W25_4B_ERR"
+assert_eq "W25-4: run schema はAPI呼び出しなし → github 0ms" "0" "$(extract_timing_field "$W25_4B_ERR" github)"
+
+# W25-5 バリデーションエラーで process.exit(1) を直接呼ぶ経路（例: run done 番号なし）でも
+# [timing] 行が出力されること（.finally()では到達しないため process.on('exit') 方式を採用した
+# 核心の回帰テスト。修正前コードでは本アサーションがFAILすることを実装時に実機確認済み）
+W25_5_ERR=$(OCTOKIT_STUB_ENV="$STUB" TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODO_TIMING=1 \
+  node "$ENGINE" run done 2>&1 1>/dev/null); W25_5_EC=$?
+assert_exit_fail "W25-5 run done(番号なし・process.exit直接): exit非0" "$W25_5_EC"
+assert_regex "W25-5 【核心】process.exit(1)直接呼び出し経路でも[timing]行が出力される" "$TIMING_LINE_RE" "$W25_5_ERR"
+assert_eq "W25-5: バリデーション先行でAPI呼び出し前に終了 → github 0ms" "0" "$(extract_timing_field "$W25_5_ERR" github)"
+
+# W25-6 Octokit呼び出し中の例外（__throw）が発生しても [timing] 行が握りつぶされない
+W25_6_ISSUE_RESP='{"issues.get":[{"__throw":true,"status":500,"message":"Internal Server Error"}]}'
+W25_6_ERR=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W25_6_ISSUE_RESP" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODO_TIMING=1 \
+  node "$ENGINE" run show 42 2>&1 1>/dev/null); W25_6_EC=$?
+assert_exit_fail "W25-6 run show(issues.get例外) : exit非0" "$W25_6_EC"
+assert_regex "W25-6: Octokit呼び出し中の例外発生時も[timing]行が出力される（例外に握りつぶされない）" "$TIMING_LINE_RE" "$W25_6_ERR"
+
+# W25-7 【核心】TODO_TIMING未設定時、stdoutが完全にバイト一致（既定出力への非侵襲性の直接証明）
+W25_7_RESP='{"issues.listForRepo":[{"data":[]}]}'
+W25_7_STDOUT_ON=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W25_7_RESP" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODO_TIMING=1 \
+  node "$ENGINE" run list next 2>/dev/null)
+W25_7_STDOUT_OFF=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W25_7_RESP" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run list next 2>/dev/null)
+assert_eq "W25-7 【核心】TODO_TIMING未設定時とTODO_TIMING=1時でstdoutが完全一致（1バイトも変わらない）" \
+  "$W25_7_STDOUT_OFF" "$W25_7_STDOUT_ON"
+
+# W25-8 TODO_TIMING未設定時、stderrに[timing]が一切出現しない
+W25_8_ERR=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W25_7_RESP" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run list next 2>&1 1>/dev/null)
+assert_not_contains "W25-8: TODO_TIMING未設定時はstderrに[timing]が出現しない" "[timing]" "$W25_8_ERR"
+
+# W25-9 TODO_TIMING=0（境界値）は無効 — 厳密文字列一致'1'以外はすべて既定動作
+W25_9_ERR=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W25_7_RESP" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODO_TIMING=0 \
+  node "$ENGINE" run list next 2>&1 1>/dev/null)
+assert_not_contains "W25-9: TODO_TIMING=0（'1'以外）は無効・[timing]行が出ない" "[timing]" "$W25_9_ERR"
+
+# W25-10 【核心・回帰】wrapOctokitTiming() が関数プロパティ（.endpoint/.defaults）を
+# 保持することをスタブ経由で構造的に検証する（実トークンでの実測 2026-08-29 で発覚した不具合の
+# 回帰テスト）。素朴な `obj[key] = async (...a) => orig(...a)` 方式では実 @octokit/rest の
+# 内部実装が参照する .endpoint/.defaults が失われ、TODO_TIMING=1 で実GitHub APIを
+# 呼ぶと "octokit.request.defaults is not a function" 等で機能停止していた
+# （stdoutが空になり「既定出力を変えない」も破っていた）。本テストはスタブの
+# issues.get/request にも同形のダミー関数プロパティを持たせた上で
+# wrapOctokitTiming() 適用後もそれらが保持されることを確認する。
+# 実 @octokit/rest を使う対照テストは run-tests.sh §50 参照（本テストは
+# 環境非依存でネットワーク・実パッケージ不要のため必ず実行される）。
+W25_10_OUT=$(OCTOKIT_STUB_ENV="$STUB" node "$ENGINE" check-octokit-wrap-props 2>&1); W25_10_EC=$?
+assert_exit_ok "W25-10 check-octokit-wrap-props(スタブ経路): exit 0" "$W25_10_EC"
+for key in requestHasEndpoint requestHasDefaults issuesGetHasEndpoint issuesGetHasDefaults; do
+  assert_contains "W25-10 【核心】wrapOctokitTiming後も $key が保持されている（スタブ）" "\"$key\":true" "$W25_10_OUT"
+done
 
 # ──────────────────────────────────────────
 # 結果サマリー（run-tests.sh から集計加算するための機械可読な行）

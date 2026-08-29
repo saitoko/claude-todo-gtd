@@ -29,9 +29,18 @@
 //   各キューの要素に { "__throw": true, "status": 404, "message": "Not Found" } を
 //   指定すると、その回の呼び出しで status プロパティ付きの Error を throw する。
 
+// 各キューの要素に { "__delayMs": 50 } を指定すると、応答を返す（または
+//   __throw する）前に指定ms分 setTimeout で人為的に遅延させる（Issue #455の
+//   TODO_TIMING テストで、並行呼び出しの区間統合ロジックを検証するために使う。
+//   遅延なしのスタブでは並行呼び出しの重なりが実測に現れないため）。
+
 'use strict';
 const fs = require('fs');
 const path = require('path');
+
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 
 function parseResponsesSpec(spec) {
   if (!spec) return {};
@@ -60,13 +69,16 @@ function createStubOctokit({ logPath, responsesSpec } = {}) {
     }
   }
 
-  function nextResponse(methodKey) {
+  async function nextResponse(methodKey) {
     const queue = responses[methodKey];
     const callNum = (callCounts[methodKey] = (callCounts[methodKey] || 0) + 1);
     if (!Array.isArray(queue) || queue.length === 0) {
       throw new Error(`OCTOKIT_STUB: no response configured for ${methodKey} (call #${callNum})`);
     }
     const item = queue.shift();
+    if (item && typeof item === 'object' && typeof item.__delayMs === 'number') {
+      await delay(item.__delayMs);
+    }
     if (item && typeof item === 'object' && item.__throw) {
       const err = new Error(item.message || `OCTOKIT_STUB: simulated error for ${methodKey}`);
       if (item.status !== undefined) err.status = item.status;
@@ -75,9 +87,22 @@ function createStubOctokit({ logPath, responsesSpec } = {}) {
     return item;
   }
 
-  function resolve(methodKey, args) {
+  async function resolve(methodKey, args) {
     recordCall(methodKey, args);
     return nextResponse(methodKey);
+  }
+
+  // 実 @octokit/rest の各メソッド（issues.* だけでなく request も含む）は
+  // .endpoint（さらに .parse を持つ）/ .defaults という関数プロパティを own property
+  // として持ち、ライブラリ内部がこれらを参照する（実測: 2026-08-29、Issue #455。
+  // TODO_TIMING=1 のラッパーがこれらを引き継がず実 GitHub API 呼び出しが機能停止した
+  // 不具合の原因）。スタブの各メソッドにも同形のダミー関数プロパティを生やし、
+  // wrapOctokitTiming() のプロパティ保持をスタブ経由でも構造的に検証できるようにする。
+  function attachOctokitLikeProps(fn) {
+    fn.endpoint = function endpoint() {};
+    fn.endpoint.parse = function parse() {};
+    fn.defaults = function defaults() {};
+    return fn;
   }
 
   // 使用面（grep実測。todo-engine.js が呼ぶ Octokit メソッド一覧）
@@ -88,11 +113,11 @@ function createStubOctokit({ logPath, responsesSpec } = {}) {
   ];
   const issues = {};
   for (const m of ISSUES_METHODS) {
-    issues[m] = async (args) => resolve('issues.' + m, args);
+    issues[m] = attachOctokitLikeProps(async (args) => resolve('issues.' + m, args));
   }
 
   const search = {
-    issuesAndPullRequests: async (args) => resolve('search.issuesAndPullRequests', args),
+    issuesAndPullRequests: attachOctokitLikeProps(async (args) => resolve('search.issuesAndPullRequests', args)),
   };
 
   // sub-issue 系ヘルパ（addSubIssue/listSubIssues/removeSubIssue）や
@@ -101,6 +126,7 @@ function createStubOctokit({ logPath, responsesSpec } = {}) {
   async function request(route, params) {
     return resolve(route, params);
   }
+  attachOctokitLikeProps(request);
 
   return { issues, search, request };
 }

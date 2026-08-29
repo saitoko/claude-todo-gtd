@@ -210,12 +210,32 @@ const oldGtdLabel = labelNames.find(l => GTD_LABELS.includes(normLabel(l)));
 
 **テスト（追加分）:** `tests/run-tests-write.sh` §W18-4（プレーン list の除外+件数明示、修正前コードに戻すと4アサーションがFAILすることを確認済み）+ §W18-5（`list project --json` が除外しないことをロックインする回帰テスト。この項目は挙動変更なしのためbefore/after差分はなし）。全1231件PASS。
 
+### 2026-08-29: `TODO_TIMING=1` 実行時間計測の追加（Issue #455）
+
+`TODO_TIMING=1` を設定すると `run`/`api` サブコマンド実行後に `[timing] total <N>ms (github <N>ms / parse <N>ms)` を stderr へ出力する機能を追加した（詳細は上記「翻訳方針」および CHANGELOG 参照）。
+
+**実装時に踏んだ落とし穴:** 当初 `apiMain(...).catch(...).finally(() => printTiming(...))` という Promise チェーンで実装したところ、`run done`（Issue番号なし）等のバリデーションエラーで `[timing]` 行が出力されないことが実機確認で判明した。原因は、多数のハンドラがバリデーションエラー時に `throw` ではなく `process.stderr.write(...); process.exit(1);` を直接呼んでいるため（本ファイル全体に既存の広く使われている流儀）。`process.exit()` は同期的に即座にプロセスを終了させるため、`.finally()` はスケジュールされる前にプロセスが終了してしまい実行されない。対処として、Promise チェーンではなく `process.on('exit', () => printTiming(startNs))` を使う方式へ切り替えた。`process.on('exit', ...)` のコールバックは同期処理のみが保証されるが、`printTiming()` は `hrtime.bigint()`／配列演算／`process.stderr.write()` のみで完結するためこの制約下でも動作する。正常終了・`.catch()` 経由のエラー・`process.exit()` 直接呼び出しのいずれの終了経路でも1回だけ出力されることを、`tests/run-tests-write.sh` §W25-5（バリデーションエラー経路）・§W25-6（Octokit呼び出し中の例外経路）で回帰テスト化した。
+
+**教訓（今後同種の計測・後処理コードを追加する開発者向け）:** 本ファイルで「コマンド実行の前後を挟んで何かする」処理を書く場合、`.catch()`/`.finally()` だけでは `process.exit()` を直接呼ぶハンドラを取りこぼす。確実に実行したい後処理は `process.on('exit', ...)` を使うこと。
+
+**実装時に踏んだ落とし穴2件目（レビューで発覚・実機で修正）:** `wrapOctokitTiming()` を当初 `obj[key] = async (...a) => orig(...a)` という素朴な関数再代入で実装したところ、スタブベースのテスト（1403件）は全件PASSしたにもかかわらず、**実 `@octokit/rest`・実トークンで `TODO_TIMING=1` を付けて `run list next` 等を実行するとコマンドが丸ごと失敗する**（`Error: Cannot read properties of undefined (reading 'parse')`、stdout が空になり `TODO_TIMING` の有無で出力が変わらないという既定要件も破る）不具合があった。原因は、実 `@octokit/rest` の各メソッド（`octokit.request` だけでなく `octokit.issues.get` 等も同様）が `.endpoint`（さらに `.parse` を持つ）/ `.defaults` という関数プロパティを own property として持ち、ライブラリ内部がこれらを参照するため。素朴な再代入は新しい関数オブジェクトに置き換わるだけでこれらのプロパティを引き継がない。スタブ（`tests/stubs/octokit-stub.js`）はプレーンオブジェクトの単純な関数のみで `.endpoint`/`.defaults` を持たなかったため、この不具合を構造的に検出できなかった（全件PASSしたのに実環境で機能停止するという、テストの死角の実例）。
+
+**修正:** `wrapOctokitTiming()` を `Proxy` の `apply` トラップ方式に変更した。`new Proxy(orig, { apply(target, thisArg, argArray) { ... } })` は元の関数オブジェクトそのものをラップし呼び出しだけをフックするため、`.endpoint`/`.defaults` を含む全プロパティが透過的に保持される。`thisArg` も `Reflect.apply` でそのまま転送するため、呼び出し元のレシーバに依存する内部実装があっても壊れない。あわせて `tests/stubs/octokit-stub.js` の各メソッドにも実 Octokit と同形のダミー `.endpoint`/`.defaults` を生やし（`attachOctokitLikeProps()`）、スタブ経由でもこの種の不具合を構造的に検出できるようにした。新設 CLI 診断コマンド `check-octokit-wrap-props`（`OCTOKIT_STUB_ENV` の有無でスタブ/実 `@octokit/rest` を切り替え、ネットワーク接続なしでプロパティの有無だけを確認する）で `tests/run-tests-write.sh` §W25-10（スタブ、常時実行）と `tests/run-tests.sh` §50（実 `@octokit/rest`、モジュール未検出時は SKIP）の両方から検証する。修正前の実装に戻すと両テストとも「保持されていない」で確実に FAIL することを実機確認済み。
+
+**教訓（2件目）:** ライブラリが返すオブジェクトのメソッドをラップする場合、素朴な関数再代入は「呼び出し可能」までしか保証しない。ライブラリ内部が呼び出し時以外にそのメソッドの他のプロパティ（`.endpoint`/`.defaults`/`.paginate` 等）を参照している可能性を疑い、`Proxy` の `apply` トラップ等プロパティを透過するラップ方式を優先すること。またスタブは実ライブラリの「呼べる」という表面だけでなく「呼び出し可能なオブジェクトが持つ付随プロパティ」まで模していないと、この種の不具合をすり抜ける。
+
+**対象ファイル:** `todo-engine.js`（メインディスパッチャーの `case 'run':`/`case 'api':`、`initOctokit()`、新設 `wrapOctokitTiming()`/`computeGithubMs()`/`printTiming()`/`check-octokit-wrap-props`）、`tests/stubs/octokit-stub.js`（`__delayMs` オプション新設。並行呼び出しの区間統合ロジックを検証するための人工遅延 / `attachOctokitLikeProps()` で `.endpoint`/`.defaults` を模す）
+
+**テスト:** `tests/run-tests.sh` §50（`computeGithubMs()` 単体テスト7件 + 実 `@octokit/rest` プロパティ保持テスト5件）+ `tests/run-tests-write.sh` §W25（スタブベース振る舞いテスト14件）。全1413件PASS。実トークン・実リポジトリでの動作確認（`run list next` / `run today` / `api list-issues` / `run list project <N>`（`octokit.request()` 経由）の4種）も実施し、`TODO_TIMING` の有無で stdout が完全一致すること・`github` が非ゼロの妥当な値になることを確認した。
+
+
 ## 翻訳方針（i18n）
 
-`todo-engine.js` の出力は `MESSAGES`/`t()`（`LANG_ENV=en` で英語、それ以外は日本語）で管理しているが、以下の2箇所は方針として `t()` 化せず英語固定とする。新しくコマンド・出力を追加する際はこの方針に従うこと。
+`todo-engine.js` の出力は `MESSAGES`/`t()`（`LANG_ENV=en` で英語、それ以外は日本語）で管理しているが、以下の3箇所は方針として `t()` 化せず英語固定とする。新しくコマンド・出力を追加する際はこの方針に従うこと。
 
 - **`api` サブコマンド（`apiMain`）は英語固定**: JSON を他プログラムがパースする機械向けインターフェースのため。出力言語が実行環境の `LANG_ENV` で変わるとパース側の実装が壊れるため、`t()` を通さず常に英語文字列を返す
 - **`Usage:` 文字列は常時英語で統一**: コマンド構文（`Usage: /todo add <title> ...` 等）は言語非依存の情報として扱い、日本語モードでもプレースホルダを含め英語表記（`<text>` 等）のまま表示する
+- **`[timing]` 診断行（`TODO_TIMING=1` 時のみ stderr へ出力）は英語固定**: 開発者・デバッグ向けの診断出力であり、一般ユーザー向けの操作結果メッセージとは性質が異なる。出力フォーマット自体が `total`/`github`/`parse`/`ms` という英語の技術語彙のみで構成されており、翻訳しても単位・キー名だけ英語が残るため翻訳する動機が薄い（Issue #455）
 
 ## 注意事項
 

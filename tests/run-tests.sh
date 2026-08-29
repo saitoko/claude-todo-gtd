@@ -4432,6 +4432,54 @@ else
 fi
 
 # ──────────────────────────────────────────
+# §50  /todo コマンド実行時間計測（TODO_TIMING）— computeGithubMs 区間統合アルゴリズム
+# 単体テスト（Issue #455）。Octokit/GitHub接続に依存しない純粋関数の検証。
+# CLI: compute-github-ms '[[開始ms,終了ms], ...]'（内部でns相当に換算して
+# computeGithubMs() を通し、結果をms単位で返す）。TODO_TIMING の統合的な
+# 振る舞い（stdout非侵襲性・並行呼び出しでの実測値等）は run-tests-write.sh §W25 を参照。
+# ──────────────────────────────────────────
+echo ""
+echo "§50  TODO_TIMING: computeGithubMs 区間統合アルゴリズム（Issue #455）"
+
+assert_eq "§50 compute-github-ms: 空配列 → 0" \
+  "0" "$(node "$ENGINE" compute-github-ms '[]')"
+assert_eq "§50 compute-github-ms: 単一区間 → そのまま" \
+  "100" "$(node "$ENGINE" compute-github-ms '[[0,100]]')"
+assert_eq "§50 compute-github-ms: 重複区間は1回分に統合（設計書の例。並行呼び出しの区間統合）" \
+  "200" "$(node "$ENGINE" compute-github-ms '[[0,100],[50,150],[200,250]]')"
+assert_eq "§50 compute-github-ms: 完全に離れた区間は単純加算" \
+  "150" "$(node "$ENGINE" compute-github-ms '[[0,50],[100,200]]')"
+assert_eq "§50 compute-github-ms: 入力順が逆でも結果は同じ（内部でソートする）" \
+  "200" "$(node "$ENGINE" compute-github-ms '[[200,250],[50,150],[0,100]]')"
+assert_eq "§50 compute-github-ms: 一方の区間がもう一方を完全に包含する場合は外側の長さのみ" \
+  "100" "$(node "$ENGINE" compute-github-ms '[[0,100],[20,30]]')"
+assert_eq "§50 compute-github-ms: 境界が一致（隣接）する区間も統合する（s<=curEnd の等号側）" \
+  "100" "$(node "$ENGINE" compute-github-ms '[[0,50],[50,100]]')"
+
+# --- 【核心・回帰】実 @octokit/rest での wrapOctokitTiming() プロパティ保持検証 ---
+# 実トークンでの実測（2026-08-29）で発覚: 素朴な再代入によるラップは実 @octokit/rest の
+# .endpoint/.defaults（各メソッドが own property として持つ関数プロパティ。
+# ライブラリ内部が参照する）を失わせ、TODO_TIMING=1 で実GitHub APIを呼ぶと
+# "octokit.request.defaults is not a function" 等で機能停止した（stdoutも空になり
+# 「既定出力を変えない」という要件も破っていた）。スタブベースの対照テストは
+# run-tests-write.sh §W25-10 参照（そちらは環境非依存で必ず実行される）。
+# 本テストは実 @octokit/rest（~/.claude/node_modules 配下、initOctokit()と同じ
+# 固定パス）が必要なため、モジュールが見つからない環境ではFAILさせずSKIPする
+# （run-tests.sh は「GitHubには接続しない」環境非依存を旨とするため。#1648の経緯を踏襲）。
+# ネットワーク接続・実トークンは不要（インスタンス構築とプロパティ確認のみ）。
+REAL_OCTOKIT_PATH="${HOME}/.claude/node_modules/@octokit/rest/dist-src/index.js"
+if [ -f "$REAL_OCTOKIT_PATH" ]; then
+  REAL_WRAP_OUT=$(node "$ENGINE" check-octokit-wrap-props 2>&1); REAL_WRAP_EC=$?
+  assert_exit_ok "§50 check-octokit-wrap-props(実@octokit/rest経路): exit 0" "$REAL_WRAP_EC"
+  for key in requestHasEndpoint requestHasDefaults issuesGetHasEndpoint issuesGetHasDefaults; do
+    assert_contains "§50 【核心】実@octokit/restでwrapOctokitTiming後も $key が保持されている" "\"$key\":true" "$REAL_WRAP_OUT"
+  done
+else
+  printf "  ⏭  §50 実@octokit/rest プロパティ保持テスト (skip: %s が見つからない。npm install --prefix ~/.claude @octokit/rest で解決)\n" "$REAL_OCTOKIT_PATH"
+  SKIP=$((SKIP+5))
+fi
+
+# ──────────────────────────────────────────
 # 書き込み系ハンドラのスタブベーステスト（run-tests-write.sh、Issue #1648）
 # 3,266行超に肥大化した本ファイルへの追記を避けるため別ファイルに分離し、
 # ここで子プロセスとして呼び出して結果を合算する。実行口は

@@ -24,6 +24,15 @@ const RECUR_WEEKDAY_TO_DOW = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, s
 
 // ─── i18n ───
 const LANG = process.env.LANG_ENV || 'ja';
+
+// ─── 実行時間計測（Issue #455） ───
+// TODO_TIMING=1 のときのみ有効化する。厳密文字列一致は本ファイル既存の
+// FILTER_GROUP_ENV 等の慣習に合わせる（'0'/'true'/空文字はすべて無効）。
+const TIMING_ENABLED = process.env.TODO_TIMING === '1';
+// 各 Octokit 呼び出しの [開始ns, 終了ns]（BigInt）を記録する。TIMING_ENABLED
+// が false のときは initOctokit() が Octokit をラップしないため、常に空のまま。
+let timingIntervals = [];
+
 const MESSAGES = {
   ja: {
     // エラー系
@@ -2881,6 +2890,47 @@ switch (cmd) {
   case 'next-due':        process.stdout.write(nextDue(args[1], args[2])); break;
   case 'next-due-catchup': process.stdout.write(JSON.stringify(nextDueCatchUp(args[1], args[2], args[3]))); break;
   case 'cycles-overdue':  process.stdout.write(String(computeCyclesOverdue(args[1], args[2], args[3]))); break;
+  case 'compute-github-ms': {
+    // 区間統合アルゴリズム単体テスト用（Issue #455）。入力はms単位の [start, end] 配列
+    // （例: '[[0,100],[50,150],[200,250]]'）。内部でns相当に換算してcomputeGithubMs()を
+    // 通し、結果をms単位の整数文字列で返す。Octokitスタブなしで区間統合の挙動を検証できる。
+    const intervalsMs = JSON.parse(args[1] || '[]');
+    const intervalsNs = intervalsMs.map(([s, e]) => [BigInt(s) * 1000000n, BigInt(e) * 1000000n]);
+    process.stdout.write(String(computeGithubMs(intervalsNs)));
+    break;
+  }
+  case 'check-octokit-wrap-props': {
+    // wrapOctokitTiming() が Octokit の関数プロパティ（.endpoint/.defaults）を保持する
+    // ことを検証するテスト専用コマンド（Issue #455）。initOctokit() と同じ分岐
+    // （OCTOKIT_STUB_ENV が設定されていればスタブ、なければ実 @octokit/rest）を使う。
+    // どちらの経路もネットワーク接続不要（インスタンスを構築してプロパティを
+    // 調べるだけ、HTTP呼び出しは行わない）。実 @octokit/rest 経路の GH_TOKEN は
+    // 実在不要（構築時に検証されないダミー値で足りる）。
+    (async () => {
+      const stubModulePath = process.env.OCTOKIT_STUB_ENV;
+      let raw;
+      if (stubModulePath) {
+        const createStubOctokit = require(path.resolve(stubModulePath));
+        raw = createStubOctokit({ logPath: null, responsesSpec: null });
+      } else {
+        const { pathToFileURL } = require('url');
+        const octokitPath = path.join(process.env.HOME || os.homedir(), '.claude', 'node_modules', '@octokit', 'rest', 'dist-src', 'index.js');
+        const mod = await import(pathToFileURL(octokitPath).href);
+        raw = new mod.Octokit({ auth: 'dummy-token-for-property-check' });
+      }
+      const wrapped = wrapOctokitTiming(raw);
+      process.stdout.write(JSON.stringify({
+        requestHasEndpoint: typeof wrapped.request.endpoint === 'function',
+        requestHasDefaults: typeof wrapped.request.defaults === 'function',
+        issuesGetHasEndpoint: !!(wrapped.issues && wrapped.issues.get && typeof wrapped.issues.get.endpoint === 'function'),
+        issuesGetHasDefaults: !!(wrapped.issues && wrapped.issues.get && typeof wrapped.issues.get.defaults === 'function'),
+      }));
+    })().catch(e => {
+      process.stderr.write('Error: '+(e.message||String(e))+'\n');
+      process.exitCode = 1;
+    });
+    break;
+  }
   case 'decode-b64':      process.stdout.write(Buffer.from(args[1]||'','base64').toString('utf8')); break;
   case 'ctx-to-json': {
     const list = (args[1]||'').trim();
@@ -2948,7 +2998,18 @@ switch (cmd) {
     break;
 
   // Octokit API
-  case 'api':
+  case 'api': {
+    // 実行時間計測（Issue #455）。多くのハンドラはバリデーションエラー時に
+    // throw ではなく process.exit(1) を直接呼ぶ（本ファイル全体の既存流儀）。
+    // process.exit() は同期的に即座にプロセスを終了させるため、Promise チェーンの
+    // .finally() は「スケジュールはされるが実行される前にプロセスが終了する」形で
+    // 到達しないことを実装時に実機確認した（run done 番号なし 等で再現）。
+    // 確実にあらゆる終了経路（正常終了・.catch()経由のエラー・process.exit()直接呼び出し）
+    // で1回だけ出力するため、Promise ではなく process.on('exit', ...) を使う。
+    // 'exit' ハンドラ内は同期処理のみ許容されるが、printTiming() は
+    // hrtime.bigint()/配列演算/process.stderr.write() のみで完結し要件を満たす。
+    const _timingStart = process.hrtime.bigint();
+    if (TIMING_ENABLED) process.on('exit', () => printTiming(_timingStart));
     apiMain(args.slice(1)).catch(e => {
       // GitHub REST APIの401（認証拒否）はWeb環境等でGH_TOKENが使えないケースを示唆する（Issue #1695）
       if (e.status === 401) {
@@ -2959,9 +3020,13 @@ switch (cmd) {
       process.exitCode = 1;
     });
     break;
+  }
 
   // run サブコマンド（高レベルディスパッチャー）
-  case 'run':
+  case 'run': {
+    // 実行時間計測（Issue #455）。上記 'api' と同じ方針・同じ理由で process.on('exit') を使う。
+    const _timingStart = process.hrtime.bigint();
+    if (TIMING_ENABLED) process.on('exit', () => printTiming(_timingStart));
     runMain(args.slice(1)).catch(e => {
       // GitHub REST APIの401（認証拒否）はWeb環境等でGH_TOKENが使えないケースを示唆する（Issue #1695）
       if (e.status === 401) {
@@ -2972,6 +3037,7 @@ switch (cmd) {
       process.exitCode = 1;
     });
     break;
+  }
 
   default:
     process.stderr.write('Unknown command: '+cmd+'\n');
@@ -2980,6 +3046,78 @@ switch (cmd) {
 }
 
 // ─── run サブコマンド実装 ───────────────────────────────────────────────────
+
+// ─── 実行時間計測（Issue #455） ───────────────────────────────────────────
+
+// Octokit インスタンスの issues/search/request をラップし、各呼び出しの
+// [開始ns, 終了ns] を timingIntervals へ記録する。TIMING_ENABLED が true の
+// ときのみ initOctokit() から呼ばれる（false のときは octokit を素通しする
+// ため、既存694件超のテストはこのコードパスに一切触れない）。
+//
+// 実装は Proxy の apply トラップを使う（素朴な `obj[key] = async (...a) => orig(...a)`
+// による再代入ではない）。理由: 実 @octokit/rest の各メソッド（octokit.request だけで
+// なく octokit.issues.get 等も同様）は .endpoint / .defaults という関数プロパティを
+// own property として持ち、ライブラリ内部がこれらを参照する（実測: 2026-08-29）。
+// 素朴な再代入では通常の関数オブジェクトに置き換わり .endpoint/.defaults が失われる
+// ため、TODO_TIMING=1 で実 GitHub API を呼ぶと
+// "octokit.request.defaults is not a function" 等で丸ごと機能停止した（実機で発覚・
+// 修正。詳細は DEVELOPMENT.md 参照）。Proxy は元の関数オブジェクトそのものを
+// ラップし apply（呼び出し）だけをフックするため、.endpoint/.defaults を含む
+// 全プロパティが透過的に保持される。thisArg も Reflect.apply でそのまま転送する。
+function wrapOctokitTiming(octokit) {
+  function wrapMethod(obj, key) {
+    const orig = obj[key];
+    if (typeof orig !== 'function') return;
+    obj[key] = new Proxy(orig, {
+      apply(target, thisArg, argArray) {
+        const start = process.hrtime.bigint();
+        const result = Reflect.apply(target, thisArg, argArray);
+        // orig は常に Promise を返す（Octokit のメソッドは全て async）。
+        // .finally() は解決/拒否のいずれの結果もそのまま透過するため、
+        // 呼び出し元から見た挙動（成功時の戻り値・失敗時の例外）は変化しない。
+        return Promise.resolve(result).finally(() => {
+          timingIntervals.push([start, process.hrtime.bigint()]);
+        });
+      },
+    });
+  }
+  if (octokit.issues) {
+    for (const key of Object.keys(octokit.issues)) wrapMethod(octokit.issues, key);
+  }
+  if (octokit.search) {
+    for (const key of Object.keys(octokit.search)) wrapMethod(octokit.search, key);
+  }
+  wrapMethod(octokit, 'request');
+  return octokit;
+}
+
+// 区間統合（interval merge）で GitHub 呼び出しの壁時計時間を算出する。
+// 並行呼び出し（Promise.all）は重複区間を1回分に畳むため、常に
+// total（case 'run'/'api' の計測区間）以下になる（parse が負値にならない
+// ことの数学的保証）。intervals は [BigInt開始ns, BigInt終了ns] の配列。
+function computeGithubMs(intervals) {
+  if (!intervals.length) return 0;
+  const sorted = intervals.slice().sort((a, b) => (a[0] < b[0] ? -1 : (a[0] > b[0] ? 1 : 0)));
+  let mergedNs = 0n;
+  let curStart = sorted[0][0], curEnd = sorted[0][1];
+  for (let i = 1; i < sorted.length; i++) {
+    const [s, e] = sorted[i];
+    if (s <= curEnd) { if (e > curEnd) curEnd = e; }       // 重複 → 統合
+    else { mergedNs += curEnd - curStart; curStart = s; curEnd = e; } // 非重複 → 確定して次へ
+  }
+  mergedNs += curEnd - curStart;
+  return Number(mergedNs / 1000000n);
+}
+
+// [timing] 診断行をstderrへ出力する。t()/tpl() は通さず固定英語とする
+// （DEVELOPMENT.md §翻訳方針の api/Usage: と同じ扱い。診断出力であり
+// 一般ユーザー向け操作結果メッセージとは性質が異なるため）。
+function printTiming(startNs) {
+  const totalMs = Number((process.hrtime.bigint() - startNs) / 1000000n);
+  const githubMs = computeGithubMs(timingIntervals);
+  const parseMs = Math.max(0, totalMs - githubMs);
+  process.stderr.write(`[timing] total ${totalMs}ms (github ${githubMs}ms / parse ${parseMs}ms)\n`);
+}
 
 // Octokit 初期化（apiMain から共通化）
 async function initOctokit() {
@@ -2990,10 +3128,11 @@ async function initOctokit() {
   const stubModulePath = process.env.OCTOKIT_STUB_ENV;
   if (stubModulePath) {
     const createStubOctokit = require(path.resolve(stubModulePath));
-    return createStubOctokit({
+    const stubOctokit = createStubOctokit({
       logPath: process.env.OCTOKIT_STUB_LOG_ENV || null,
       responsesSpec: process.env.OCTOKIT_STUB_RESPONSES_ENV || null,
     });
+    return TIMING_ENABLED ? wrapOctokitTiming(stubOctokit) : stubOctokit;
   }
 
   let token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
@@ -3012,7 +3151,8 @@ async function initOctokit() {
   } catch(e) {
     throw apiErr('Error: @octokit/rest not found. Run: npm install --prefix ~/.claude @octokit/rest\nDetail: '+e.message);
   }
-  return new OctokitClass({ auth: token, log: OCTOKIT_LOGGER });
+  const realOctokit = new OctokitClass({ auth: token, log: OCTOKIT_LOGGER });
+  return TIMING_ENABLED ? wrapOctokitTiming(realOctokit) : realOctokit;
 }
 
 // 汎用引数パーサー
