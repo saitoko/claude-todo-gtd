@@ -228,6 +228,58 @@ const oldGtdLabel = labelNames.find(l => GTD_LABELS.includes(normLabel(l)));
 
 **テスト:** `tests/run-tests.sh` §50（`computeGithubMs()` 単体テスト7件 + 実 `@octokit/rest` プロパティ保持テスト5件）+ `tests/run-tests-write.sh` §W25（スタブベース振る舞いテスト14件）。全1413件PASS。実トークン・実リポジトリでの動作確認（`run list next` / `run today` / `api list-issues` / `run list project <N>`（`octokit.request()` 経由）の4種）も実施し、`TODO_TIMING` の有無で stdout が完全一致すること・`github` が非ゼロの妥当な値になることを確認した。
 
+### 2026-08-29: `comment` が `--body-file`/`--body` 未対応で、未知フラグを本文として黙って投稿していた（Issue #1919）
+
+**症状:** `comment <#> --body-file <path>` を実行すると、`<path>` の中身ではなく「`--body-file`」という**文字列そのもの**が本文として投稿され、`<path>` は黙って失われていた（エラーなし・exit 0）。実運用で発生し、事後に `gh api -X PATCH` で修復した。
+
+**原因:** `runComment()` はフラグ解析を一切行わず `tokens[1]` だけを本文として読み、`tokens[2]` 以降を無条件に捨てていた。`runAdd()` は既に `--body`/`--body-file`（`--body-file` 優先）に対応していたが、`comment` には同じ仕組みが実装されていなかった。
+
+```js
+// NG: tokens[1] だけを本文として読み、以降のトークンは全て無視される
+const text = tokens[1] || '';
+```
+
+**修正（初版）:** `comment` にも `runAdd()` と同じ `--body`/`--body-file`（`--body-file` 優先）を追加した。あわせて、`--body`/`--body-file` 以外の `--` で始まるトークン（既知フラグの値欠落を含む）を検出したら、本文へ連結せず即エラー終了するようにした。これが今回の事故の再発防止の核心（未知フラグ `--boddy-file` を渡すテストで直接再現・検証）。
+
+```js
+// 初版: tok.startsWith('--') を丸ごとエラー扱い
+for (let i = 0; i < rest.length; i++) {
+  const tok = rest[i];
+  if (tok === '--body' && i + 1 < rest.length) { bodyOpt = rest[i + 1]; i++; }
+  else if (tok === '--body-file' && i + 1 < rest.length) { bodyFileOpt = rest[i + 1]; i++; }
+  else if (tok.startsWith('--')) {
+    process.stderr.write(`${usage}\nError: unknown flag: ${tok}\n`);
+    process.exit(1);
+  }
+}
+```
+
+**追補で発覚した副作用（実測・同日）:** 初版の `tok.startsWith('--')` は「`--` で始まる文字列すべて」を未知フラグ扱いにしていたため、Markdown の水平線（`"--- 区切り線 ---"`）や「`--body` を説明する文章」のような**正当な本文まで拒否**していた（実測で exit 1）。エラーで落ちるため「静かな乖離」ではなかったが、機能として正当な入力を拒否している状態だった。
+
+**追補修正:** 判定を「フラグの字面（`--` + 英字始まり + 英数字/ハイフンのみで構成される1語）」に絞り込んだ正規表現 `/^--[A-Za-z][A-Za-z0-9-]*$/` に変更した。
+
+```js
+// OK: フラグの字面（1語・英字始まり）だけを未知フラグとして扱う
+const UNKNOWN_FLAG_RE = /^--[A-Za-z][A-Za-z0-9-]*$/;
+for (let i = 0; i < rest.length; i++) {
+  const tok = rest[i];
+  if (tok === '--body' && i + 1 < rest.length) { bodyOpt = rest[i + 1]; i++; }
+  else if (tok === '--body-file' && i + 1 < rest.length) { bodyFileOpt = rest[i + 1]; i++; }
+  else if (UNKNOWN_FLAG_RE.test(tok)) {
+    process.stderr.write(`${usage}\nError: unknown flag: ${tok}\n`);
+    process.exit(1);
+  }
+}
+```
+
+この線引きにより、`--boddy-file`（タイポ）は引き続きエラーになる一方、`--` の直後がハイフン（Markdown水平線）や空白・非英字文字（`"--body を説明する文章"`）のトークンは本文として扱われる。「フラグは1語で英字始まり」という自明な性質を使った判定で、未知フラグ検出の実効性（元事故の再発防止）は維持したまま誤検知を解消した。
+
+後方互換のため、フラグが一切ない場合は従来どおり `rest[0]`（第2トークン全体）を本文として使う。単一ハイフンで始まる本文（例: `"- 箇条書き"`）は正規表現が `--`（2文字）始まりのみを対象にしているため誤ってフラグ扱いされない。位置引数とフラグを同時指定した場合はフラグが優先され位置引数は無視される（意図した仕様として回帰テストで固定）。
+
+**対象ファイル:** `todo-engine.js`（`runComment()`、`help.comment` ja/en）
+
+**テスト:** `tests/run-tests-write.sh` §W26（32ケース: `--body-file` 実ファイル反映＋元事故の再現確認、`--body` 反映、併用時の優先順位、存在しないパスのエラー、未知フラグのエラー（直接再現）、値欠落フラグのエラー、位置引数の後方互換、単一ハイフン始まり本文の境界確認、テキスト省略時の既存挙動、Markdown水平線・「--body」で始まる本文が誤ってフラグ扱いされないことの回帰確認、位置引数+フラグ同時指定時の仕様固定）。全1445件PASS（書き込み系539/539）。実 GitHub API への書き込みは行わず、スタブ経由のみで検証した（本コマンドは本番 Issue へのコメント投稿という不可逆の副作用を持つため）。
+
 
 ## 翻訳方針（i18n）
 

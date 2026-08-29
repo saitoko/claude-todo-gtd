@@ -2104,6 +2104,158 @@ for key in requestHasEndpoint requestHasDefaults issuesGetHasEndpoint issuesGetH
 done
 
 # ──────────────────────────────────────────
+# §W26  runComment — --body/--body-file 対応 + 未知フラグのエラー化（Issue #1919）
+# 事故: `comment <#> --body-file <path>` を実行すると「--body-file」という文字列
+# そのものが本文として投稿され、<path> の中身は黙って失われていた（エラーなし・exit 0）。
+# 旧実装は tokens[1] だけを本文として読み、tokens[2] 以降を無条件に捨てていた
+# （フラグ解析自体が一切存在しなかった）。
+# ──────────────────────────────────────────
+echo ""
+echo "§W26  runComment — --body/--body-file 対応 + 未知フラグのエラー化（Issue #1919）"
+
+# W26-1【核心・回帰】--body-file: 実ファイルの中身が本文になる（元事故の直接再現テスト）。
+# 修正前のコードに戻すと、body が "--body-file"（リテラル文字列）になり本アサーションはFAILする。
+W26_1_LOG=$(mktemp /tmp/todo-test-w26-1-XXXXXX)
+W26_1_FILE=$(mktemp /tmp/todo-test-w26-1-body-XXXXXX)
+printf '%s' 'ファイルから読み込んだ本文' > "$W26_1_FILE"
+W26_1_RESP='{"issues.createComment":[{"data":{"id":1}}]}'
+W26_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W26_1_RESP" OCTOKIT_STUB_LOG_ENV="$W26_1_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run comment 1915 --body-file "$W26_1_FILE" 2>&1); W26_1_EC=$?
+assert_exit_ok "W26-1 --body-file(実ファイル): exit 0" "$W26_1_EC"
+assert_contains "W26-1: 完了メッセージ" "💬 #1915 にコメントを追加しました。" "$W26_1_OUT"
+assert_eq "W26-1: issues.createComment 呼び出し1回" "1" "$(log_count "$W26_1_LOG" issues.createComment)"
+assert_contains "W26-1【核心】body がファイルの中身になっている" \
+  '"body":"ファイルから読み込んだ本文"' "$(log_lines_for_method "$W26_1_LOG" issues.createComment)"
+assert_not_contains "W26-1【核心・元事故の再現テスト】body が \"--body-file\" というリテラル文字列になっていない" \
+  '"body":"--body-file"' "$(log_lines_for_method "$W26_1_LOG" issues.createComment)"
+rm -f "$W26_1_LOG" "$W26_1_FILE"
+
+# W26-2 --body "text": 指定文字列がそのまま本文になる
+W26_2_LOG=$(mktemp /tmp/todo-test-w26-2-XXXXXX)
+W26_2_RESP='{"issues.createComment":[{"data":{"id":2}}]}'
+W26_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W26_2_RESP" OCTOKIT_STUB_LOG_ENV="$W26_2_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run comment 42 --body "直接指定した本文" 2>&1); W26_2_EC=$?
+assert_exit_ok "W26-2 --body(文字列指定): exit 0" "$W26_2_EC"
+assert_eq "W26-2: issues.createComment 呼び出し1回" "1" "$(log_count "$W26_2_LOG" issues.createComment)"
+assert_contains "W26-2: body が --body の指定文字列" '"body":"直接指定した本文"' "$(log_lines_for_method "$W26_2_LOG" issues.createComment)"
+rm -f "$W26_2_LOG"
+
+# W26-3 --body と --body-file 併用: --body-file が優先される（runAdd と同じ挙動）
+W26_3_LOG=$(mktemp /tmp/todo-test-w26-3-XXXXXX)
+W26_3_FILE=$(mktemp /tmp/todo-test-w26-3-body-XXXXXX)
+printf '%s' 'ファイル優先の本文' > "$W26_3_FILE"
+W26_3_RESP='{"issues.createComment":[{"data":{"id":3}}]}'
+W26_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W26_3_RESP" OCTOKIT_STUB_LOG_ENV="$W26_3_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run comment 43 --body "使われないはずのbody文字列" --body-file "$W26_3_FILE" 2>&1); W26_3_EC=$?
+assert_exit_ok "W26-3 --body と --body-file 併用: exit 0" "$W26_3_EC"
+assert_contains "W26-3【核心】--body-file が --body より優先される" '"body":"ファイル優先の本文"' "$(log_lines_for_method "$W26_3_LOG" issues.createComment)"
+assert_not_contains "W26-3: --body の指定文字列は使われない" '"body":"使われないはずのbody文字列"' "$(log_lines_for_method "$W26_3_LOG" issues.createComment)"
+rm -f "$W26_3_LOG" "$W26_3_FILE"
+
+# W26-4 --body-file に存在しないパスを指定 → エラー・非0終了、issues.createComment は呼ばれない
+W26_4_LOG=$(mktemp /tmp/todo-test-w26-4-XXXXXX)
+: > "$W26_4_LOG"
+W26_4_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W26_4_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run comment 44 --body-file /tmp/todo-test-w26-path-that-does-not-exist 2>&1); W26_4_EC=$?
+assert_exit_fail "W26-4 --body-file(存在しないパス): exit非0" "$W26_4_EC"
+assert_contains "W26-4: エラーメッセージ（runAdd と共通の body_file_not_found を再利用）" "--body-file のパスが見つかりません" "$W26_4_OUT"
+assert_eq "W26-4: issues.createComment は呼ばれない（副作用なし）" "0" "$(log_count "$W26_4_LOG" issues.createComment)"
+rm -f "$W26_4_LOG"
+
+# W26-5【核心・直接再現】未知のフラグ（--body-file のタイプミス）は本文へ連結されずエラー終了する。
+# これが事故の直接的な再発防止テスト: --body-file 自体は W26-1 で正しく処理されるが、
+# 似た別の未知フラグは黙って本文化させない。
+W26_5_LOG=$(mktemp /tmp/todo-test-w26-5-XXXXXX)
+: > "$W26_5_LOG"
+W26_5_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W26_5_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run comment 45 --boddy-file /tmp/some-path 2>&1); W26_5_EC=$?
+assert_exit_fail "W26-5【核心・直接再現】未知フラグ(--boddy-file)は本文にならずエラー終了" "$W26_5_EC"
+assert_contains "W26-5: エラーメッセージに未知フラグ名を含む" "unknown flag: --boddy-file" "$W26_5_OUT"
+assert_eq "W26-5: issues.createComment は呼ばれない（黙って本文として投稿しない）" "0" "$(log_count "$W26_5_LOG" issues.createComment)"
+rm -f "$W26_5_LOG"
+
+# W26-5b 値が欠落した既知フラグ（末尾の --body-file）も同様にエラー終了する
+W26_5B_LOG=$(mktemp /tmp/todo-test-w26-5b-XXXXXX)
+: > "$W26_5B_LOG"
+W26_5B_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W26_5B_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run comment 46 --body-file 2>&1); W26_5B_EC=$?
+assert_exit_fail "W26-5b 値欠落の --body-file（末尾）もエラー終了（黙って本文にしない）" "$W26_5B_EC"
+assert_eq "W26-5b: issues.createComment は呼ばれない" "0" "$(log_count "$W26_5B_LOG" issues.createComment)"
+rm -f "$W26_5B_LOG"
+
+# W26-6 後方互換: 従来の位置引数形式（comment <#> <テキスト>）はそのまま動く
+W26_6_LOG=$(mktemp /tmp/todo-test-w26-6-XXXXXX)
+W26_6_RESP='{"issues.createComment":[{"data":{"id":6}}]}'
+W26_6_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W26_6_RESP" OCTOKIT_STUB_LOG_ENV="$W26_6_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run comment 47 "従来形式の位置引数コメント" 2>&1); W26_6_EC=$?
+assert_exit_ok "W26-6 従来の位置引数形式(comment <#> <テキスト>): exit 0（後方互換）" "$W26_6_EC"
+assert_contains "W26-6: body が位置引数のテキストそのもの" '"body":"従来形式の位置引数コメント"' "$(log_lines_for_method "$W26_6_LOG" issues.createComment)"
+rm -f "$W26_6_LOG"
+
+# W26-7【境界】単一ハイフンで始まる本文は誤ってフラグ扱いされない（`--` 判定のみ対象のため）
+W26_7_LOG=$(mktemp /tmp/todo-test-w26-7-XXXXXX)
+W26_7_RESP='{"issues.createComment":[{"data":{"id":7}}]}'
+W26_7_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W26_7_RESP" OCTOKIT_STUB_LOG_ENV="$W26_7_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run comment 48 "- 箇条書きから始まるコメント" 2>&1); W26_7_EC=$?
+assert_exit_ok "W26-7【境界】単一ハイフンで始まる本文はフラグ扱いされない: exit 0" "$W26_7_EC"
+assert_contains "W26-7: body が単一ハイフン始まりのテキストそのまま" '"body":"- 箇条書きから始まるコメント"' "$(log_lines_for_method "$W26_7_LOG" issues.createComment)"
+rm -f "$W26_7_LOG"
+
+# W26-8 テキスト省略（位置引数もフラグもなし）→ エラー・非0終了（既存挙動の回帰確認）
+W26_8_LOG=$(mktemp /tmp/todo-test-w26-8-XXXXXX)
+: > "$W26_8_LOG"
+W26_8_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W26_8_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run comment 49 2>&1); W26_8_EC=$?
+assert_exit_fail "W26-8 テキスト省略（位置引数もフラグもなし）: exit非0（既存挙動の回帰確認）" "$W26_8_EC"
+assert_eq "W26-8: issues.createComment は呼ばれない" "0" "$(log_count "$W26_8_LOG" issues.createComment)"
+rm -f "$W26_8_LOG"
+
+# W26-9【核心・回帰】Markdown水平線「--- 区切り線 ---」は `--` の直後がハイフンで
+# フラグの字面（英字始まり）に該当しないため、エラーにならず本文としてそのまま投稿される
+# （実測 2026-08-29: `tok.startsWith('--')` 一律エラー版では exit 1 になっていた副作用の回帰テスト）。
+W26_9_LOG=$(mktemp /tmp/todo-test-w26-9-XXXXXX)
+W26_9_RESP='{"issues.createComment":[{"data":{"id":9}}]}'
+W26_9_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W26_9_RESP" OCTOKIT_STUB_LOG_ENV="$W26_9_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run comment 50 "--- 区切り線 ---" 2>&1); W26_9_EC=$?
+assert_exit_ok "W26-9【核心・回帰】Markdown水平線相当の本文(--- 区切り線 ---): exit 0" "$W26_9_EC"
+assert_contains "W26-9: body が水平線テキストそのまま投稿される" '"body":"--- 区切り線 ---"' "$(log_lines_for_method "$W26_9_LOG" issues.createComment)"
+rm -f "$W26_9_LOG"
+
+# W26-10【核心・回帰】本文が「--body」という文字列で始まっていても、フラグの字面
+# （1語・英数字/ハイフンのみ）ではない（空白と日本語を含む）ため本文として扱われる
+W26_10_LOG=$(mktemp /tmp/todo-test-w26-10-XXXXXX)
+W26_10_RESP='{"issues.createComment":[{"data":{"id":10}}]}'
+W26_10_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W26_10_RESP" OCTOKIT_STUB_LOG_ENV="$W26_10_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run comment 51 "--body を説明する文章" 2>&1); W26_10_EC=$?
+assert_exit_ok "W26-10【核心・回帰】「--body」で始まる本文(--body を説明する文章): exit 0" "$W26_10_EC"
+assert_contains "W26-10: body が --body で始まるテキストそのまま投稿される" '"body":"--body を説明する文章"' "$(log_lines_for_method "$W26_10_LOG" issues.createComment)"
+rm -f "$W26_10_LOG"
+
+# W26-11【仕様固定】位置引数とフラグを同時指定した場合、フラグが優先され位置引数は無視される
+# （仕様判断: 現状の「フラグ優先・位置引数は無視」で仕様として確定。偶発挙動ではなく
+# 意図した挙動であることをテストでロックインする）
+W26_11_LOG=$(mktemp /tmp/todo-test-w26-11-XXXXXX)
+W26_11_RESP='{"issues.createComment":[{"data":{"id":11}}]}'
+W26_11_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W26_11_RESP" OCTOKIT_STUB_LOG_ENV="$W26_11_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run comment 52 "位置引数のテキスト（無視される）" --body "フラグの本文（採用される）" 2>&1); W26_11_EC=$?
+assert_exit_ok "W26-11【仕様固定】位置引数+フラグ同時指定: exit 0" "$W26_11_EC"
+assert_contains "W26-11: body はフラグ側の値になる" '"body":"フラグの本文（採用される）"' "$(log_lines_for_method "$W26_11_LOG" issues.createComment)"
+assert_not_contains "W26-11: 位置引数側のテキストは使われない（仕様として確定）" '"body":"位置引数のテキスト（無視される）"' "$(log_lines_for_method "$W26_11_LOG" issues.createComment)"
+rm -f "$W26_11_LOG"
+
+# ──────────────────────────────────────────
 # 結果サマリー（run-tests.sh から集計加算するための機械可読な行）
 # ──────────────────────────────────────────
 echo ""

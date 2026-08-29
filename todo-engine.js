@@ -184,7 +184,7 @@ const MESSAGES = {
     'help.weekly_project_audit': '/todo weekly-project-audit      全プロジェクトを棚卸し（next欠落・停滞を検出）',
     'help.show': '/todo show <#> [--json]          個別タスク詳細表示',
     'help.schema': '/todo schema                    --json 出力のフィールド定義を表示',
-    'help.comment': '/todo comment <#> <テキスト>     Issueにコメントを追加',
+    'help.comment': '/todo comment <#> <テキスト> [--body "本文"] [--body-file <path>]  Issueにコメントを追加',
     'help.api': '/todo api <subcommand> [args...] JSON API（list-comments 等。詳細は todo.md 参照）',
     'help.help': '/todo help                      このヘルプを表示',
     'help.review_migrated': '💡 review は /todo のサブコマンドではなくなりました。使い方は todo.md の「対話コマンド」節を参照してください。',
@@ -549,7 +549,7 @@ const MESSAGES = {
     'help.weekly_project_audit': '/todo weekly-project-audit      Audit all projects (detect missing next / stale)',
     'help.show': '/todo show <#> [--json]          Show task detail',
     'help.schema': '/todo schema                    Show JSON field schema for --json output',
-    'help.comment': '/todo comment <#> <text>        Add a comment to an issue',
+    'help.comment': '/todo comment <#> <text> [--body "text"] [--body-file <path>]  Add a comment to an issue',
     'help.api': '/todo api <subcommand> [args...] JSON API (list-comments, etc. See todo.md for details)',
     'help.help': '/todo help                      Show this help',
     'help.review_migrated': '💡 review is no longer a /todo subcommand. See the "Interactive Commands" section in todo.md for how to use it.',
@@ -3939,14 +3939,68 @@ async function createCommentSanitized(octokit, owner, repo, num, rawText) {
 }
 
 // comment コマンド: 任意タイミングの独立コメント追加
+//
+// #1919: 以前は tokens[1] だけを本文として読み、tokens[2] 以降を無条件に捨てていた。
+// このため `comment <#> --body-file <path>` を渡すと「--body-file」という文字列
+// そのものが本文として投稿され、<path> は黙って失われた（エラーなし・exit 0）。
+// 本実装は --body / --body-file（runAdd と同じ --body-file 優先）に対応しつつ、
+// 未知の `--` フラグ（値欠落を含む）は黙って本文へ混入させずエラー終了する。
+//
+// #1919 追補（実測 2026-08-29）: 当初 `tok.startsWith('--')` を丸ごとエラー扱いに
+// していたところ、Markdown水平線（`--- 区切り線 ---`）や「--body を説明する文章」のような
+// 正当な本文まで弾いてしまう副作用が発覚した。フラグの字面（1語・英字始まり）だけを
+// 未知フラグとして扱うよう UNKNOWN_FLAG_RE で判定を絞り込んだ。
 async function runComment(octokit, owner, repo, tokens) {
   const num = parseInt(tokens[0]);
   if (!num) { process.stderr.write(t('error.positive_int')+'\n'); process.exit(1); }
   validateNumber(String(num));
-  // テキストは第2トークン（Claudeが単一トークンとして渡す）
-  const text = tokens[1] || '';
+
+  const rest = tokens.slice(1);
+  const usage = 'Usage: /todo comment <#> <text> | --body "text" | --body-file <path>';
+  // フラグの字面（`--` + 英字始まり + 英数字/ハイフンのみの1語）のみを未知フラグ候補とする。
+  // 空白・全角文字・"--" の直後がハイフン等（Markdown水平線 "---" 等）は本文として扱う。
+  const UNKNOWN_FLAG_RE = /^--[A-Za-z][A-Za-z0-9-]*$/;
+
+  // --body / --body-file を走査しつつ、未知の `--` フラグを検出する。
+  // 単一ハイフン始まりの本文（例: "- 箇条書き"）はここでは対象外（`--` 判定のみ）。
+  let bodyOpt = null, bodyFileOpt = null;
+  for (let i = 0; i < rest.length; i++) {
+    const tok = rest[i];
+    if (tok === '--body' && i + 1 < rest.length) {
+      bodyOpt = rest[i + 1]; i++;
+    } else if (tok === '--body-file' && i + 1 < rest.length) {
+      bodyFileOpt = rest[i + 1]; i++;
+    } else if (UNKNOWN_FLAG_RE.test(tok)) {
+      // 未知のフラグ、または値が欠落した既知フラグ（末尾の --body-file 等）。
+      // ここで本文へ連結せず即エラー終了する（#1919 の再発防止の核）。
+      process.stderr.write(`${usage}\nError: unknown flag: ${tok}\n`);
+      process.exit(1);
+    }
+  }
+
+  let text;
+  if (bodyFileOpt !== null) {
+    // --body-file 優先（runAdd と同じ挙動・同じエラーメッセージを再利用）
+    const resolvedPath = path.resolve(bodyFileOpt);
+    if (!fs.existsSync(resolvedPath)) {
+      process.stderr.write(tpl('error.body_file_not_found', { path: resolvedPath })+'\n');
+      process.exit(1);
+    }
+    try {
+      text = fs.readFileSync(resolvedPath, 'utf8');
+    } catch (e) {
+      process.stderr.write(tpl('error.body_file_read_failed', { msg: e.message })+'\n');
+      process.exit(1);
+    }
+  } else if (bodyOpt !== null) {
+    text = bodyOpt;
+  } else {
+    // 従来形式: 位置引数（Claudeが単一トークンとして渡す。#1919 以前と同じ挙動を維持）
+    text = rest[0] || '';
+  }
+
   if (!text.trim()) {
-    process.stderr.write('Usage: run comment <#> <text>\n');
+    process.stderr.write(`${usage}\n`);
     process.exit(1);
   }
   await createCommentSanitized(octokit, owner, repo, num, text);

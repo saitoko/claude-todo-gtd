@@ -111,7 +111,7 @@ MCP_MODEでは `bash ~/.claude/todo.sh` は呼び出さない。GitHub MCP ツ�
 
 | コマンド | 引数 | 説明 |
 |---------|------|------|
-| `comment` | `<#> <テキスト>` | Issue にコメントを追加（任意タイミング）。書き込み系（`run_in_background: true`） |
+| `comment` | `<#> <テキスト> [--body "本文"] [--body-file <path>]` | Issue にコメントを追加（任意タイミング）。`--body`/`--body-file` で本文を直接指定可能（`--body-file` が優先、`add` と同じ挙動）。位置引数の `<テキスト>` も従来通り使用可（`--body`/`--body-file` 未指定時）。`--body`/`--body-file` 以外の `--` で始まる引数は未知フラグとしてエラー終了する（本文として黙って投稿しない）。書き込み系（`run_in_background: true`） |
 
 ユーザーが「#N の経緯まとめて」「#N の状況確認」「#N にこれまでのメモ一覧を見せて」のような自然言語で依頼した場合は、
 `bash ~/.claude/todo.sh api list-comments <N>` を実行し、取得結果を要約して返す。
