@@ -1736,7 +1736,7 @@ assert_not_contains "en: help に旧 daily-review コマンド行が残ってい
 assert_not_contains "en: help に旧 weekly-review コマンド行が残っていない" "weekly-review              Weekly review"                 "$HELP_EN"
 
 # 1-3: 誘導文言としては残っているが、環境依存の具体スキル名(/gtd-collect 等)は書かず、
-#      環境非依存に todo.md の「対話コマンド」節へ誘導する（COO方針・公開リポには
+#      環境非依存に todo.md の「対話コマンド」節へ誘導する（方針決定済み・公開リポには
 #      /gtd-collect 等のスキルが存在しないため。ユーザー承認済み、2026-08-23）
 assert_contains "ja: help の誘導文言が todo.md を参照させている"         "todo.md"           "$HELP_JA"
 assert_contains "ja: help の誘導文言が「対話コマンド」節を指している"     "対話コマンド"       "$HELP_JA"

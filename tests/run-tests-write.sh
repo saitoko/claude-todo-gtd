@@ -1366,7 +1366,7 @@ assert_no_japanese "W16-20b migrate 本実行(en): 出力に日本語が含ま�
 # §W20  runMigrateSubIssue の sub_issue_id 正当性・422判別（Issue #1879）
 # 症状: fetchAllOpen が id を返さず sub_issue_id:undefined で POST していた（欠陥1）。
 # かつ 422 を無条件に「既登録」と誤判定していた（欠陥2）。
-# 以下は「意図的破壊」で有効性を検証済み（COO完了報告に破壊時の FAIL 結果を記載）。
+# 以下は「意図的破壊」で有効性を検証済み（完了報告に破壊時の FAIL 結果を記載）。
 # ──────────────────────────────────────────
 echo ""
 echo "§W20  runMigrateSubIssue の sub_issue_id 正当性・422判別（Issue #1879）"
@@ -1432,7 +1432,7 @@ rm -f "$W1879_3_LOG"
 #          として close 前に切り出し、depends_on昇格・project昇格ヒントは postDoneProcessing
 #          として close 後のまま維持。理由: fetchAllOpenが完了直後の自分自身を候補に
 #          混入させてしまうため）。
-# 以下は「意図的破壊」で有効性を検証済み（COO完了報告に破壊時の FAIL 結果を記載）。
+# 以下は「意図的破壊」で有効性を検証済み（完了報告に破壊時の FAIL 結果を記載）。
 echo ""
 echo "§W21  状態整合性の順序統一 — validate-before-mutate / create-before-close（Issue #1652）"
 
@@ -1859,7 +1859,7 @@ rm -f "$W1880_4_LOG"
 # 仮に欠落した場合、addSubIssueの422判別（本節の核心）に加え、
 # list project・weekly-project-audit・unlinkの計4箇所が影響を受ける
 # （呼び出し元の一覧はコード側コメント参照）。
-# 以下は「意図的破壊」で有効性を検証済み（COO完了報告に破壊時の FAIL 結果を記載）。
+# 以下は「意図的破壊」で有効性を検証済み（完了報告に破壊時の FAIL 結果を記載）。
 # ──────────────────────────────────────────
 echo ""
 echo "§W23  listSubIssues のページング対応（Issue #1881）"
