@@ -51,7 +51,7 @@ cp todo.sh ~/.claude/todo.sh
 ## テスト
 
 - テストランナー: `bash tests/run-tests.sh`（+ 書き込み系は `bash tests/run-tests-write.sh` として個別実行も可能。通常は `run-tests.sh` から自動的に呼び出される）
-- 自動テスト総件数: **1,351件以上**（read-only系 + 書き込み系の合算。全件PASSが目安）
+- 自動テスト総件数: **1,536件**（read-only系 926 + 書き込み系 610。`bash tests/run-tests.sh` の最終行が出す実測値。2026-09-01 時点。全件PASSが目安）
 - シナリオ一覧: `tests/scenarios.md`
 - 全件 PASS が Pull Request マージの必須条件
 - 件数を更新する際は README.md の記載も合わせて更新する
@@ -280,6 +280,57 @@ for (let i = 0; i < rest.length; i++) {
 
 **テスト:** `tests/run-tests-write.sh` §W26（32ケース: `--body-file` 実ファイル反映＋元事故の再現確認、`--body` 反映、併用時の優先順位、存在しないパスのエラー、未知フラグのエラー（直接再現）、値欠落フラグのエラー、位置引数の後方互換、単一ハイフン始まり本文の境界確認、テキスト省略時の既存挙動、Markdown水平線・「--body」で始まる本文が誤ってフラグ扱いされないことの回帰確認、位置引数+フラグ同時指定時の仕様固定）。全1445件PASS（書き込み系539/539）。実 GitHub API への書き込みは行わず、スタブ経由のみで検証した（本コマンドは本番 Issue へのコメント投稿という不可逆の副作用を持つため）。
 
+### 2026-09-01: `add` が未知フラグを黙ってタイトルへ連結していた（Issue #1921 パターンA）
+
+**症状:** `add next "設計書を書く" --boddy-file /tmp/body.txt` のようにフラグ名をタイプミスすると、エラーも警告も出ないまま `設計書を書く --boddy-file /tmp/body.txt` というタイトル・本文空の Issue が **exit 0** で作られていた。#1919（`comment`）とまったく同じ構造で、失われるもの（本文）・混入するもの（フラグ名とその値）・exit code（0）まで一致する。
+
+**原因:** `parseArgs()` が解釈できなかったトークンは `result.extra` に落ちる。`runAdd()` はその `extra` をフィルタして空白区切りで連結したものをタイトルにしていたため、未知フラグがそのままタイトルの一部になっていた。
+
+```js
+// NG: extra に残った `--boddy-file` も `/tmp/body.txt` もタイトルへ素通りする
+const parsed = parseArgs(tokens);
+const titleTokens = parsed.extra.filter(s => s.trim());
+const title = titleTokens.join(' ');
+```
+
+同じ経路で以下も混入していた（いずれも修正前コードで実測）。
+
+| 入力 | 修正前の実測結果 |
+|---|---|
+| `add next "タイトル" --due`（値欠落。`parseArgs` の `i+1 < remaining.length` を満たさない） | exit 0 / title `タイトル --due` |
+| `add next "タイトル" --p4`（`/^--p[123]$/` の境界外） | exit 0 / title `タイトル --p4` / priority は既定の p3 のまま |
+| `add next " " --foo`（空白トークン + 未知フラグ） | exit 0 / title `--foo` |
+
+**修正:** #1919 で `runComment()` に導入した判定を `findUnknownFlag(tokens, allowedFlags)` としてモジュールスコープへ切り出し、`runAdd()` が `parseArgs()` の直後に1回呼ぶようにした。未知フラグを検出したら Usage 行・エラー本文・ヒント行を stderr へ出して `exit 1` する。
+
+```js
+// OK: 未知フラグはタイトルにせず、API 副作用の前に落とす
+const parsed = parseArgs(tokens);
+const unknownFlag = findUnknownFlag(parsed.extra, []);
+if (unknownFlag) {
+  process.stderr.write(`${ADD_USAGE}\n`);
+  process.stderr.write(tpl('error.unknown_flag', { flag: unknownFlag })+'\n');
+  process.stderr.write(t('error.unknown_flag_hint')+'\n');
+  process.exit(1);
+}
+```
+
+**検査位置の制約（2点。どちらも満たさない配置は不可）:**
+
+1. `error.title_empty`（タイトル空チェック）**より前**。`add next --boddy-file` のようにフラグしか渡されなかった場合、「タイトルが空です」より「不明なフラグです: --boddy-file」の方が原因に直結する。`titleTokens` が空になるのは extra が空か空白のみのときで、そのとき未知フラグは定義上存在しないため、この順序で `title_empty` が出なくなるケースは生じない（`add next " " --foo` で実測確認）
+2. `ensureLabel()`（コンテキストラベル作成）**より前**。バリデーションを API 副作用より後に置くと、エラーで落ちる前にラベル作成の API 呼び出しが発生する（`resume_condition` 実装時と同じ教訓）。`parseArgs()` の直後に置けば自動的に満たされる
+
+**`allowedFlags` 引数について:** パターンA（`runAdd`）では常に空配列を渡すが、シグネチャには最初から持たせてある。`runList()` のように `parseArgs()` の後で `extra` から `--group` / `--no-due` / `--no-estimate` を自前に読むハンドラがあり、許可リストなしで同じ検査を適用すると正常な入力が壊れるため。**許可リストは `parseArgs()` の内部ではなく呼び出し側に置くこと**（ハンドラごとに「extra に正当に残るフラグ」が異なる）。
+
+**実装時に踏んだ落とし穴（Temporal Dead Zone）:** 判定用の正規表現定数 `UNKNOWN_FLAG_RE` を設計どおり `parseArgs()` の直前に `const` で置いたところ、診断サブコマンド `find-unknown-flag` を実行すると `ReferenceError: Cannot access 'UNKNOWN_FLAG_RE' before initialization` で落ちた。本ファイルはメインの `switch` ディスパッチャを**モジュール評価の途中**（`parseArgs()` の定義行より前）で実行するため、利用側の関数宣言は巻き上げられても `const` は初期化前（TDZ）だったのが原因。既存の診断サブコマンドで問題が表面化していなかったのは、参照先が関数宣言（巻き上げられる）か、あるいは `const` であってもファイル冒頭の定数ブロックに置かれていたため（例: `case 'gtd-label'` は冒頭の `GTD_DISPLAY` を直接参照している）。「参照先がすべて関数宣言だから安全」ではない。対処として `UNKNOWN_FLAG_RE` をファイル冒頭の定数ブロックへ移し、同所に「ここから動かさないこと」の理由をコメントで残した。
+
+**教訓:** 本ファイルで**モジュールスコープの `const` を新設し、それを診断サブコマンド（トップレベル `switch` 内）から間接的にでも参照する**場合、宣言はファイル冒頭の定数ブロックに置くこと。関数宣言と違い `const`/`let` は巻き上げられても初期化されない。
+
+**中間状態（意図したもの・次工程への申し送り）:** 本修正で `add` のエラーメッセージは ja/en 対応（`error.unknown_flag` / `error.unknown_flag_hint`）になったが、`comment`（#1919）は英語ハードコードのまま残している。既存テスト §W26-5 が日本語モードで `unknown flag: --boddy-file` をアサートしており、`comment` 側を i18n 化すると FAIL するため。文言の統一は、このアサーション更新と同一の変更でまとめて行うこと。
+
+**対象ファイル:** `todo-engine.js`（新設 `UNKNOWN_FLAG_RE` / `findUnknownFlag()` / `ADD_USAGE` / 診断サブコマンド `find-unknown-flag`、`runAdd()` への配線、`MESSAGES` ja/en 2キー、`help.add` ja/en、`runComment()` のローカル定数削除）、`todo.md`
+
+**テスト:** `tests/run-tests.sh` §51（判定器の単体テスト20件: 正常系・許可リスト・入力文字パターン・境界値・500要素のパフォーマンス）+ `tests/run-tests-write.sh` §W27（`add` の振る舞いテスト71件: 正常系5・異常系・i18n・入力文字パターン・境界値・セキュリティ・200トークンのパフォーマンス）。全1536件PASS（書き込み系610/610）。追加したガードを一時的にコメントアウトして実行し、異常系ケース（未知フラグ・値欠落フラグ・存在しないフラグ・副作用ゼロ・メッセージ優先順位・境界値）が確実に FAIL することを実測で確認した。この確認過程で「ガードを外しても PASS したままのアサーション」が6件見つかったため（成功時の出力にもフラグ名の字面が現れるため、フラグ名の部分一致では検証にならなかった）、エラーメッセージ全文での判定に書き換えている。`runComment()` のローカル定数削除が無害であることは、§W26 全32件が無変更で PASS すること（削除前後で同数）を実測して確認した。GitHub への実書き込みは行わず、スタブ経由のみで検証した。
 
 ## 翻訳方針（i18n）
 

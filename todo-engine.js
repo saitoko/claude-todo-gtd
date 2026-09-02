@@ -21,6 +21,19 @@ const PRI_COLORS = { p1: 'B60205', p2: 'FBCA04', p3: '0075CA' };
 // recur の曜日固定サフィックス（weekly:sat 等）で使う曜日名→Date.getDay()数値の対応表。
 // キーの集合が「有効な曜日サフィックス一覧」を兼ねる（Issue #1676）
 const RECUR_WEEKDAY_TO_DOW = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
+// 未知フラグ判定（Issue #1919 で runComment に導入した判定を #1921 で共通化）。
+// フラグの字面（`--` + 英字始まり + 英数字/ハイフンのみで構成される1語）のみを対象とする。
+// 空白を含むトークン・`--` の直後がハイフン（Markdown水平線 `---` 等）・非ASCII 始まりは
+// 「フラグではない自由記述」として通す（#1919 の追補で実測により確定した線引き。
+// 一律 `startsWith('--')` にすると `--- 区切り線 ---` のような正当な入力まで弾いてしまう）。
+//
+// 【この定数をここ（ファイル冒頭の定数ブロック）から動かさないこと】
+// 利用者の findUnknownFlag() は関数宣言なので巻き上げられるが、`const` は巻き上げられても
+// 初期化されない（TDZ）。本ファイルはメインの switch ディスパッチャを**モジュール評価の
+// 途中（parseArgs の定義より前）**で実行するため、診断サブコマンド find-unknown-flag から
+// findUnknownFlag() を呼ぶと "Cannot access 'UNKNOWN_FLAG_RE' before initialization" で
+// 落ちる。実装時に実測（2026-09-01）。
+const UNKNOWN_FLAG_RE = /^--[A-Za-z][A-Za-z0-9-]*$/;
 
 // ─── i18n ───
 const LANG = process.env.LANG_ENV || 'ja';
@@ -153,7 +166,7 @@ const MESSAGES = {
     'help.section_project': '### プロジェクト管理',
     'help.section_other': '### その他',
     'help.section_migrated': '### 統合済みコマンド',
-    'help.add': '/todo [GTD] <タイトル> [--body "本文"] [--body-file <path>]  タスク追加（GTD省略時: inbox）',
+    'help.add': '/todo [GTD] <タイトル> [--body "本文"] [--body-file <path>]  タスク追加（GTD省略時: inbox。未知の -- フラグはエラー。タイトルに含めるならクォートする）',
     'help.add_explicit': '/todo add <タイトル>             英字で始まるタイトルは add の明示が必須（例: /todo add My Task。add なしだとコマンド名と混同されエラー）',
     'help.list': '/todo list [フィルタ] [--json]   タスク一覧',
     'help.done': '/todo done <#> [--actual 時間] [--note "テキスト"]  タスク完了',
@@ -262,6 +275,8 @@ const MESSAGES = {
     'error.gtd_label_required': 'エラー: GTDラベルは {labels} のいずれかです。',
     'error.gtd_label_missing': 'エラー: GTDラベルを指定してください。',
     'error.title_empty': 'エラー: タイトルが空です。',
+    'error.unknown_flag': 'エラー: 不明なフラグです: {flag}',
+    'error.unknown_flag_hint': 'ヒント: この語をタイトルに含めたい場合は、タイトル全体を1つの引数としてクォートしてください（例: /todo add next "--dry-run を追加する"）。タイトルがこの語1語だけの場合は、前後に語を足してください（例: 「--dry-run」の扱いを決める）。',
     'hint.project_outcome': '💡 ヒント: プロジェクト名は「〜している状態」「〜が完了している」のような\n   成果物（outcome）の形で書くと Next Action を導出しやすくなります。',
     'label.desc_context': 'コンテキスト',
     'label.desc_tag': 'タグ',
@@ -518,7 +533,7 @@ const MESSAGES = {
     'help.section_project': '### Project Management',
     'help.section_other': '### Other',
     'help.section_migrated': '### Merged Commands',
-    'help.add': '/todo [GTD] <title> [--body "text"] [--body-file <path>]  Add task (default: inbox)',
+    'help.add': '/todo [GTD] <title> [--body "text"] [--body-file <path>]  Add task (default: inbox; unknown -- flags error out, quote the title to keep them)',
     'help.add_explicit': '/todo add <title>                Required for titles starting with a letter (e.g., /todo add My Task; without add it is misread as a command name and errors)',
     'help.list': '/todo list [filter] [--json]     List tasks',
     'help.done': '/todo done <#> [--actual time] [--note "text"]  Mark done',
@@ -627,6 +642,8 @@ const MESSAGES = {
     'error.gtd_label_required': 'Error: GTD label must be one of {labels}.',
     'error.gtd_label_missing': 'Error: Please specify a GTD label.',
     'error.title_empty': 'Error: Title is empty.',
+    'error.unknown_flag': 'Error: unknown flag: {flag}',
+    'error.unknown_flag_hint': 'Hint: to keep this word in the title, quote the whole title as a single argument (e.g. /todo add next "add --dry-run"). If the title is only this word, add words around it (e.g. "decide how to handle --dry-run").',
     'hint.project_outcome': '💡 Hint: Project titles are easier to derive Next Actions from when written\n   as an outcome (e.g. "X is done", "X has been completed").',
     'label.desc_context': 'Context',
     'label.desc_tag': 'Tag',
@@ -1850,7 +1867,7 @@ function help() {
 
   w(t('help.section_task')+'\n');
   w('```\n');
-  // 'add_explicit' は 'add' の直後に配置（Issue #1884/#1906: COO再測定で判明した真正の欠落。
+  // 'add_explicit' は 'add' の直後に配置（Issue #1884/#1906: 再測定で判明した真正の欠落。
   // help.add の汎用行「/todo [GTD] <タイトル>」は GTD ラベル同梱ケースをカバーするが、
   // GTDラベルを伴わない英字タイトルで add を明示する用法は別途明記が必要）。
   for (const k of ['add','add_explicit','list','done','move','edit','rename','due','desc','recur','priority','search']) {
@@ -2890,6 +2907,17 @@ switch (cmd) {
   case 'next-due':        process.stdout.write(nextDue(args[1], args[2])); break;
   case 'next-due-catchup': process.stdout.write(JSON.stringify(nextDueCatchUp(args[1], args[2], args[3]))); break;
   case 'cycles-overdue':  process.stdout.write(String(computeCyclesOverdue(args[1], args[2], args[3]))); break;
+  case 'find-unknown-flag': {
+    // 未知フラグ判定の単体テスト用（Issue #1921）。入力は JSON 配列の文字列
+    // （例: '["設計書を書く","--boddy-file"]' と許可リスト '["--group"]'）。
+    // 検出したフラグ文字列を、なければ空文字列を stdout へ返す。
+    // Octokit スタブも GitHub 接続も不要な純粋関数なので、入力文字パターン・境界値を
+    // 大量に回して検証できる（tests/run-tests.sh §51）。
+    const toks = JSON.parse(args[1] || '[]');
+    const allowed = JSON.parse(args[2] || '[]');
+    process.stdout.write(findUnknownFlag(toks, allowed) || '');
+    break;
+  }
   case 'compute-github-ms': {
     // 区間統合アルゴリズム単体テスト用（Issue #455）。入力はms単位の [start, end] 配列
     // （例: '[[0,100],[50,150],[200,250]]'）。内部でns相当に換算してcomputeGithubMs()を
@@ -3155,6 +3183,33 @@ async function initOctokit() {
   return TIMING_ENABLED ? wrapOctokitTiming(realOctokit) : realOctokit;
 }
 
+// tokens のうち、allowedFlags に載っていないフラグ字面のトークンを先頭から探す。
+// 判定に使う UNKNOWN_FLAG_RE はファイル冒頭の定数ブロックで定義している（TDZ 回避。理由は同所のコメント参照）。
+// 見つかればそのトークン文字列、なければ null を返す（副作用なしの純粋関数）。
+// allowedFlags: そのハンドラが parseArgs の後で自前に解釈するフラグの許可リスト。
+//   runAdd（#1921 パターンA）は自前解釈するフラグを持たないため空配列を渡す。
+//   runList のように extra から `--group` 等を自分で読むハンドラは、それらを許可リストに
+//   載せて渡すこと（許可リストは parseArgs 内ではなく呼び出し側に置くのが正しい。
+//   ハンドラごとに「extra に正当に残るフラグ」が異なるため）。
+function findUnknownFlag(tokens, allowedFlags) {
+  const allowed = allowedFlags || [];
+  for (const tok of tokens) {
+    if (UNKNOWN_FLAG_RE.test(tok) && allowed.indexOf(tok) < 0) return tok;
+  }
+  return null;
+}
+
+// /todo add の Usage 行（未知フラグ検出時に stderr へ出す）。
+// DEVELOPMENT.md §翻訳方針「Usage: 文字列は常時英語で統一」に従い t() を通さない。
+// 掲載範囲: runAdd が実際に参照するフラグのみを載せる。parseArgs は --actual / --note /
+// --due-offset / --color も消費するが、runAdd はこの4つを一度も参照しない（値は黙って
+// 捨てられる。#1921 第2弾の論点）。効かないフラグを Usage に載せると「効く」と誤解させる
+// ため意図的に除外している。
+const ADD_USAGE = 'Usage: /todo add [GTD] <title> [@ctx...] [#tag...] [--due <date>] [--desc <text>] '
+                + '[--body "text"] [--body-file <path>] [--recur <pattern>] [--project <#>] '
+                + '[--priority p1|p2|p3] [--p1|--p2|--p3] [--estimate <time>] [--label <name>] [--activate <date>] '
+                + '[--before <duration>] [--depends-on <#>] [--resume-condition <text>]  (see: /todo help)';
+
 // 汎用引数パーサー
 // tokens: string[]
 // 戻り値: { gtd, title, contexts, due, desc, recur, project, priority, estimate, actual, dueOffset, color, activate, before, dependsOn, note, extra }
@@ -3397,6 +3452,21 @@ async function runAdd(octokit, owner, repo, tokens) {
     gtd = tokens.shift();
   }
   const parsed = parseArgs(tokens);
+
+  // Issue #1921 パターンA: parseArgs が解釈できなかった `--` 始まりのトークンを
+  // 黙ってタイトルへ連結しない（元の症状: `add next "設計書を書く" --boddy-file /tmp/x` が
+  // タイトル「設計書を書く --boddy-file /tmp/x」の Issue を exit 0 で作っていた）。
+  // 値が欠落した既知フラグ（末尾の `--due` 等。parseArgs の `i+1 < remaining.length`
+  // 条件を満たさず extra に残る）もここで捕まる。
+  // 検査位置の制約: (1) title_empty より前（原因に直結するメッセージを優先する）、
+  // (2) ensureLabel（コンテキストラベル作成）より前＝バリデーションを API 副作用より前に置く。
+  const unknownFlag = findUnknownFlag(parsed.extra, []);
+  if (unknownFlag) {
+    process.stderr.write(`${ADD_USAGE}\n`);
+    process.stderr.write(tpl('error.unknown_flag', { flag: unknownFlag })+'\n');
+    process.stderr.write(t('error.unknown_flag_hint')+'\n');
+    process.exit(1);
+  }
 
   // タイトル: 残りトークンを連結
   const titleTokens = parsed.extra.filter(s => s.trim());
@@ -3957,9 +4027,10 @@ async function runComment(octokit, owner, repo, tokens) {
 
   const rest = tokens.slice(1);
   const usage = 'Usage: /todo comment <#> <text> | --body "text" | --body-file <path>';
-  // フラグの字面（`--` + 英字始まり + 英数字/ハイフンのみの1語）のみを未知フラグ候補とする。
+  // 未知フラグ候補の判定はモジュールスコープの UNKNOWN_FLAG_RE（ファイル冒頭の定数ブロックで定義）を使う。
+  // フラグの字面（`--` + 英字始まり + 英数字/ハイフンのみの1語）のみを対象とし、
   // 空白・全角文字・"--" の直後がハイフン等（Markdown水平線 "---" 等）は本文として扱う。
-  const UNKNOWN_FLAG_RE = /^--[A-Za-z][A-Za-z0-9-]*$/;
+  // （#1921 で runAdd と共通化した。判定内容・出力は #1919 当時のローカル定数版と同一）
 
   // --body / --body-file を走査しつつ、未知の `--` フラグを検出する。
   // 単一ハイフン始まりの本文（例: "- 箇条書き"）はここでは対象外（`--` 判定のみ）。

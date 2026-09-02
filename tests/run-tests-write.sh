@@ -2256,6 +2256,344 @@ assert_not_contains "W26-11: 位置引数側のテキストは使われない（
 rm -f "$W26_11_LOG"
 
 # ──────────────────────────────────────────
+# §W27  runAdd — 未知フラグを黙ってタイトルへ連結しない（Issue #1921 パターンA）
+# 事故: `add next "設計書を書く" --boddy-file /tmp/body.txt` を実行すると、parseArgs が
+# 解釈できなかった `--boddy-file` と `/tmp/body.txt` がそのままタイトルへ連結され、
+# タイトル「設計書を書く --boddy-file /tmp/body.txt」・本文空の Issue が exit 0 で
+# 作られていた（#1919 の runComment と同型の「静かな期待値乖離」）。
+# 判定器 findUnknownFlag() 自体の単体テストは run-tests.sh §51 を参照。
+# 本セクションは runAdd の振る舞い（exit code・issues.create の抑止・検査順序）を検証する。
+# ──────────────────────────────────────────
+echo ""
+echo "§W27  runAdd — 未知フラグを黙ってタイトルへ連結しない（Issue #1921 パターンA）"
+
+# ラベル存在確認(GET)3回分 + issues.create 1回分の既定応答。GTD以外のラベル
+# （context/tag/priority）の作成数に応じて GET が呼ばれるため多めに用意する。
+W27_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{},{},{},{}],"issues.create":[{"data":{"number":7001,"html_url":"https://github.com/test-owner/test-repo/issues/7001"}}]}'
+
+# ── 正常系（既存挙動が壊れないこと） ──
+
+# W27-1 通常のタイトル
+W27_1_LOG=$(mktemp /tmp/todo-test-w27-1-XXXXXX)
+W27_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W27_RESP" OCTOKIT_STUB_LOG_ENV="$W27_1_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add next "設計書を書く" 2>&1); W27_1_EC=$?
+assert_exit_ok "W27-1 正常系(通常タイトル): exit 0" "$W27_1_EC"
+assert_eq "W27-1: issues.create 呼び出し1回" "1" "$(log_count "$W27_1_LOG" issues.create)"
+assert_contains "W27-1: title がそのまま" '"title":"設計書を書く"' "$(log_lines_for_method "$W27_1_LOG" issues.create)"
+rm -f "$W27_1_LOG"
+
+# W27-2 既知フラグ一式（§W4-1 と同一入力）を誤検知しないこと
+W27_2_LOG=$(mktemp /tmp/todo-test-w27-2-XXXXXX)
+W27_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W27_RESP" OCTOKIT_STUB_LOG_ENV="$W27_2_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run add next @office '#urgent' --p1 --due 2026-04-10 --before 3d Buy office supplies 2>&1); W27_2_EC=$?
+assert_exit_ok "W27-2 正常系(既知フラグ一式・§W4-1と同一入力)を誤検知しない: exit 0" "$W27_2_EC"
+assert_eq "W27-2: issues.create 呼び出し1回" "1" "$(log_count "$W27_2_LOG" issues.create)"
+assert_contains "W27-2: title が位置引数の連結のみ（フラグは混入しない）" '"title":"Buy office supplies"' "$(log_lines_for_method "$W27_2_LOG" issues.create)"
+rm -f "$W27_2_LOG"
+
+# W27-3 --body-file（実ファイル）が従来どおり本文になる
+W27_3_LOG=$(mktemp /tmp/todo-test-w27-3-XXXXXX)
+W27_3_FILE=$(mktemp /tmp/todo-test-w27-3-body-XXXXXX)
+printf '%s' 'ファイルから読み込んだ本文' > "$W27_3_FILE"
+W27_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W27_RESP" OCTOKIT_STUB_LOG_ENV="$W27_3_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add next "タイトル" --body-file "$W27_3_FILE" 2>&1); W27_3_EC=$?
+assert_exit_ok "W27-3 正常系(--body-file 実ファイル): exit 0" "$W27_3_EC"
+assert_contains "W27-3: body にファイル内容が反映される" 'ファイルから読み込んだ本文' "$(log_lines_for_method "$W27_3_LOG" issues.create)"
+assert_contains "W27-3: title にフラグが混入しない" '"title":"タイトル"' "$(log_lines_for_method "$W27_3_LOG" issues.create)"
+rm -f "$W27_3_LOG" "$W27_3_FILE"
+
+# W27-4 暗黙 GTD 経路（/todo next 〜。runMain 5407行相当）
+W27_4_LOG=$(mktemp /tmp/todo-test-w27-4-XXXXXX)
+W27_4_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W27_RESP" OCTOKIT_STUB_LOG_ENV="$W27_4_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run next "設計書を書く" 2>&1); W27_4_EC=$?
+assert_exit_ok "W27-4 正常系(暗黙GTD経路 /todo next <タイトル>): exit 0" "$W27_4_EC"
+assert_contains "W27-4: labels に 🎯 next" '"🎯 next"' "$(log_lines_for_method "$W27_4_LOG" issues.create)"
+rm -f "$W27_4_LOG"
+
+# W27-5 非英字始まりの default 経路（摩擦ゼロ収集。runMain 5478行相当）
+W27_5_LOG=$(mktemp /tmp/todo-test-w27-5-XXXXXX)
+W27_5_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W27_RESP" OCTOKIT_STUB_LOG_ENV="$W27_5_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run 日本語だけのタイトル 2>&1); W27_5_EC=$?
+assert_exit_ok "W27-5 正常系(非英字始まりの default 経路): exit 0" "$W27_5_EC"
+assert_contains "W27-5: labels に 📥 inbox" '"📥 inbox"' "$(log_lines_for_method "$W27_5_LOG" issues.create)"
+rm -f "$W27_5_LOG"
+
+# ── 異常系（本修正の核心） ──
+
+# W27-6【核心・直接再現】未知フラグ（--body-file のタイプミス）はタイトルへ連結されずエラー終了する。
+# 修正前のコードに戻すと、issues.create が「設計書を書く --boddy-file /tmp/x」という
+# 汚染タイトルで呼ばれ、下の assert_not_contains が必ず FAIL する（反証形式・#1919 W26-1 と同じ）。
+W27_6_LOG=$(mktemp /tmp/todo-test-w27-6-XXXXXX)
+: > "$W27_6_LOG"
+W27_6_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W27_RESP" OCTOKIT_STUB_LOG_ENV="$W27_6_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add next "設計書を書く" --boddy-file /tmp/x 2>&1); W27_6_EC=$?
+assert_exit_fail "W27-6【核心・直接再現】未知フラグ(--boddy-file)はタイトルにならずエラー終了" "$W27_6_EC"
+assert_contains "W27-6: エラー本文が未知フラグのものである（成功時の出力にも --boddy-file の字面は出るため、メッセージ全文で判定する）" "エラー: 不明なフラグです: --boddy-file" "$W27_6_OUT"
+assert_eq "W27-6: issues.create は呼ばれない（ゴミ Issue を作らない）" "0" "$(log_count "$W27_6_LOG" issues.create)"
+assert_not_contains "W27-6【核心・元事故の再現テスト】汚染タイトルでの issues.create が発生していない" \
+  '"title":"設計書を書く --boddy-file /tmp/x"' "$(log_lines_for_method "$W27_6_LOG" issues.create)"
+rm -f "$W27_6_LOG"
+
+# W27-7 値が欠落した既知フラグ（末尾の --due。parseArgs の i+1 条件を満たさず extra に残る）
+W27_7_LOG=$(mktemp /tmp/todo-test-w27-7-XXXXXX)
+: > "$W27_7_LOG"
+W27_7_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W27_RESP" OCTOKIT_STUB_LOG_ENV="$W27_7_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add next "タイトル" --due 2>&1); W27_7_EC=$?
+assert_exit_fail "W27-7 値欠落の既知フラグ（末尾の --due）もエラー終了" "$W27_7_EC"
+assert_contains "W27-7: エラー本文が未知フラグのものである" "エラー: 不明なフラグです: --due" "$W27_7_OUT"
+assert_eq "W27-7: issues.create は呼ばれない" "0" "$(log_count "$W27_7_LOG" issues.create)"
+rm -f "$W27_7_LOG"
+
+# W27-8 add に存在しないフラグ（--json は list 専用）
+W27_8_LOG=$(mktemp /tmp/todo-test-w27-8-XXXXXX)
+: > "$W27_8_LOG"
+W27_8_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W27_RESP" OCTOKIT_STUB_LOG_ENV="$W27_8_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add next "タイトル" --json 2>&1); W27_8_EC=$?
+assert_exit_fail "W27-8 add に存在しないフラグ(--json)はエラー終了" "$W27_8_EC"
+assert_contains "W27-8: エラー本文が未知フラグのものである" "エラー: 不明なフラグです: --json" "$W27_8_OUT"
+assert_eq "W27-8: issues.create は呼ばれない" "0" "$(log_count "$W27_8_LOG" issues.create)"
+rm -f "$W27_8_LOG"
+
+# W27-9【副作用ゼロ・検査順序】@ctx を伴う場合でも、ラベル作成（ensureLabel）へ到達する前に
+# 未知フラグ検査で落ちること。バリデーションを API 副作用より前に置く原則の担保
+# （#1803 resume_condition 実装時の教訓の再演。§W4-2 と同じ「API呼び出しゼロ」形式）。
+W27_9_LOG=$(mktemp /tmp/todo-test-w27-9-XXXXXX)
+: > "$W27_9_LOG"
+W27_9_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W27_RESP" OCTOKIT_STUB_LOG_ENV="$W27_9_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add next @office "タイトル" --boddy-file /tmp/x 2>&1); W27_9_EC=$?
+assert_exit_fail "W27-9【副作用ゼロ】@ctx 併用でも未知フラグでエラー終了" "$W27_9_EC"
+assert_eq "W27-9【核心】API 呼び出しがゼロ（ラベル作成の GET/POST に到達していない）" "0" "$(wc -l < "$W27_9_LOG" | tr -d ' ')"
+assert_eq "W27-9: ラベル存在確認(GET) 0回" "0" "$(log_count "$W27_9_LOG" 'GET /repos/{owner}/{repo}/labels/{name}')"
+rm -f "$W27_9_LOG"
+
+# W27-10【メッセージ優先順位】フラグのみでタイトルがない場合、「タイトルが空です」ではなく
+# 未知フラグのエラーを出す（原因に直結するメッセージを優先する順序の固定）。
+W27_10_LOG=$(mktemp /tmp/todo-test-w27-10-XXXXXX)
+: > "$W27_10_LOG"
+W27_10_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W27_RESP" OCTOKIT_STUB_LOG_ENV="$W27_10_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add next --boddy-file /tmp/x 2>&1); W27_10_EC=$?
+assert_exit_fail "W27-10 フラグのみ・タイトルなし: exit非0" "$W27_10_EC"
+assert_contains "W27-10: 未知フラグのエラー本文が出る" "エラー: 不明なフラグです: --boddy-file" "$W27_10_OUT"
+assert_not_contains "W27-10【メッセージ優先順位】「タイトルが空です」は出さない" "タイトルが空です" "$W27_10_OUT"
+rm -f "$W27_10_LOG"
+
+# W27-10b【境界】空白のみのトークンと未知フラグが同時に渡された場合も未知フラグを優先する
+# （設計書「自信が持てない箇所2」の実測確認。修正前は title が "--foo" の Issue が作られていた）
+W27_10B_LOG=$(mktemp /tmp/todo-test-w27-10b-XXXXXX)
+: > "$W27_10B_LOG"
+W27_10B_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W27_RESP" OCTOKIT_STUB_LOG_ENV="$W27_10B_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add next " " --foo 2>&1); W27_10B_EC=$?
+assert_exit_fail "W27-10b 空白トークン + 未知フラグ: exit非0（未知フラグ優先）" "$W27_10B_EC"
+assert_contains "W27-10b: 未知フラグのエラー本文が出る" "エラー: 不明なフラグです: --foo" "$W27_10B_OUT"
+assert_eq "W27-10b: issues.create は呼ばれない" "0" "$(log_count "$W27_10B_LOG" issues.create)"
+rm -f "$W27_10B_LOG"
+
+# W27-11 英語モード（LANG_ENV=en）: 日本語が1文字も出ないこと
+W27_11_LOG=$(mktemp /tmp/todo-test-w27-11-XXXXXX)
+: > "$W27_11_LOG"
+W27_11_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W27_RESP" OCTOKIT_STUB_LOG_ENV="$W27_11_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo LANG_ENV=en \
+  node "$ENGINE" run add next "write the design doc" --boddy-file /tmp/x 2>&1); W27_11_EC=$?
+assert_exit_fail "W27-11 英語モード(LANG_ENV=en): exit非0" "$W27_11_EC"
+assert_contains "W27-11: 英語のエラーメッセージ" "Error: unknown flag: --boddy-file" "$W27_11_OUT"
+assert_contains "W27-11: 英語のヒント行（クォートを促す）" "quote the whole title" "$W27_11_OUT"
+assert_contains "W27-11: Usage 行（常時英語）" "Usage: /todo add [GTD] <title>" "$W27_11_OUT"
+assert_no_japanese "W27-11: 出力に日本語が1文字も含まれない" "$W27_11_OUT"
+rm -f "$W27_11_LOG"
+
+# W27-12 日本語モード（既定）: ja のエラー本文とヒント行が出る
+W27_12_LOG=$(mktemp /tmp/todo-test-w27-12-XXXXXX)
+: > "$W27_12_LOG"
+W27_12_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W27_RESP" OCTOKIT_STUB_LOG_ENV="$W27_12_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add next "設計書を書く" --boddy-file /tmp/x 2>&1); W27_12_EC=$?
+assert_exit_fail "W27-12 日本語モード(既定): exit非0" "$W27_12_EC"
+assert_contains "W27-12: 日本語のエラー本文" "エラー: 不明なフラグです: --boddy-file" "$W27_12_OUT"
+assert_contains "W27-12: 日本語のヒント行（タイトル全体をクォートする脱出口を案内）" "タイトル全体を1つの引数としてクォート" "$W27_12_OUT"
+assert_contains "W27-12: Usage 行は日本語モードでも英語（翻訳方針）" "Usage: /todo add [GTD] <title>" "$W27_12_OUT"
+rm -f "$W27_12_LOG"
+
+# ── 入力文字パターン（誤検知しないこと。§51 は判定器単体、ここは runAdd 経由の
+#    タイトル組み立てまで含めた end-to-end 確認） ──
+
+# W27-13 Markdown水平線を含むクォート済みタイトル
+W27_13_LOG=$(mktemp /tmp/todo-test-w27-13-XXXXXX)
+W27_13_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W27_RESP" OCTOKIT_STUB_LOG_ENV="$W27_13_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add next "--- 区切り線 --- を含むタイトル" 2>&1); W27_13_EC=$?
+assert_exit_ok "W27-13 入力文字: Markdown水平線を含むタイトル: exit 0" "$W27_13_EC"
+assert_contains "W27-13: title がそのまま" '"title":"--- 区切り線 --- を含むタイトル"' "$(log_lines_for_method "$W27_13_LOG" issues.create)"
+rm -f "$W27_13_LOG"
+
+# W27-14 --- が単独トークンとして現れるクォートなしタイトル
+W27_14_LOG=$(mktemp /tmp/todo-test-w27-14-XXXXXX)
+W27_14_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W27_RESP" OCTOKIT_STUB_LOG_ENV="$W27_14_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add next --- 区切り線 2>&1); W27_14_EC=$?
+assert_exit_ok "W27-14 入力文字: --- が単独トークン（-- の直後がハイフン）: exit 0" "$W27_14_EC"
+assert_contains "W27-14: title が --- 区切り線" '"title":"--- 区切り線"' "$(log_lines_for_method "$W27_14_LOG" issues.create)"
+rm -f "$W27_14_LOG"
+
+# W27-15 「--body」で始まるが空白と非ASCII を含むタイトル
+W27_15_LOG=$(mktemp /tmp/todo-test-w27-15-XXXXXX)
+W27_15_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W27_RESP" OCTOKIT_STUB_LOG_ENV="$W27_15_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add next "--body を説明するタスク" 2>&1); W27_15_EC=$?
+assert_exit_ok "W27-15 入力文字: 「--body を説明するタスク」: exit 0" "$W27_15_EC"
+assert_contains "W27-15: title がそのまま" '"title":"--body を説明するタスク"' "$(log_lines_for_method "$W27_15_LOG" issues.create)"
+rm -f "$W27_15_LOG"
+
+# W27-16 単一ハイフン始まりのトークン
+W27_16_LOG=$(mktemp /tmp/todo-test-w27-16-XXXXXX)
+W27_16_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W27_RESP" OCTOKIT_STUB_LOG_ENV="$W27_16_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add next - 箇条書きのタスク 2>&1); W27_16_EC=$?
+assert_exit_ok "W27-16 入力文字: 単一ハイフン始まりのトークン: exit 0" "$W27_16_EC"
+assert_contains "W27-16: title が - 箇条書きのタスク" '"title":"- 箇条書きのタスク"' "$(log_lines_for_method "$W27_16_LOG" issues.create)"
+rm -f "$W27_16_LOG"
+
+# W27-17 シェル特殊文字（コマンド置換の形）がリテラルとして保持されること
+W27_17_LOG=$(mktemp /tmp/todo-test-w27-17-XXXXXX)
+W27_17_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W27_RESP" OCTOKIT_STUB_LOG_ENV="$W27_17_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add next '$(whoami) を含むタイトル' 2>&1); W27_17_EC=$?
+assert_exit_ok "W27-17 セキュリティ: コマンド置換の形をリテラル保持: exit 0" "$W27_17_EC"
+assert_contains "W27-17: title が \$(whoami) のリテラル（展開されていない）" '"title":"$(whoami) を含むタイトル"' "$(log_lines_for_method "$W27_17_LOG" issues.create)"
+rm -f "$W27_17_LOG"
+
+# W27-18 マルチバイト・絵文字
+W27_18_LOG=$(mktemp /tmp/todo-test-w27-18-XXXXXX)
+W27_18_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W27_RESP" OCTOKIT_STUB_LOG_ENV="$W27_18_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add next "🎯 目標を決める" 2>&1); W27_18_EC=$?
+assert_exit_ok "W27-18 入力文字(マルチバイト・絵文字): exit 0" "$W27_18_EC"
+assert_contains "W27-18: title が絵文字ごとそのまま" '"title":"🎯 目標を決める"' "$(log_lines_for_method "$W27_18_LOG" issues.create)"
+rm -f "$W27_18_LOG"
+
+# W27-19 フォーマット文字列（printf 誤認がないこと）
+W27_19_LOG=$(mktemp /tmp/todo-test-w27-19-XXXXXX)
+W27_19_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W27_RESP" OCTOKIT_STUB_LOG_ENV="$W27_19_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add next "進捗 %s を報告する" 2>&1); W27_19_EC=$?
+assert_exit_ok "W27-19 入力文字(フォーマット文字列 %s): exit 0" "$W27_19_EC"
+assert_contains "W27-19: title がそのまま（printf 誤認なし）" '"title":"進捗 %s を報告する"' "$(log_lines_for_method "$W27_19_LOG" issues.create)"
+rm -f "$W27_19_LOG"
+
+# ── 境界値 ──
+
+# W27-20【仕様固定】`--` 単独トークンはタイトルの一部として連結される。
+# 将来 end-of-options（`--` 以降は全部位置引数）を導入する場合は、本ケースの
+# 期待値を意図的に変更すること（後方非互換の変更であることの目印）。
+W27_20_LOG=$(mktemp /tmp/todo-test-w27-20-XXXXXX)
+W27_20_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W27_RESP" OCTOKIT_STUB_LOG_ENV="$W27_20_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add next -- タイトル 2>&1); W27_20_EC=$?
+assert_exit_ok "W27-20【仕様固定】-- 単独トークンはタイトルの一部: exit 0" "$W27_20_EC"
+assert_contains "W27-20: title が「-- タイトル」" '"title":"-- タイトル"' "$(log_lines_for_method "$W27_20_LOG" issues.create)"
+rm -f "$W27_20_LOG"
+
+# W27-21【境界】--p4 は --p[123] の境界外。parseArgs に消費されず extra に落ちるため
+# 未知フラグとしてエラーになる（修正前の実測: exit 0 で title「タイトル --p4」・
+# priority は既定の p3 のまま、という静かな乖離だった）。
+W27_21_LOG=$(mktemp /tmp/todo-test-w27-21-XXXXXX)
+: > "$W27_21_LOG"
+W27_21_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W27_RESP" OCTOKIT_STUB_LOG_ENV="$W27_21_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add next "タイトル" --p4 2>&1); W27_21_EC=$?
+assert_exit_fail "W27-21【境界】--p4（--p[123] の境界外）はエラー終了" "$W27_21_EC"
+assert_contains "W27-21: エラー本文が未知フラグのものである" "エラー: 不明なフラグです: --p4" "$W27_21_OUT"
+assert_not_contains "W27-21: 汚染タイトルでの issues.create が発生していない" \
+  '"title":"タイトル --p4"' "$(log_lines_for_method "$W27_21_LOG" issues.create)"
+rm -f "$W27_21_LOG"
+
+# W27-22【境界】空トークンは従来どおり除去される
+W27_22_LOG=$(mktemp /tmp/todo-test-w27-22-XXXXXX)
+W27_22_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W27_RESP" OCTOKIT_STUB_LOG_ENV="$W27_22_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add next "" タイトル 2>&1); W27_22_EC=$?
+assert_exit_ok "W27-22【境界】空トークンは除去される: exit 0" "$W27_22_EC"
+assert_contains "W27-22: title が「タイトル」" '"title":"タイトル"' "$(log_lines_for_method "$W27_22_LOG" issues.create)"
+rm -f "$W27_22_LOG"
+
+# W27-23【境界】検出はトークン位置に依存しない（先頭 / 末尾）
+W27_23A_LOG=$(mktemp /tmp/todo-test-w27-23a-XXXXXX)
+: > "$W27_23A_LOG"
+W27_23A_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W27_RESP" OCTOKIT_STUB_LOG_ENV="$W27_23A_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add next --boddy-file "タイトル" 2>&1); W27_23A_EC=$?
+assert_exit_fail "W27-23a【境界】未知フラグが先頭でもエラー終了" "$W27_23A_EC"
+assert_eq "W27-23a: issues.create は呼ばれない" "0" "$(log_count "$W27_23A_LOG" issues.create)"
+rm -f "$W27_23A_LOG"
+
+W27_23B_LOG=$(mktemp /tmp/todo-test-w27-23b-XXXXXX)
+: > "$W27_23B_LOG"
+W27_23B_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W27_RESP" OCTOKIT_STUB_LOG_ENV="$W27_23B_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add next "タイトル" --boddy-file 2>&1); W27_23B_EC=$?
+assert_exit_fail "W27-23b【境界】未知フラグが末尾（値なし）でもエラー終了" "$W27_23B_EC"
+assert_eq "W27-23b: issues.create は呼ばれない" "0" "$(log_count "$W27_23B_LOG" issues.create)"
+rm -f "$W27_23B_LOG"
+
+# ── セキュリティ ──
+
+# W27-24【セキュリティ・現状挙動の固定】シェル特殊文字を含むトークンはフラグの字面では
+# ないため通り、タイトルにリテラルとして含まれる。期待値は修正前コードでの実測
+# （2026-09-01: exit 0 / title「タイトル --evil;rm -rf /」）に合わせて固定した。
+# validateTitle（制御文字のみ禁止。#1825 でタイトルの記号禁止は解除済み）を通り、
+# Octokit の JSON ボディにしか渡らないためシェル展開経路は存在しない。
+# 検証用ファイルが残っていることで、テストプロセスの外側でコマンドが実行されて
+# いないことを確認する。
+W27_24_LOG=$(mktemp /tmp/todo-test-w27-24-XXXXXX)
+W27_24_CANARY=$(mktemp /tmp/todo-test-w27-24-canary-XXXXXX)
+printf '%s' 'canary' > "$W27_24_CANARY"
+W27_24_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W27_RESP" OCTOKIT_STUB_LOG_ENV="$W27_24_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add next "タイトル" '--evil;rm -rf /' 2>&1); W27_24_EC=$?
+assert_exit_ok "W27-24 セキュリティ: --evil;rm -rf / はフラグ字面でないため通る: exit 0（修正前実測どおり）" "$W27_24_EC"
+assert_contains "W27-24: title にリテラルとして含まれる" '"title":"タイトル --evil;rm -rf /"' "$(log_lines_for_method "$W27_24_LOG" issues.create)"
+if [ -f "$W27_24_CANARY" ]; then
+  printf "  ✅ W27-24: 検証用ファイルが残っている（rm が実行されていない）\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ W27-24: 検証用ファイルが消えている（コマンドが実行された疑い）\n"; FAIL=$((FAIL+1))
+fi
+rm -f "$W27_24_LOG" "$W27_24_CANARY"
+
+# ── パフォーマンス ──
+
+# W27-26 200トークンのタイトル（すべて正常語）。走査の追加が線形で済み、
+# タイトルが全トークンの連結と一致すること。
+W27_26_ARGS=()
+W27_26_EXPECTED=""
+W27_26_I=1
+while [ "$W27_26_I" -le 200 ]; do
+  W27_26_ARGS+=("語${W27_26_I}")
+  if [ -z "${W27_26_EXPECTED}" ]; then
+    W27_26_EXPECTED="語${W27_26_I}"
+  else
+    W27_26_EXPECTED="${W27_26_EXPECTED} 語${W27_26_I}"
+  fi
+  W27_26_I=$((W27_26_I+1))
+done
+W27_26_LOG=$(mktemp /tmp/todo-test-w27-26-XXXXXX)
+W27_26_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W27_RESP" OCTOKIT_STUB_LOG_ENV="$W27_26_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add next ${W27_26_ARGS[@]+"${W27_26_ARGS[@]}"} 2>&1); W27_26_EC=$?
+assert_exit_ok "W27-26 パフォーマンス: 200トークンのタイトルでも完了する: exit 0" "$W27_26_EC"
+assert_contains "W27-26: title が全200トークンの連結と一致" "\"title\":\"${W27_26_EXPECTED}\"" "$(log_lines_for_method "$W27_26_LOG" issues.create)"
+rm -f "$W27_26_LOG"
+
+# ──────────────────────────────────────────
 # 結果サマリー（run-tests.sh から集計加算するための機械可読な行）
 # ──────────────────────────────────────────
 echo ""

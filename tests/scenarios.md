@@ -2110,3 +2110,51 @@ TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo OCTOKIT_STUB_ENV=<stub> OCTO
 ### 46-7. 正常系: `TODO_REPO_OWNER`/`TODO_REPO_NAME` 設定済みなら新設ガードは発火せず従来通り動作すること（リグレッション）
 
 既存のテストスイート全件が本変更後も引き続きPASSすることで確認する（`bash tests/run-tests.sh`）。
+
+## 47. `add` の未知フラグ検出（Issue #1921 パターンA）
+
+`parseArgs()` が解釈できなかった `--` 始まりのトークンが、黙ってタイトルへ連結されないことを確認する。
+自動テストは `tests/run-tests.sh` §51（判定器の単体テスト）と `tests/run-tests-write.sh` §W27（`add` の振る舞い）でカバー済み。
+以下は実 GitHub 接続での手動確認用（**エラーになるケースのみ実施すること**。Issue は作成されない）。
+
+### 47-1. フラグ名のタイプミスがエラーになり、Issue が作られないこと
+
+```
+bash ~/.claude/todo.sh add next "設計書を書く" --boddy-file /tmp/body.txt
+```
+
+期待:
+- exit 1
+- stderr に `Usage: /todo add [GTD] <title> ...` の行
+- stderr に `エラー: 不明なフラグです: --boddy-file`
+- stderr にクォートを促すヒント行
+- GitHub 上に Issue が作られていないこと（`/todo list next` で確認）
+
+### 47-2. 値を書き忘れた既知フラグもエラーになること
+
+```
+bash ~/.claude/todo.sh add next "タイトル" --due
+```
+
+期待: exit 1 / `エラー: 不明なフラグです: --due` / Issue が作られない
+
+### 47-3. `@ctx` を併用してもラベルが作成されないこと（副作用ゼロ）
+
+```
+bash ~/.claude/todo.sh add next @新しいコンテキスト "タイトル" --boddy-file /tmp/x
+```
+
+期待: exit 1 / GitHub 上に `@新しいコンテキスト` ラベルが**作成されていない**こと（リポジトリのラベル一覧で確認）
+
+### 47-4. `LANG_ENV=en` で英語メッセージが出ること
+
+```
+LANG_ENV=en bash ~/.claude/todo.sh add next "write the design doc" --boddy-file /tmp/x
+```
+
+期待: exit 1 / `Error: unknown flag: --boddy-file` / 日本語が1文字も含まれないこと
+
+### 47-5. 正常系のリグレッション（既存の add が壊れていないこと）
+
+既存のテストスイート全件が本変更後も引き続き PASS することで確認する（`bash tests/run-tests.sh`）。
+`--` を含む正当なタイトル（`add next "--- 区切り線 --- を含むタスク"` 等）が従来どおり通ることも §W27-13〜19 で自動検証済み。

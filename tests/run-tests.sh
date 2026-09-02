@@ -4480,6 +4480,72 @@ else
 fi
 
 # ──────────────────────────────────────────
+# §51  未知フラグ判定 findUnknownFlag() 単体テスト（Issue #1921 パターンA）
+# 事故: `add next "設計書を書く" --boddy-file /tmp/x` のように parseArgs が解釈できない
+# `--` 始まりトークンが、エラーも警告もなくタイトルへ連結されて Issue が作られていた。
+# 本セクションは判定器そのもの（純粋関数）を Octokit スタブ・GitHub 接続なしで検証する。
+# CLI: find-unknown-flag '<tokensのJSON配列>' '<許可フラグのJSON配列>'
+#      → 検出したフラグ文字列、なければ空文字列を stdout へ返す。
+# runAdd の振る舞い（exit code・issues.create の抑止）は run-tests-write.sh §W27 を参照。
+# ──────────────────────────────────────────
+echo ""
+echo "§51  未知フラグ判定 findUnknownFlag()（Issue #1921 パターンA）"
+
+# --- 正常系 ---
+assert_eq "§51-1 正常系: 通常のタイトルのみ → 検出なし" \
+  "" "$(node "$ENGINE" find-unknown-flag '["設計書を書く"]' '[]')"
+assert_eq "§51-2 正常系【核心】タイポしたフラグ(--boddy-file)を検出する" \
+  "--boddy-file" "$(node "$ENGINE" find-unknown-flag '["設計書を書く","--boddy-file","/tmp/x"]' '[]')"
+assert_eq "§51-3 正常系: 許可リストに載ったフラグは検出しない（パターンB の runList 前提を固定）" \
+  "" "$(node "$ENGINE" find-unknown-flag '["--group","--no-due"]' '["--group","--no-due","--no-estimate"]')"
+assert_eq "§51-4 正常系: 許可リスト外のフラグのみ検出する" \
+  "--foo" "$(node "$ENGINE" find-unknown-flag '["--group","--foo"]' '["--group"]')"
+
+# --- 入力文字パターン（誤検知しないこと。#1919 追補で確定した線引きの固定） ---
+assert_eq "§51-5 入力文字: Markdown水平線を含む1トークン(--- 区切り線 ---) → 検出なし" \
+  "" "$(node "$ENGINE" find-unknown-flag '["--- 区切り線 ---"]' '[]')"
+assert_eq "§51-6 入力文字: --- 単独トークン（-- の直後がハイフン） → 検出なし" \
+  "" "$(node "$ENGINE" find-unknown-flag '["---"]' '[]')"
+assert_eq "§51-7 入力文字: 「--body を説明する文章」（空白+非ASCII を含む） → 検出なし" \
+  "" "$(node "$ENGINE" find-unknown-flag '["--body を説明する文章"]' '[]')"
+assert_eq "§51-8 入力文字: 単一ハイフン始まり(- 箇条書き) → 検出なし" \
+  "" "$(node "$ENGINE" find-unknown-flag '["- 箇条書き"]' '[]')"
+assert_eq "§51-9 入力文字(マルチバイト): 全角ダッシュ始まり → 検出なし" \
+  "" "$(node "$ENGINE" find-unknown-flag '["－－全角ダッシュ"]' '[]')"
+assert_eq "§51-10 入力文字(シェル特殊文字): --evil;rm -rf / はフラグ字面ではない → 検出なし" \
+  "" "$(node "$ENGINE" find-unknown-flag '["--evil;rm -rf /"]' '[]')"
+assert_eq "§51-11 入力文字(フォーマット文字列): --%s は % が許可文字外 → 検出なし" \
+  "" "$(node "$ENGINE" find-unknown-flag '["--%s"]' '[]')"
+assert_eq "§51-11b 入力文字(クォート): --\"quoted\" はフラグ字面ではない → 検出なし" \
+  "" "$(node "$ENGINE" find-unknown-flag '["--\"quoted\""]' '[]')"
+
+# --- 境界値 ---
+assert_eq "§51-12 境界値(最短): --x（英字1文字）は検出する" \
+  "--x" "$(node "$ENGINE" find-unknown-flag '["--x"]' '[]')"
+assert_eq "§51-13 境界値: -- 単独は検出しない（現仕様の固定。end-of-options 導入時は意図的に変更する）" \
+  "" "$(node "$ENGINE" find-unknown-flag '["--"]' '[]')"
+assert_eq "§51-14 境界値: --1st（数字始まり）は検出しない（英字始まりのみ対象）" \
+  "" "$(node "$ENGINE" find-unknown-flag '["--1st"]' '[]')"
+assert_eq "§51-15a 境界値: 空配列 → 検出なし" \
+  "" "$(node "$ENGINE" find-unknown-flag '[]' '[]')"
+assert_eq "§51-15b 境界値: 空文字列トークンのみ → 検出なし" \
+  "" "$(node "$ENGINE" find-unknown-flag '[""]' '[]')"
+assert_eq "§51-16 境界値(複数該当): 先頭の1件のみ報告する（仕様の固定）" \
+  "--aaa" "$(node "$ENGINE" find-unknown-flag '["--aaa","--bbb"]' '[]')"
+assert_eq "§51-16b 境界値(末尾該当): 配列末尾のフラグも検出する（off-by-one 確認）" \
+  "--zzz" "$(node "$ENGINE" find-unknown-flag '["a","b","--zzz"]' '[]')"
+
+# --- パフォーマンス（500要素・末尾のみ該当。線形走査で完了すること） ---
+_G1921_BIGTOKENS=$(node -e '
+  const a = [];
+  for (let i = 0; i < 499; i++) a.push("トークン" + i);
+  a.push("--zzz");
+  process.stdout.write(JSON.stringify(a));
+')
+assert_eq "§51-17 パフォーマンス: 500要素の配列でも末尾の --zzz を検出して完了する" \
+  "--zzz" "$(node "$ENGINE" find-unknown-flag "$_G1921_BIGTOKENS" '[]')"
+
+# ──────────────────────────────────────────
 # 書き込み系ハンドラのスタブベーステスト（run-tests-write.sh、Issue #1648）
 # 3,266行超に肥大化した本ファイルへの追記を避けるため別ファイルに分離し、
 # ここで子プロセスとして呼び出して結果を合算する。実行口は
