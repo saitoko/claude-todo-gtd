@@ -82,13 +82,25 @@ GTD ラベルは `next` / `routine` / `inbox` / `waiting` / `someday` / `referen
 
 ### タスク管理
 
+> **未知フラグのエラー化（引数の扱い）**
+>
+> **対象コマンド**: `add` / `list` / `done` / `move` / `edit` / `comment` / `rename` / `due` / `desc` / `recur` / `priority` / `link` / `label` / `template` / `bulk`（`done` / `move` / `priority` のみ）。
+> これらのコマンドでは、そのコマンドの引数欄に載っていない `--` で始まる引数を**未知フラグとしてエラー終了する**（黙って無視したり、タイトル・本文へ連結したりしない）。フラグ名のタイプミス（`--boddy-file`）と、値を書き忘れた既知フラグ（末尾の `--due` 等）の両方が対象。`label` / `template` はサブコマンド名の次に来る**名前の位置**も対象（例: `label add --foo` はゴミラベルを作らずにエラー終了する）。
+> `--dry-run` のような語をタイトルや本文に含めたい場合は、**その全体を1つの引数としてクォートする**（例: `/todo add next "--dry-run を追加する"`）。
+> 判定対象は「`--` + 英字始まり + 英数字/ハイフンのみで構成される1語」に限る。Markdown の水平線（`---`）や空白・日本語を含む文字列（`"--body を説明する"`）は自由記述として通る。
+>
+> **対象外（未知フラグとしてはエラーにならないもの）**:
+> - 上の対象コマンド以外（`show` / `search` / `stats` / `view` / `archive` / `unlink` / `promote-project` など）に渡した `--` で始まる引数は、現時点では**黙って無視される**（`search` / `archive search` は検索キーワードの一部として扱われる）
+> - 対象コマンドであっても、**別のコマンドでは有効だがそのコマンドが読まないフラグ**（例: `add` の `--note` / `--actual` / `--color`、`edit` の `--note`、`list` の `--due`）は現時点では**黙って捨てられる**。指定しても効かず、エラーにもならない
+> - `tag` / `untag` / `bulk tag` / `bulk untag` の `-` 始まりトークンは、専用の「オプション指定に見えます」エラーで従来どおり止まる（エラーにはなるが文言が異なる）
+
 | コマンド | 引数 | 説明 |
 |---------|------|------|
-| `add` / GTDキーワード | `[GTD] <タイトル> [@ctx...] [#tag...] [--due 日付] [--desc テキスト] [--body "本文"] [--body-file <path>] [--recur パターン] [--project 番号] [--priority p1\|p2\|p3] [--estimate 時間] [--label 名前] [--activate 日付] [--before 期間] [--depends-on 番号] [--resume-condition テキスト]` | タスク追加（GTD省略時: inbox）。`--body`/`--body-file` で本文を直接指定可能（`--body-file` が優先）。`--label` は `@ctx`/`#tag` とは別枠の汎用ラベルを付与（未存在なら自動作成）。英字で始まるタイトルは `add` を明示必須（例: `/todo add My Task`）。英字で始まる引数を `add` なしで渡すとコマンド名と混同されエラーになる。タイトルが `list`/`help`/`project`/`counts` 等の単一トークンかつ既知コマンド名と完全一致する場合（例: `/todo project list`）もゴミIssue化を防ぐため誤爆ガードが発火する（`add` を明示すれば通る）。上記以外の `--` で始まる引数（フラグ名のタイプミス・値を書き忘れた既知フラグを含む）は未知フラグとしてエラー終了する（黙ってタイトルへ連結しない）。`--dry-run` のような語をタイトルに含めたい場合は、タイトル全体を1つの引数としてクォートする（例: `/todo add next "--dry-run を追加する"`） |
-| `list` | `[GTD] [@ctx] [#tag] [p1\|p2\|p3] [project <番号>] [--group] [--no-due] [--no-estimate]` | タスク一覧（フィルタ組み合わせ可）。`--group` で期限別グルーピング表示。`--no-due` で期限未設定のタスクのみ表示（`--group` より優先）。`--no-estimate` で見積もり未設定のタスクのみ表示 |
+| `add` / GTDキーワード | `[GTD] <タイトル> [@ctx...] [#tag...] [--due 日付] [--desc テキスト] [--body "本文"] [--body-file <path>] [--recur パターン] [--project 番号] [--priority p1\|p2\|p3\|--p1\|--p2\|--p3] [--estimate 時間] [--label 名前] [--activate 日付] [--before 期間] [--depends-on 番号] [--resume-condition テキスト]` | タスク追加（GTD省略時: inbox）。`--body`/`--body-file` で本文を直接指定可能（`--body-file` が優先）。`--label` は `@ctx`/`#tag` とは別枠の汎用ラベルを付与（未存在なら自動作成）。英字で始まるタイトルは `add` を明示必須（例: `/todo add My Task`）。英字で始まる引数を `add` なしで渡すとコマンド名と混同されエラーになる。タイトルが `list`/`help`/`project`/`counts` 等の単一トークンかつ既知コマンド名と完全一致する場合（例: `/todo project list`）もゴミIssue化を防ぐため誤爆ガードが発火する（`add` を明示すれば通る）。引数欄にないフラグ名（タイプミス・値を書き忘れた既知フラグを含む）は未知フラグとしてエラー終了する（黙ってタイトルへ連結しない）。`--dry-run` のような語をタイトルに含めたい場合は、タイトル全体を1つの引数としてクォートする（例: `/todo add next "--dry-run を追加する"`）。ただし `--note` / `--actual` / `--color` など**他コマンドでは有効なフラグ**は `add` では読まれず、エラーにもならず黙って捨てられる（上の注記「対象外」を参照） |
+| `list` | `[GTD] [@ctx] [#tag] [p1\|p2\|p3] [project <番号>] [--group] [--no-due] [--no-estimate] [--json]` | タスク一覧（フィルタ組み合わせ可）。`--group` で期限別グルーピング表示。`--no-due` で期限未設定のタスクのみ表示（`--group` より優先）。`--no-estimate` で見積もり未設定のタスクのみ表示。`--json` で JSON 出力（他フラグと併用可） |
 | `done` | `<#> [--actual 時間] [--note "テキスト"]` | タスク完了（recurあれば次のIssue自動作成）。`--note` を指定すると close 後にコメントを追加（振り返りメモ等） |
 | `move` | `<#> <GTD> [--note "テキスト"]` | GTDカテゴリ変更。`--note` を指定するとラベル変更後にコメントを追加（降格理由等） |
-| `edit` | `<#> [--due 日付] [--desc テキスト] [--recur パターン\|clear] [--priority p1\|p2\|p3\|clear] [--project 番号] [--estimate 時間]` | 複数フィールド一括編集 |
+| `edit` | `<#> [--due 日付] [--desc テキスト] [--recur パターン\|clear] [--priority p1\|p2\|p3\|clear\|--p1\|--p2\|--p3] [--project 番号] [--estimate 時間] [--activate 日付] [--before 期間] [--depends-on 番号] [--resume-condition テキスト]` | 複数フィールド一括編集（後半4つの使い方は「チクラーファイル」節を参照） |
 | `rename` | `<#> <新タイトル>` | タイトル変更 |
 | `due` | `<#> <日付>` | 期日設定 |
 | `desc` | `<#> <テキスト>` | 説明に追記（上書きは `edit --desc` を使う）。テキスト省略はエラー |
@@ -158,7 +170,7 @@ GTD ラベルは `next` / `routine` / `inbox` / `waiting` / `someday` / `referen
 |---------|------|
 | `template list` | テンプレート一覧 |
 | `template show <名前>` | テンプレート詳細 |
-| `template save <名前> [GTD] [@ctx...] [--*フラグ]` | テンプレート保存（インライン）。`--due-offset <N>` はテンプレート専用フラグで、使用日から N日後を自動的に期日に設定する（`--due` と同時指定時は `--due-offset` が優先） |
+| `template save <名前> [GTD] [@ctx...] [--due 日付] [--due-offset N] [--recur パターン] [--project 番号] [--priority p1\|p2\|p3\|--p1\|--p2\|--p3] [--desc テキスト]` | テンプレート保存（インライン）。`--due-offset <N>` はテンプレート専用フラグで、使用日から N日後を自動的に期日に設定する（`--due` と同時指定時は `--due-offset` が優先） |
 | `template save <名前> from <#>` | 既存IssueからTemplate作成 |
 | `template use <名前> [タイトル上書き]` | テンプレートからIssue作成 |
 | `template delete <名前>` | テンプレート削除 |

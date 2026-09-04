@@ -51,7 +51,7 @@ cp todo.sh ~/.claude/todo.sh
 ## テスト
 
 - テストランナー: `bash tests/run-tests.sh`（+ 書き込み系は `bash tests/run-tests-write.sh` として個別実行も可能。通常は `run-tests.sh` から自動的に呼び出される）
-- 自動テスト総件数: **1,536件**（read-only系 926 + 書き込み系 610。`bash tests/run-tests.sh` の最終行が出す実測値。2026-09-01 時点。全件PASSが目安）
+- 自動テスト総件数: **1,747件**（read-only系 928 + 書き込み系 819。`bash tests/run-tests.sh` の最終行が出す実測値。2026-09-02 時点。全件PASSが目安）
 - シナリオ一覧: `tests/scenarios.md`
 - 全件 PASS が Pull Request マージの必須条件
 - 件数を更新する際は README.md の記載も合わせて更新する
@@ -326,11 +326,81 @@ if (unknownFlag) {
 
 **教訓:** 本ファイルで**モジュールスコープの `const` を新設し、それを診断サブコマンド（トップレベル `switch` 内）から間接的にでも参照する**場合、宣言はファイル冒頭の定数ブロックに置くこと。関数宣言と違い `const`/`let` は巻き上げられても初期化されない。
 
-**中間状態（意図したもの・次工程への申し送り）:** 本修正で `add` のエラーメッセージは ja/en 対応（`error.unknown_flag` / `error.unknown_flag_hint`）になったが、`comment`（#1919）は英語ハードコードのまま残している。既存テスト §W26-5 が日本語モードで `unknown flag: --boddy-file` をアサートしており、`comment` 側を i18n 化すると FAIL するため。文言の統一は、このアサーション更新と同一の変更でまとめて行うこと。
+**中間状態（意図したもの・次工程への申し送り）:** 本修正で `add` のエラーメッセージは ja/en 対応（`error.unknown_flag` / `error.unknown_flag_hint`）になったが、`comment`（#1919）は英語ハードコードのまま残している。既存テスト §W26-5 が日本語モードで `unknown flag: --boddy-file` をアサートしており、`comment` 側を i18n 化すると FAIL するため。文言の統一は、このアサーション更新と同一の変更でまとめて行うこと。→ **2026-09-02（下記の第2弾）で解消済み**。`runComment()` を `guardUnknownFlag()` へ寄せ、W26-5 のアサーションを ja 文言へ更新した。
 
 **対象ファイル:** `todo-engine.js`（新設 `UNKNOWN_FLAG_RE` / `findUnknownFlag()` / `ADD_USAGE` / 診断サブコマンド `find-unknown-flag`、`runAdd()` への配線、`MESSAGES` ja/en 2キー、`help.add` ja/en、`runComment()` のローカル定数削除）、`todo.md`
 
 **テスト:** `tests/run-tests.sh` §51（判定器の単体テスト20件: 正常系・許可リスト・入力文字パターン・境界値・500要素のパフォーマンス）+ `tests/run-tests-write.sh` §W27（`add` の振る舞いテスト71件: 正常系5・異常系・i18n・入力文字パターン・境界値・セキュリティ・200トークンのパフォーマンス）。全1536件PASS（書き込み系610/610）。追加したガードを一時的にコメントアウトして実行し、異常系ケース（未知フラグ・値欠落フラグ・存在しないフラグ・副作用ゼロ・メッセージ優先順位・境界値）が確実に FAIL することを実測で確認した。この確認過程で「ガードを外しても PASS したままのアサーション」が6件見つかったため（成功時の出力にもフラグ名の字面が現れるため、フラグ名の部分一致では検証にならなかった）、エラーメッセージ全文での判定に書き換えている。`runComment()` のローカル定数削除が無害であることは、§W26 全32件が無変更で PASS すること（削除前後で同数）を実測して確認した。GitHub への実書き込みは行わず、スタブ経由のみで検証した。
+
+### 2026-09-02: 13コマンドが未知フラグを黙って捨てていた（Issue #1921 パターンB・C）
+
+**症状:** #1921 パターンA（`add`）と同じ「静かな期待値乖離」が、`add` 以外の13コマンドに残っていた。症状は3種類に分かれる。
+
+| 型 | 例 | 修正前の挙動 |
+|---|---|---|
+| (a) 指定した値が黙って捨てられる | `due 42 2026-09-10 --note "理由"` | exit 0。`--note` は無視され、コメントは投稿されない |
+| (b) フィルタが黙って無視される | `list next --no-duee` | exit 0。タイプミスに気づけないまま全件表示される |
+| (c) 自由記述へ混入する | `template use daily --boddy-file /tmp/x` | exit 0。タイトル「--boddy-file /tmp/x」のゴミ Issue が作られる |
+| (c) 自由記述へ混入する | `rename 42 --boddy-file /tmp/x` | exit 0。**既存タイトルがフラグ名で上書きされて失われる** |
+| (c) 自由記述へ混入する | `desc 42 --boddy-file /tmp/x` | exit 0。説明欄にフラグ名が追記される |
+
+`rename` は `add` と違い**元の値が復旧できない**（`add` は新規 Issue なので消せばよい）ため、実害はパターンA より大きい。
+
+**原因:** 引数の読み方が3系統に分かれており、どれも余りを捨てていた。
+
+1. `parseArgs()` を呼ぶハンドラ（`list` / `done` / `move` / `edit` / `label add` / `template save` / `bulk done`）は `parsed.extra` を一切見ていなかった
+2. `parseArgs()` を通らず固定インデックスで読むハンドラ（`due` / `recur` / `link` / `priority` / `label delete,rename` / `template list,show,save from,delete` / `bulk move,priority`）は `tokens.slice(2)` 以降を捨てていた
+3. `tokens.slice(1).join(' ')` で自由記述を作るハンドラ（`rename` / `desc` / `template use`）は、フラグ字面をそのまま値にしていた
+
+**修正:** #1921 パターンA で導入した `findUnknownFlag()` の上に、出力を1箇所に集約する薄いラッパを新設し、**26箇所へ新たに配線した**（`runAdd` / `runComment` の既存実装2箇所の置き換えを含めると、`guardUnknownFlag()` の呼び出しは**合計28箇所**。`grep -c 'guardUnknownFlag('` の実測値）。
+
+```js
+// 未知フラグを検出したら Usage・エラー本文・ヒント行を出して終了する
+function guardUnknownFlag(tokens, allowedFlags, usage, hintKey) {
+  const flag = findUnknownFlag(tokens, allowedFlags);
+  if (!flag) return;
+  if (usage) process.stderr.write(`${usage}\n`);
+  process.stderr.write(tpl('error.unknown_flag', { flag })+'\n');
+  process.stderr.write(t(hintKey)+'\n');
+  process.exit(1);
+}
+```
+
+**設計上の判断（4点。いずれも意図的で、変更するとテストが FAIL する）:**
+
+1. **判定は「フラグ字面のトークンだけ」に保つ**。「余りが1つでもあればエラー」にしてはいけない。`list` は GTD 名・`p1`-`p3`・`project` + 番号が位置引数として `extra` に正当に残る唯一のハンドラで、これを壊す（テストで固定: §W28-4）。位置引数の余剰（`due 42 今週 金曜` 等）も従来どおり通す（§W28-19b）
+2. **許可リストが空でないのは `list` の1ハンドラだけ**（`['--group','--no-due','--no-estimate']`）。ハンドラ本体の `if (tok === '--group')` 分岐と**同じ字面・同じ順序**に保つこと。`--json` は許可リストに入れない（`runList` が `parseArgs` より前に除去するので `extra` に届かない。入れても無害だが「なぜここだけ二重防御か」が読めなくなる）
+3. **`bulk tag` / `bulk untag` には入れない**。`normalizeTagTokens()`（#1686）が既に `-` 始まりトークンを `error.option_like_token` で落としており、guard を足すとメッセージが変わる（§W28-27 で固定）
+4. **ヒント行はコマンドの性質で3種類に分ける**。`error.unknown_flag_hint`（タイトル向け: `add` / `rename` / `template use`）/ `error.unknown_flag_hint_body`（本文向け: `comment` / `desc`）/ `error.unknown_flag_hint_options`（自由記述なし: その他）。`add` 向けのヒントは「タイトル」に言及しているため `move` や `due` に流用してはいけない（§W28-24 で誤配線を反証）
+
+**サブコマンドを持つハンドラの注意:** `label` / `template` / `bulk` は「ハンドラ冒頭で1回呼べば足りる」構造では**ない**。サブコマンドごとに消費するトークン範囲が違う（`parseArgs` / 固定インデックス / `join(' ')` が同一ハンドラ内に混在する）ため、分岐ごとに配線する必要がある。許可リストは全サブコマンドで空。
+
+**「位置1は既存バリデータが loud に落とす」という一般化はハンドラによって成立しない（レビュー指摘で判明）:** 設計時は `due` / `recur` / `link` / `priority` の4ハンドラで「位置1（`tokens[1]`）にフラグ字面が来ても `validateDue` / `validateRecur` / `parseInt` / `validatePriority` が既にエラーにする」ことを確認し、これを全ハンドラへ一般化していた。**`label` / `template` では成立しない**。ファイル冒頭の `FORBIDDEN_CHARS`（`` ;$`()"'\|&><{} ``）に**ハイフンが含まれない**ため、`validateCtx('--foo')` も `validateName('--foo')` も通ってしまう。実測（スタブ経由）で確認した抜け:
+
+| 入力 | ガード追加前の挙動 |
+|---|---|
+| `label add --boddy-file` | exit 0。GitHub 上に `@--boddy-file` というゴミラベルを作る（手動削除が必要） |
+| `label delete --foo` | exit 0。`issues.deleteLabel` に到達する |
+| `label rename --foo new` / `label rename old --bar` | exit 0。**実在ラベルの削除 + ゴミラベルの作成**という不可逆な組み合わせ |
+| `tag rename --foo new` / `tag rename old --bar` | 同上（`label rename` と同じ共通関数 `renameCtxLabel` を呼ぶ第2の入口。実害が同一） |
+| `template save --foo next` | exit 0。ローカルの `todo-templates.json` に `--foo` エントリを書き込む |
+| `template show --foo` / `template delete --foo` / `template use --foo` | exit 0（`use` は該当テンプレートが実在すればゴミ Issue を作る） |
+
+このため `label add` / `template save` / `template use` は名前の位置を単独で検査し、`label delete` / `label rename` / `template show` / `template delete` は検査対象を `slice(2)`・`slice(3)` から **`slice(1)`** へ広げて名前の位置を含めている。**共通関数を複数のコマンドが呼ぶ場合は、ガードを呼び出し元ではなく共通関数側に置く**: `renameCtxLabel` は `label rename` と `tag rename` の2経路から呼ばれるため、`runLabel` 側だけを塞ぐと `tag rename` が素通りする。関数冒頭で `[raw1, raw2]` を検査して両経路を1箇所で塞いだうえで、`runLabel rename` 側の `slice(1)` ガードは**残している**（`renameCtxLabel` は raw1 / raw2 しか受け取らず、余剰トークンが見えないため。守備範囲が違うので両方必要）。**引数の位置ごとの挙動を表にするときは、確認したハンドラと未確認のハンドラを混ぜないこと**。今回の抜けは、4ハンドラでの確認結果を残り全部へ広げたことが原因だった。
+
+**`runBulk done` の `parseArgs` 巻き上げ:** 従来 `parseArgs(rest)` は per-issue ループの**内側**で N 回呼ばれていた。`rest` はループ内で再代入されず、`parseArgs` は先頭で入力配列をコピーする純粋関数なので、ループ外へ移しても結果は同一（§W2 / §W16 の bulk 系が無変更で PASS することで実測確認）。巻き上げることで、未知フラグ検査を「1件目の API 呼び出しより前」かつ「`bulk.item_error` の集計ロジックの外」に置ける（per-item エラーとして握りつぶされない）。
+
+**テスト:** `tests/run-tests.sh` §51 に2件追加（許可リストが**完全一致**判定であることの固定。将来 `indexOf` を前方一致へ書き換えると `--groupp` が通ってしまう）+ `tests/run-tests-write.sh` §W26 を更新（`comment` の i18n 統一に伴い W26-5 のアサーションを ja 文言へ。W26-5c/5d を追加）+ **§W28 を新設**（200アサーション）。全1,747件PASS（書き込み系819/819）。GitHub への実書き込みは行わず、スタブ経由のみで検証した。`label` / `template` 系のケースは**隔離 HOME**（`mktemp -d` した一時ディレクトリを `HOME` に差し替える）で実行しており、実 HOME の `~/.claude/todo-templates.json` には触れない。**このセクションのケースを手で再現するときも必ず隔離 HOME を使うこと**（`template save <name>` は実 HOME のテンプレートファイルを書き換える。レビュー時に実際に踏んで手動復旧が必要になった）。
+
+**ガード除去による回帰検出で見つけた罠（テストを書く人向け）:** 追加した全ガードを一時的に無効化して実行し、異常系ケース全件が FAIL することを実測した。この過程で「ガードを外しても PASS したままのアサーション」が1件見つかり書き換えている（`edit 42 --priorityy p1` に対する `issues.addLabels` 0回の確認。`--priorityy` は `parseArgs` に消費されないので `parsed.priority` は null のままで、ガードの有無に関わらず `addLabels` は元々0回だった → API ログ全体が0行、で判定するよう修正）。同種の罠は3つある。
+
+1. **成功時の出力にもフラグの字面が出る**: フラグ名の部分一致で assert すると、ガードを外して成功したときも PASS する。**必ずエラーメッセージ全文で判定する**
+2. **スタブ応答不足で「別の理由で」失敗する**: 応答を用意せずに異常系だけ書くと、ガードの有無に関わらず例外で落ちて `assert_exit_fail` が常に PASS する。**対になる正常系で exit 0 を確認した応答を使い回す**こと（§W28 では `link` / `rename` / `desc` について、同じ応答でフラグなしなら exit 0 になることを W28-21b / 22c / 22e として明示的に固定している）
+3. **副作用ゼロの確認を「特定メソッドの回数」で書く**: 上記の W28-12b がこれ。そのメソッドがそもそも呼ばれない入力だと検証にならない。**API ログ全体の行数が0であること**で判定するほうが壊れにくい。同じ罠は W28-31（`label add` の `issues.createLabel` が0回）でも踏みかけた。`ensureLabel()` は GET が 200（＝ラベル既存）を返すと `createLabel` に到達しないため、既存ラベルを返すスタブのままだと「0回」がガードの有無に関わらず成り立つ。GET が **404 を throw する**スタブ（`{"__throw":true,"status":404}`）へ差し替え、対になる正常系（W28-31b）で `createLabel` が実際に1回呼ばれることを確認したうえで「0回」を検証している
+
+**アサーション粒度で残る例外（3件。意図的）:** ガード除去実験ではケース単位で見れば異常系は1件の例外もなく FAIL するが、**アサーション単位では W28-23 の `assert_no_japanese` と W28-24 の `assert_not_contains` ×2 が PASS したまま残る**（成功時の英語出力にも日本語は含まれず、成功時の出力にもタイトル向け・本文向けのヒント文言は現れないため）。この3つが見ているのは「ガードが存在すること」ではなく「ガードが発火したときの出力の i18n / ヒントキーの配線」という別の性質で、ガードの存在自体は同じケース内の `assert_exit_fail` と `assert_contains`（エラー全文）が担保している。**回帰検出器として読み替えないよう、テストコード側にも同趣旨の注記を置いてある**。§W26 側にも同型が4件ある（`runComment` はガードを外すと「本文が空」で別経路の exit 1 になるため）。
+
+**対象ファイル:** `todo-engine.js`（新設 `guardUnknownFlag()`、`MESSAGES` ja/en 2キー、`help.unknown_flag_note` ja/en とその出力配線、`runAdd()` / `runComment()` の共通ヘルパーへの置き換え、`runList` / `runDone` / `runMove` / `runEdit` / `runDue` / `runDesc` / `runRecur` / `runLink` / `runRename` / `runPriority` / `runLabel`×5 / `runTemplate`×8 / `runBulk`×3 への配線、`runBulk done` の `parseArgs` 巻き上げ、`label` / `bulk` に残っていた旧 `Usage: run ...` 4本を各コマンドの Usage 定数へ差し替えて1コマンド1本に統一）、`todo.md`
 
 ## 翻訳方針（i18n）
 

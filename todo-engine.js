@@ -221,6 +221,7 @@ const MESSAGES = {
     // help
     'help.routine_hint': '🔁 routine ラベルは繰り返しタスク専用です。--recur オプションと組み合わせて使用してください。',
     'help.desc_note': '※ desc/edit のテキストに due:/activate: 等を含めると body で重複表示されます',
+    'help.unknown_flag_note': '※ 未知フラグをエラーにするコマンド: add / list / done / move / edit / comment / rename / due / desc / recur / priority / link / label / template / bulk。フラグ名のタイプミスと、値を書き忘れた既知フラグが対象です（-- で始まる語をタイトルや本文に含めたい場合は全体をクォートしてください）\n※ 対象外: 上記以外のコマンド（show / search / stats など）は -- で始まる引数を従来どおり黙って無視します。対象コマンドでも、そのコマンドが読まないフラグ（例: add の --note、edit の --actual）は現時点では黙って捨てられます',
     // promote / activate
     'error.before_needs_due': 'エラー: --before を使うには --due が必要です',
     'error.before_format': 'エラー: --before は 14d / 2w 形式で指定してください（例: 14d, 2w）',
@@ -277,6 +278,8 @@ const MESSAGES = {
     'error.title_empty': 'エラー: タイトルが空です。',
     'error.unknown_flag': 'エラー: 不明なフラグです: {flag}',
     'error.unknown_flag_hint': 'ヒント: この語をタイトルに含めたい場合は、タイトル全体を1つの引数としてクォートしてください（例: /todo add next "--dry-run を追加する"）。タイトルがこの語1語だけの場合は、前後に語を足してください（例: 「--dry-run」の扱いを決める）。',
+    'error.unknown_flag_hint_body': 'ヒント: この語を本文に含めたい場合は、本文全体を1つの引数としてクォートしてください（例: /todo comment 42 "--dry-run を追加した"）。',
+    'error.unknown_flag_hint_options': 'ヒント: このコマンドで使えるオプションは /todo help で確認してください。',
     'hint.project_outcome': '💡 ヒント: プロジェクト名は「〜している状態」「〜が完了している」のような\n   成果物（outcome）の形で書くと Next Action を導出しやすくなります。',
     'label.desc_context': 'コンテキスト',
     'label.desc_tag': 'タグ',
@@ -588,6 +591,7 @@ const MESSAGES = {
     // help
     'help.routine_hint': '🔁 routine label is for recurring tasks. Recommended to use with --recur option.',
     'help.desc_note': 'Note: including due:/activate: in desc/edit text causes duplicate display in body',
+    'help.unknown_flag_note': 'Note: unknown flags are rejected by these commands: add / list / done / move / edit / comment / rename / due / desc / recur / priority / link / label / template / bulk. This covers misspelled flag names and known flags whose value is missing (to keep a word starting with -- inside a title or body, quote the whole text).\nNote: not covered - other commands (show / search / stats, etc.) ignore arguments starting with -- silently, and even in the commands above, a flag that the command itself does not read (e.g. --note on add, --actual on edit) is currently dropped silently.',
     // promote / activate
     'error.before_needs_due': 'Error: --before requires --due',
     'error.before_format': 'Error: --before must be in 14d / 2w format (e.g. 14d, 2w)',
@@ -644,6 +648,8 @@ const MESSAGES = {
     'error.title_empty': 'Error: Title is empty.',
     'error.unknown_flag': 'Error: unknown flag: {flag}',
     'error.unknown_flag_hint': 'Hint: to keep this word in the title, quote the whole title as a single argument (e.g. /todo add next "add --dry-run"). If the title is only this word, add words around it (e.g. "decide how to handle --dry-run").',
+    'error.unknown_flag_hint_body': 'Hint: to keep this word in the body text, quote the whole body as a single argument (e.g. /todo comment 42 "added --dry-run").',
+    'error.unknown_flag_hint_options': 'Hint: run /todo help to see the options this command accepts.',
     'hint.project_outcome': '💡 Hint: Project titles are easier to derive Next Actions from when written\n   as an outcome (e.g. "X is done", "X has been completed").',
     'label.desc_context': 'Context',
     'label.desc_tag': 'Tag',
@@ -1923,6 +1929,10 @@ function help() {
   w('```\n');
   w('\n');
   w(t('help.desc_note')+'\n');
+  // #1921: 未知フラグの扱いは全コマンド共通の総則として1行だけ出す。
+  // help.<cmd> の個別行には書かない（行が長くなるうえ、コマンド形を検証する
+  // run-tests.sh §49 のドリフト検査に触れずに済む）。
+  w(t('help.unknown_flag_note')+'\n');
   w('\n');
 
   w(t('help.section_migrated')+'\n');
@@ -3199,6 +3209,29 @@ function findUnknownFlag(tokens, allowedFlags) {
   return null;
 }
 
+// 未知フラグを検出したら Usage・エラー本文・ヒント行を stderr へ出して終了する（#1921 第2弾）。
+// 全ハンドラ（add / list / done / move / edit / comment / due / recur / link / priority /
+// rename / desc / label / template / bulk）で同じ出力形式に揃えるための薄いラッパ。
+//   tokens      : 検査対象（parseArgs 後の extra、または固定インデックスで消費しなかった残り）
+//   allowedFlags: そのハンドラが parseArgs の後で extra から自前に解釈するフラグ（runList のみ非空）
+//   usage       : そのコマンドの Usage 行（英語固定。DEVELOPMENT.md §翻訳方針）
+//   hintKey     : ヒント行のメッセージキー。自由記述のタイトルを持つコマンド（add / rename /
+//                 template use）は 'error.unknown_flag_hint'、自由記述の本文を持つコマンド
+//                 （comment / desc）は 'error.unknown_flag_hint_body'、自由記述を持たない
+//                 コマンドは 'error.unknown_flag_hint_options'。
+//
+// 【関数宣言（function）で書くこと】アロー関数を代入した const にすると、ファイル冒頭の
+// UNKNOWN_FLAG_RE と同じ TDZ 問題（モジュール評価の途中でトップレベル switch が走る）を
+// 別の形で踏む。理由の詳細はファイル冒頭 24-35行のコメントを参照。
+function guardUnknownFlag(tokens, allowedFlags, usage, hintKey) {
+  const flag = findUnknownFlag(tokens, allowedFlags);
+  if (!flag) return;
+  if (usage) process.stderr.write(`${usage}\n`);
+  process.stderr.write(tpl('error.unknown_flag', { flag })+'\n');
+  process.stderr.write(t(hintKey)+'\n');
+  process.exit(1);
+}
+
 // /todo add の Usage 行（未知フラグ検出時に stderr へ出す）。
 // DEVELOPMENT.md §翻訳方針「Usage: 文字列は常時英語で統一」に従い t() を通さない。
 // 掲載範囲: runAdd が実際に参照するフラグのみを載せる。parseArgs は --actual / --note /
@@ -3460,13 +3493,9 @@ async function runAdd(octokit, owner, repo, tokens) {
   // 条件を満たさず extra に残る）もここで捕まる。
   // 検査位置の制約: (1) title_empty より前（原因に直結するメッセージを優先する）、
   // (2) ensureLabel（コンテキストラベル作成）より前＝バリデーションを API 副作用より前に置く。
-  const unknownFlag = findUnknownFlag(parsed.extra, []);
-  if (unknownFlag) {
-    process.stderr.write(`${ADD_USAGE}\n`);
-    process.stderr.write(tpl('error.unknown_flag', { flag: unknownFlag })+'\n');
-    process.stderr.write(t('error.unknown_flag_hint')+'\n');
-    process.exit(1);
-  }
+  // #1921 第2弾で共通ヘルパー guardUnknownFlag へ置き換えた（出力は1文字も変えていない）。
+  // add はタイトルが自由記述なので hint は「タイトル」向けのキーを使う。
+  guardUnknownFlag(parsed.extra, [], ADD_USAGE, 'error.unknown_flag_hint');
 
   // タイトル: 残りトークンを連結
   const titleTokens = parsed.extra.filter(s => s.trim());
@@ -3629,6 +3658,17 @@ async function runList(octokit, owner, repo, tokens) {
   const today = getToday();
   const parsed = parseArgs(tokens2);
   const extra = parsed.extra;
+
+  // #1921 パターンB: extra に残った未知フラグを黙って無視しない（`list next --no-duee` は
+  // 従来どおりだと全件表示されてしまい、フィルタが効いていないことに気づけない）。
+  // LIST_ALLOWED_FLAGS は runList が extra から自前に解釈するフラグ。**下の for ループの
+  // `tok === '--group' / '--no-due' / '--no-estimate'` 判定と必ず同じ字面・同じ順序に保つこと**
+  // （片方だけ増やすと、許可したのにフィルタが効かない/フィルタはあるのにエラーになる）。
+  // `--json` はここに入れない: runList 冒頭の `tokens.filter(t => t !== '--json')` で
+  // parseArgs より前に除去済みのため extra に届かない（行番号は変動するので書かない）。
+  const LIST_ALLOWED_FLAGS = ['--group', '--no-due', '--no-estimate'];
+  const LIST_USAGE = 'Usage: /todo list [GTD] [@ctx] [#tag] [p1|p2|p3] [project <#>] [--group] [--no-due] [--no-estimate] [--json]';
+  guardUnknownFlag(extra, LIST_ALLOWED_FLAGS, LIST_USAGE, 'error.unknown_flag_hint_options');
 
   // フィルタ判定
   let filterGtd = '', filterCtx = '', filterTag = '', filterPri = '', filterProj = '';
@@ -3902,6 +3942,10 @@ async function runDone(octokit, owner, repo, tokens) {
   if (!num) { process.stderr.write(t('error.positive_int')+'\n'); process.exit(1); }
   validateNumber(String(num));
   const parsed = parseArgs(tokens.slice(1));
+  // #1921 パターンB: 未知フラグは黙って捨てず、API 副作用（下の fetchAndParseIssue 以降）より前に落とす。
+  // done は自由記述を持たない（番号は先に取り出し済み）ため許可リストは空。
+  const DONE_USAGE = 'Usage: /todo done <#> [--actual <time>] [--note "text"]';
+  guardUnknownFlag(parsed.extra, [], DONE_USAGE, 'error.unknown_flag_hint_options');
 
   const issue = await fetchAndParseIssue(octokit, owner, repo, num);
   let actual = issue.actual;
@@ -3977,10 +4021,15 @@ async function execRemoveLabels(octokit, owner, repo, num, labels) {
 async function runMove(octokit, owner, repo, tokens) {
   const num = parseInt(tokens[0]);
   const target = tokens[1];
-  if (!num || !target) { process.stderr.write('Usage: run move <number> <GTD>\n'); process.exit(1); }
+  // #1921 第2弾: Usage 文言を1本化して未知フラグエラーと引数不足エラーで共用する。
+  const MOVE_USAGE = 'Usage: /todo move <#> <GTD> [--note "text"]';
+  if (!num || !target) { process.stderr.write(`${MOVE_USAGE}\n`); process.exit(1); }
   validateNumber(String(num));
   // --note オプションを取り出す（残りのトークンから解析）
   const parsed = parseArgs(tokens.slice(2));
+  // #1921 パターンB: 移動先 GTD 名は tokens[1] で取得済み・slice(2) で除外されるため
+  // extra に正当な位置引数は残らない。許可リストは空。ラベル変更（execMoveGtd）より前に落とす。
+  guardUnknownFlag(parsed.extra, [], MOVE_USAGE, 'error.unknown_flag_hint_options');
   const noteText = parsed.note || null;
   const newLabel = await execMoveGtd(octokit, owner, repo, num, target);
   runOut(tpl('move.done', { num, label: newLabel }));
@@ -4044,8 +4093,12 @@ async function runComment(octokit, owner, repo, tokens) {
     } else if (UNKNOWN_FLAG_RE.test(tok)) {
       // 未知のフラグ、または値が欠落した既知フラグ（末尾の --body-file 等）。
       // ここで本文へ連結せず即エラー終了する（#1919 の再発防止の核）。
-      process.stderr.write(`${usage}\nError: unknown flag: ${tok}\n`);
-      process.exit(1);
+      // #1921 第2弾: 英語ハードコードをやめ add と同じ error.unknown_flag へ寄せた。
+      // ヒントは「本文」向けの専用キーを使う（add の hint は「タイトル」に言及するため流用不可）。
+      // 単一要素配列で呼ぶのは、このループが --body / --body-file を同時に拾う構造だから。
+      // rest 全体 + 許可リスト ['--body','--body-file'] へリファクタしてはいけない:
+      // 値が欠落した末尾の --body-file が許可リストに載ってしまい、W26-5b（値欠落のエラー化）が壊れる。
+      guardUnknownFlag([tok], [], usage, 'error.unknown_flag_hint_body');
     }
   }
 
@@ -4084,6 +4137,12 @@ async function runEdit(octokit, owner, repo, tokens) {
   if (!num) { process.stderr.write(t('error.positive_int')+'\n'); process.exit(1); }
   validateNumber(String(num));
   const parsed = parseArgs(tokens.slice(1));
+  // #1921 パターンB: 未知フラグ（`--duee` 等のタイポ・値欠落した既知フラグ）を黙って捨てず、
+  // Issue 取得より前に落とす。edit は自由記述の位置引数を持たないため許可リストは空。
+  const EDIT_USAGE = 'Usage: /todo edit <#> [--due <date>] [--desc <text>] [--recur <pattern>] '
+                   + '[--priority p1|p2|p3] [--p1|--p2|--p3] [--project <#>] [--estimate <time>] '
+                   + '[--activate <date>] [--before <duration>] [--depends-on <#>] [--resume-condition <text>]';
+  guardUnknownFlag(parsed.extra, [], EDIT_USAGE, 'error.unknown_flag_hint_options');
 
   const issue = await fetchAndParseIssue(octokit, owner, repo, num);
   let changed = [];
@@ -4218,8 +4277,14 @@ async function runDue(octokit, owner, repo, tokens) {
   const today = getToday();
   const num = parseInt(tokens[0]);
   const rawDue = tokens[1];
-  if (!num || rawDue === undefined) { process.stderr.write('Usage: run due <number> <date|clear>\n'); process.exit(1); }
+  const DUE_USAGE = 'Usage: /todo due <#> <date|clear>';
+  if (!num || rawDue === undefined) { process.stderr.write(`${DUE_USAGE}\n`); process.exit(1); }
   validateNumber(String(num));
+  // #1921 パターンC: 固定インデックス（tokens[0]=番号 / tokens[1]=日付）で読むため、
+  // tokens.slice(2) 以降は従来すべて黙って捨てられていた（`due 42 2026-09-10 --note "理由"` の
+  // --note は効かない）。フラグ字面のトークンだけをエラーにする。
+  // 位置引数の余剰（`due 42 今週 金曜` 等）は従来どおり通す（後方互換。手順書に実在する形）。
+  guardUnknownFlag(tokens.slice(2), [], DUE_USAGE, 'error.unknown_flag_hint_options');
 
   // clear または空文字 → 期日削除
   if (rawDue === 'clear' || rawDue === '') {
@@ -4246,6 +4311,11 @@ async function runDesc(octokit, owner, repo, tokens) {
   validateNumber(String(num));
 
   const newText = tokens.slice(1).join(' ');
+  // #1921 第2弾: desc は tokens.slice(1) をそのまま連結して本文に追記するため、
+  // `desc 42 --boddy-file /tmp/x` が「--boddy-file /tmp/x」という desc として exit 0 で
+  // 書き込まれていた（add のタイトル汚染と同型）。自由記述は本文なので hint も本文向け。
+  const DESC_USAGE = 'Usage: /todo desc <#> <text>';
+  guardUnknownFlag(tokens.slice(1), [], DESC_USAGE, 'error.unknown_flag_hint_body');
   if (!newText.trim()) {
     process.stderr.write(t('error.desc_required')+'\n');
     process.exit(1);
@@ -4261,8 +4331,11 @@ async function runDesc(octokit, owner, repo, tokens) {
 async function runRecur(octokit, owner, repo, tokens) {
   const num = parseInt(tokens[0]);
   const pattern = tokens[1];
-  if (!num || !pattern) { process.stderr.write('Usage: run recur <number> <pattern|clear>\n'); process.exit(1); }
+  const RECUR_USAGE = 'Usage: /todo recur <#> <pattern|clear>';
+  if (!num || !pattern) { process.stderr.write(`${RECUR_USAGE}\n`); process.exit(1); }
   validateNumber(String(num));
+  // #1921 パターンC: tokens.slice(2) 以降は従来黙って捨てられていた。
+  guardUnknownFlag(tokens.slice(2), [], RECUR_USAGE, 'error.unknown_flag_hint_options');
   let recur = '';
   if (pattern !== 'clear') { validateRecur(pattern); recur = pattern; }
 
@@ -4275,8 +4348,11 @@ async function runRecur(octokit, owner, repo, tokens) {
 async function runLink(octokit, owner, repo, tokens) {
   const num = parseInt(tokens[0]);
   const proj = parseInt(tokens[1]);
-  if (!num || !proj) { process.stderr.write('Usage: run link <number> <project-number>\n'); process.exit(1); }
+  const LINK_USAGE = 'Usage: /todo link <#> <project-#>';
+  if (!num || !proj) { process.stderr.write(`${LINK_USAGE}\n`); process.exit(1); }
   validateNumber(String(num)); validateNumber(String(proj));
+  // #1921 パターンC: tokens.slice(2) 以降は従来黙って捨てられていた。
+  guardUnknownFlag(tokens.slice(2), [], LINK_USAGE, 'error.unknown_flag_hint_options');
 
   const issue = await fetchAndParseIssue(octokit, owner, repo, num);
 
@@ -4307,7 +4383,12 @@ async function runLink(octokit, owner, repo, tokens) {
 async function runRename(octokit, owner, repo, tokens) {
   const num = parseInt(tokens[0]);
   const newTitle = tokens.slice(1).join(' ');
-  if (!num || !newTitle) { process.stderr.write('Usage: run rename <number> <new-title>\n'); process.exit(1); }
+  const RENAME_USAGE = 'Usage: /todo rename <#> <new-title>';
+  if (!num || !newTitle) { process.stderr.write(`${RENAME_USAGE}\n`); process.exit(1); }
+  // #1921 第2弾: rename は tokens.slice(1) をそのまま新タイトルにして issues.update するため、
+  // `rename 42 --boddy-file /tmp/x` が既存タイトルを「--boddy-file /tmp/x」で上書きして
+  // exit 0 になっていた（add のゴミ Issue より復旧が困難）。update の前に落とす。
+  guardUnknownFlag(tokens.slice(1), [], RENAME_USAGE, 'error.unknown_flag_hint');
   validateNumber(String(num)); validateTitle(newTitle);
   await octokit.issues.update({ owner, repo, issue_number: num, title: newTitle });
   runOut(tpl('rename.done', { num, title: newTitle }));
@@ -4316,8 +4397,11 @@ async function runRename(octokit, owner, repo, tokens) {
 async function runPriority(octokit, owner, repo, tokens) {
   const num = parseInt(tokens[0]);
   const level = tokens[1];
-  if (!num || !level) { process.stderr.write('Usage: run priority <number> <p1|p2|p3|clear>\n'); process.exit(1); }
+  const PRIORITY_USAGE = 'Usage: /todo priority <#> <p1|p2|p3|clear>';
+  if (!num || !level) { process.stderr.write(`${PRIORITY_USAGE}\n`); process.exit(1); }
   validateNumber(String(num));
+  // #1921 パターンC: tokens.slice(2) 以降は従来黙って捨てられていた。
+  guardUnknownFlag(tokens.slice(2), [], PRIORITY_USAGE, 'error.unknown_flag_hint_options');
   // #1652: validate-before-mutate — 旧priorityラベルを削除する前にlevelを検証する。
   // 逆順だとtypo時に旧ラベルだけ削除された中途半端な状態でエラー終了してしまう。
   if (level !== 'clear') validatePriority(level);
@@ -4358,6 +4442,14 @@ function normalizeTagTokens(rawTokens) {
 // @ctx ラベルを全タスク横断でリネームする（label rename / tag rename で共用。Issue #1644）
 async function renameCtxLabel(octokit, owner, repo, raw1, raw2, usage) {
   if (!raw1 || !raw2) { process.stderr.write(`Usage: ${usage}\n`); process.exit(1); }
+  // #1921 第2弾: old / new どちらの位置にフラグ字面が来ても
+  // 「@--foo というゴミラベルを作ったうえで実在の @old を削除する」という不可逆な副作用に
+  // なる。validateCtx は FORBIDDEN_CHARS にハイフンを含まないため素通りさせてしまう。
+  // ここ（共用関数の冒頭）に置くことで label rename / tag rename の両経路を同時に塞ぐ。
+  // 呼び出し元 runLabel rename 側の guardUnknownFlag は残す: あちらは tokens.slice(1) で
+  // 「余剰トークン」までカバーしており、この関数は raw1 / raw2 しか受け取らないため
+  // 余剰が見えない。両方が必要（片方では守備範囲が埋まらない）。
+  guardUnknownFlag([raw1, raw2], [], `Usage: ${usage}`, 'error.unknown_flag_hint_options');
   const oldName = raw1.startsWith('@') ? raw1 : '@'+raw1;
   const newName = raw2.startsWith('@') ? raw2 : '@'+raw2;
   validateCtx(oldName.slice(1)); validateCtx(newName.slice(1));
@@ -4413,16 +4505,27 @@ async function runUntag(octokit, owner, repo, tokens) {
 
 async function runLabel(octokit, owner, repo, tokens) {
   const sub = tokens[0];
+  // #1921 パターンB: サブコマンドごとに「消費するトークンの範囲」が違うため、
+  // ハンドラ冒頭で1回まとめて検査することはできない。各分岐で残りトークンを検査する。
+  // 許可リストは全サブコマンドで空（extra から自前に読むフラグはない）。
+  const LABEL_USAGE = 'Usage: /todo label list|add <name> [--color <hex>]|delete <name>|rename <old> <new>';
   if (sub === 'list') {
+    guardUnknownFlag(tokens.slice(1), [], LABEL_USAGE, 'error.unknown_flag_hint_options');
     const { data } = await octokit.issues.listLabelsForRepo({ owner, repo, per_page: 100 });
     const ctxLabels = data.filter(l => l.name.startsWith('@'));
     if (!ctxLabels.length) { runOut(t('label.list_empty')); return; }
     for (const l of ctxLabels) runOut(`  ${l.name}  #${l.color}  ${l.description||''}`);
   } else if (sub === 'add') {
     const raw1 = tokens[1];
-    if (!raw1) { process.stderr.write('Usage: /todo label add <name> [--color hex]\n'); process.exit(1); }
+    if (!raw1) { process.stderr.write(`${LABEL_USAGE}\n`); process.exit(1); }
+    // #1921 第2弾（レビュー指摘）: 名前の位置（tokens[1]）も検査する。FORBIDDEN_CHARS に
+    // ハイフンが含まれないため validateCtx('--foo') は通ってしまい、`label add --boddy-file`
+    // が GitHub 上に @--boddy-file というゴミラベルを作れてしまう（手動削除が必要な不可逆の
+    // 副作用）。位置1は既存バリデータが落とす、という一般化は label / template では成立しない。
+    guardUnknownFlag([raw1], [], LABEL_USAGE, 'error.unknown_flag_hint_options');
     const name = raw1.startsWith('@') ? raw1 : '@'+raw1;
     const parsed = parseArgs(tokens.slice(2));
+    guardUnknownFlag(parsed.extra, [], LABEL_USAGE, 'error.unknown_flag_hint_options');
     validateCtx(name.slice(1));
     const color = parsed.color || 'FBCA04';
     if (parsed.color) validateColor(parsed.color);
@@ -4430,15 +4533,21 @@ async function runLabel(octokit, owner, repo, tokens) {
     runOut(tpl('label.created_named', { name }));
   } else if (sub === 'delete') {
     const raw1 = tokens[1];
-    if (!raw1) { process.stderr.write('Usage: /todo label delete <name>\n'); process.exit(1); }
+    if (!raw1) { process.stderr.write(`${LABEL_USAGE}\n`); process.exit(1); }
+    // slice(1) にすることで名前の位置（tokens[1]）と余剰トークンを1回で検査する（上記 add のコメント参照）
+    guardUnknownFlag(tokens.slice(1), [], LABEL_USAGE, 'error.unknown_flag_hint_options');
     const name = raw1.startsWith('@') ? raw1 : '@'+raw1;
     validateCtx(name.slice(1));
     try { await octokit.issues.deleteLabel({ owner, repo, name }); } catch(e) { if (e.status !== 404) throw e; }
     runOut(tpl('label.deleted_named', { name }));
   } else if (sub === 'rename') {
+    // slice(1) は old（tokens[1]）/ new（tokens[2]）/ 余剰トークンをすべて含む。
+    // rename は「@old を消して @new を作る」操作なので、どちらの位置にフラグ字面が来ても
+    // 不可逆な副作用（既存ラベルの削除 + ゴミラベルの作成）になる。
+    guardUnknownFlag(tokens.slice(1), [], LABEL_USAGE, 'error.unknown_flag_hint_options');
     return await renameCtxLabel(octokit, owner, repo, tokens[1], tokens[2], '/todo label rename <old> <new>');
   } else {
-    process.stderr.write('Usage: run label list|add|delete|rename\n'); process.exit(1);
+    process.stderr.write(`${LABEL_USAGE}\n`); process.exit(1);
   }
 }
 
@@ -4569,22 +4678,35 @@ async function runHelp() {
 async function runTemplate(octokit, owner, repo, tokens) {
   const sub = tokens[0];
   const today = getToday();
+  // #1921 パターンB: runLabel と同じく、サブコマンドごとに消費するトークン範囲が違う
+  // （parseArgs / 固定インデックス / join(' ') によるタイトル化の3種類が混在する）ため、
+  // 各分岐で検査する。許可リストは全サブコマンドで空。
+  const TEMPLATE_USAGE = 'Usage: /todo template list|show <name>|save <name> [args...]|use <name> [title]|delete <name>';
 
   if (sub === 'list') {
+    guardUnknownFlag(tokens.slice(1), [], TEMPLATE_USAGE, 'error.unknown_flag_hint_options');
     templateList();
   } else if (sub === 'show') {
     const name = tokens[1];
-    if (!name) { process.stderr.write('Usage: run template show <name>\n'); process.exit(1); }
+    if (!name) { process.stderr.write(`${TEMPLATE_USAGE}\n`); process.exit(1); }
+    // #1921 第2弾（レビュー指摘）: slice(2) ではなく slice(1)。テンプレート名の位置も検査する。
+    // validateName('--foo') は通る（FORBIDDEN_CHARS にハイフンが含まれない）ため、名前位置を
+    // 検査対象から外すと `template save --foo next` がローカルの todo-templates.json に
+    // `--foo` エントリを書き込めてしまう。show/delete も同じ線引きに揃える。
+    guardUnknownFlag(tokens.slice(1), [], TEMPLATE_USAGE, 'error.unknown_flag_hint_options');
     validateName(name);
     process.env.TNAME_ENV = name;
     templateShow();
   } else if (sub === 'save') {
     const name = tokens[1];
-    if (!name) { process.stderr.write('Usage: run template save <name> [args...]\n'); process.exit(1); }
+    if (!name) { process.stderr.write(`${TEMPLATE_USAGE}\n`); process.exit(1); }
+    // 名前の位置を検査する（save-from 形式・インライン形式の両方に効かせるため分岐より前に置く）
+    guardUnknownFlag([name], [], TEMPLATE_USAGE, 'error.unknown_flag_hint_options');
     validateName(name);
     const rest = tokens.slice(2);
     // save-from 形式
     if (rest[0] === 'from' && rest[1]) {
+      guardUnknownFlag(rest.slice(2), [], TEMPLATE_USAGE, 'error.unknown_flag_hint_options');
       validateNumber(rest[1]);
       const num = parseInt(rest[1]);
       const issue = await fetchAndParseIssue(octokit, owner, repo, num);
@@ -4607,6 +4729,7 @@ async function runTemplate(octokit, owner, repo, tokens) {
       let gtd = 'inbox';
       if (rest.length && (GTD_LABELS.includes(rest[0]) || rest[0] === PROJECT_LABEL)) gtd = rest.shift();
       const parsed = parseArgs(rest);
+      guardUnknownFlag(parsed.extra, [], TEMPLATE_USAGE, 'error.unknown_flag_hint_options');
       const contexts = parsed.contexts;
       const priority = parsed.priority || 'p3';
       for (const ctx of contexts) validateCtx(ctx.slice(1));
@@ -4635,7 +4758,13 @@ async function runTemplate(octokit, owner, repo, tokens) {
     }
   } else if (sub === 'use') {
     const name = tokens[1];
-    if (!name) { process.stderr.write('Usage: run template use <name> [title-override]\n'); process.exit(1); }
+    if (!name) { process.stderr.write(`${TEMPLATE_USAGE}\n`); process.exit(1); }
+    // #1921 第2弾: template use は tokens.slice(2) をタイトル上書きとして連結し、runAdd を
+    // 経由せず自前に issues.create を呼ぶ（パターンA とまったく同型のゴミ Issue 作成経路）。
+    // 自由記述がタイトルなので slice(2) の hint は「タイトル」向けキーを使う。
+    // 名前の位置（tokens[1]）は自由記述ではないので options 向けキーで別に検査する。
+    guardUnknownFlag([name], [], TEMPLATE_USAGE, 'error.unknown_flag_hint_options');
+    guardUnknownFlag(tokens.slice(2), [], TEMPLATE_USAGE, 'error.unknown_flag_hint');
     validateName(name);
     const overrideTitle = tokens.slice(2).join(' ');
     process.env.TNAME_ENV = name;
@@ -4698,12 +4827,14 @@ async function runTemplate(octokit, owner, repo, tokens) {
     }
   } else if (sub === 'delete') {
     const name = tokens[1];
-    if (!name) { process.stderr.write('Usage: run template delete <name>\n'); process.exit(1); }
+    if (!name) { process.stderr.write(`${TEMPLATE_USAGE}\n`); process.exit(1); }
+    // slice(1) で名前の位置も検査する（上記 show のコメント参照）
+    guardUnknownFlag(tokens.slice(1), [], TEMPLATE_USAGE, 'error.unknown_flag_hint_options');
     validateName(name);
     process.env.TNAME_ENV = name;
     templateDelete();
   } else {
-    process.stderr.write('Usage: run template list|show|save|use|delete\n'); process.exit(1);
+    process.stderr.write(`${TEMPLATE_USAGE}\n`); process.exit(1);
   }
 }
 
@@ -4963,8 +5094,9 @@ async function runView(octokit, owner, repo, tokens) {
 
 async function runBulk(octokit, owner, repo, tokens) {
   const sub = tokens[0];
+  const BULK_USAGE = 'Usage: /todo bulk <done|move|tag|untag|priority> <#>... [options]';
   if (!['done','move','tag','untag','priority'].includes(sub)) {
-    process.stderr.write('Usage: run bulk <done|move|tag|untag|priority> <numbers...> [options]\n'); process.exit(1);
+    process.stderr.write(`${BULK_USAGE}\n`); process.exit(1);
   }
 
   // 番号を先頭から収集（数字のみ）
@@ -4977,10 +5109,16 @@ async function runBulk(octokit, owner, repo, tokens) {
 
   let doneCount = 0, errCount = 0;
   if (sub === 'done') {
+    // #1921 パターンB: parseArgs をループ外へ巻き上げた。rest はループ内で再代入されず、
+    // parseArgs は先頭で入力配列をコピーする純粋関数なので、N 回呼ぶのと1回呼ぶのは結果が同一
+    // （§W2 / §W16 の bulk 系が無変更で PASS することで実測確認済み）。巻き上げることで
+    // 未知フラグ検査を「1件目の API 呼び出しより前」かつ「bulk.item_error の集計ロジックの外」
+    // に置ける（per-item エラーとして握りつぶされない）。
+    const parsed = parseArgs(rest);
+    guardUnknownFlag(parsed.extra, [], BULK_USAGE, 'error.unknown_flag_hint_options');
     let recurCreated = 0;
     for (const num of nums) {
       try {
-        const parsed = parseArgs(rest);
         const issue = await fetchAndParseIssue(octokit, owner, repo, num);
         let actual = issue.actual;
         if (parsed.actual) { const a = parseTime(parsed.actual); if (a !== null) actual = String(a); }
@@ -5027,6 +5165,9 @@ async function runBulk(octokit, owner, repo, tokens) {
       }
       process.exit(1);
     }
+    // #1921 パターンB: bulk move は rest[0]（移動先 GTD）しか読まず rest.slice(1) を捨てていた。
+    // 単体 move と違い `bulk move 1 2 next --note "x"` の --note は効かない（黙って無視される）。
+    guardUnknownFlag(rest.slice(1), [], BULK_USAGE, 'error.unknown_flag_hint_options');
     const newLabel = GTD_DISPLAY[target];
     for (const num of nums) {
       try {
@@ -5041,8 +5182,11 @@ async function runBulk(octokit, owner, repo, tokens) {
     }
     runOut(tpl('bulk.moved_count', { n: doneCount, label: newLabel }) + (errCount ? tpl('bulk.err_suffix', { n: errCount }) : ''));
   } else if (sub === 'tag') {
+    // #1921 第2弾【意図的な例外】tag / untag には guardUnknownFlag を入れない。
+    // normalizeTagTokens が `-` 始まりトークンを既に error.option_like_token で exit 1 させており
+    // （#1686）、guard を足すとメッセージが「オプション指定に見えます」から変わってしまう。
     const labelList = normalizeTagTokens(rest);
-    if (!labelList.length) { process.stderr.write('Usage: run bulk tag <nums...> @ctx/#tag ...\n'); process.exit(1); }
+    if (!labelList.length) { process.stderr.write(`${BULK_USAGE}\n`); process.exit(1); }
     for (const lbl of labelList) {
       let created;
       if (lbl.startsWith('#')) { validateTag(lbl.slice(1)); created = await ensureLabel(octokit, owner, repo, lbl, '0075CA', t('label.desc_tag')); }
@@ -5057,7 +5201,7 @@ async function runBulk(octokit, owner, repo, tokens) {
     runOut(tpl('bulk.tag_added_count', { n: doneCount, labels: labelList.join(' ') }) + (errCount ? tpl('bulk.err_suffix', { n: errCount }) : ''));
   } else if (sub === 'untag') {
     const labelList = normalizeTagTokens(rest);
-    if (!labelList.length) { process.stderr.write('Usage: run bulk untag <nums...> @ctx/#tag ...\n'); process.exit(1); }
+    if (!labelList.length) { process.stderr.write(`${BULK_USAGE}\n`); process.exit(1); }
     for (const lbl of labelList) {
       if (lbl.startsWith('#')) { validateTag(lbl.slice(1)); }
       else { validateCtx(lbl.slice(1)); }
@@ -5071,8 +5215,10 @@ async function runBulk(octokit, owner, repo, tokens) {
     runOut(tpl('bulk.tag_removed_count', { n: doneCount, labels: labelList.join(' ') }) + (errCount ? tpl('bulk.err_suffix', { n: errCount }) : ''));
   } else if (sub === 'priority') {
     const level = rest[0];
-    if (!level) { process.stderr.write('Usage: run bulk priority <nums...> <p1|p2|p3|clear>\n'); process.exit(1); }
+    if (!level) { process.stderr.write(`${BULK_USAGE}\n`); process.exit(1); }
     if (level !== 'clear') validatePriority(level);
+    // #1921 パターンB: rest.slice(1) は従来黙って捨てられていた。ラベル作成（ensureLabel）より前に落とす。
+    guardUnknownFlag(rest.slice(1), [], BULK_USAGE, 'error.unknown_flag_hint_options');
     if (level !== 'clear') { const pcolor = priorityColor(level); await ensureLabel(octokit, owner, repo, level, pcolor, t('label.desc_priority')); }
     for (const num of nums) {
       try {

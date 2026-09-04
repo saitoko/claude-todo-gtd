@@ -4545,6 +4545,14 @@ _G1921_BIGTOKENS=$(node -e '
 assert_eq "§51-17 パフォーマンス: 500要素の配列でも末尾の --zzz を検出して完了する" \
   "--zzz" "$(node "$ENGINE" find-unknown-flag "$_G1921_BIGTOKENS" '[]')"
 
+# --- パターンB（#1921 第2弾）: runList の許可リストを固定する ---
+assert_eq "§51-18 正常系: runList の実入力形（GTD/優先度/project番号 + 許可フラグ）→ 検出なし" \
+  "" "$(node "$ENGINE" find-unknown-flag '["next","p1","project","5","--group","--no-due"]' '["--group","--no-due","--no-estimate"]')"
+# 許可リスト判定が「完全一致」であることの固定。将来 allowed.indexOf(tok) を
+# startsWith 等の前方一致へ書き換えると --groupp が通ってしまう。
+assert_eq "§51-19 境界値: 許可リストは完全一致（--groupp は --group の許可で通らない）" \
+  "--groupp" "$(node "$ENGINE" find-unknown-flag '["next","--groupp"]' '["--group","--no-due","--no-estimate"]')"
+
 # ──────────────────────────────────────────
 # 書き込み系ハンドラのスタブベーステスト（run-tests-write.sh、Issue #1648）
 # 3,266行超に肥大化した本ファイルへの追記を避けるため別ファイルに分離し、

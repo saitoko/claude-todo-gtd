@@ -2175,7 +2175,10 @@ W26_5_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W26_5_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
   node "$ENGINE" run comment 45 --boddy-file /tmp/some-path 2>&1); W26_5_EC=$?
 assert_exit_fail "W26-5【核心・直接再現】未知フラグ(--boddy-file)は本文にならずエラー終了" "$W26_5_EC"
-assert_contains "W26-5: エラーメッセージに未知フラグ名を含む" "unknown flag: --boddy-file" "$W26_5_OUT"
+# #1921 第2弾で英語ハードコードを i18n（error.unknown_flag）へ寄せたため、日本語モードの
+# 期待値を ja 文言へ更新した。部分一致（--boddy-file だけ）に緩めてはいけない: 成功時の
+# 出力にもフラグ名の字面が現れうるため、ガードを外しても PASS するアサーションになる。
+assert_contains "W26-5: エラー本文が未知フラグのものである（ja 文言。#1921 第2弾で i18n 統一）" "エラー: 不明なフラグです: --boddy-file" "$W26_5_OUT"
 assert_eq "W26-5: issues.createComment は呼ばれない（黙って本文として投稿しない）" "0" "$(log_count "$W26_5_LOG" issues.createComment)"
 rm -f "$W26_5_LOG"
 
@@ -2188,6 +2191,33 @@ W26_5B_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W26_5B_LOG" \
 assert_exit_fail "W26-5b 値欠落の --body-file（末尾）もエラー終了（黙って本文にしない）" "$W26_5B_EC"
 assert_eq "W26-5b: issues.createComment は呼ばれない" "0" "$(log_count "$W26_5B_LOG" issues.createComment)"
 rm -f "$W26_5B_LOG"
+
+# W26-5c 英語モード（LANG_ENV=en）: 本文は #1919 当時のハードコードと完全一致し、
+# ヒント行が1行増える。日本語が1文字も混入しないこと（Issue #1653 の方針）。
+W26_5C_LOG=$(mktemp /tmp/todo-test-w26-5c-XXXXXX)
+: > "$W26_5C_LOG"
+W26_5C_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W26_5C_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo LANG_ENV=en \
+  node "$ENGINE" run comment 45 --boddy-file2 /tmp/some-path 2>&1); W26_5C_EC=$?
+assert_exit_fail "W26-5c 英語モード(LANG_ENV=en)の未知フラグ: exit非0" "$W26_5C_EC"
+assert_contains "W26-5c: 英語のエラー本文（#1919 当時の文言と完全一致）" "Error: unknown flag: --boddy-file2" "$W26_5C_OUT"
+assert_contains "W26-5c: 英語のヒント行（本文向け）" "quote the whole body" "$W26_5C_OUT"
+assert_no_japanese "W26-5c: 出力に日本語が1文字も含まれない" "$W26_5C_OUT"
+assert_eq "W26-5c: issues.createComment は呼ばれない" "0" "$(log_count "$W26_5C_LOG" issues.createComment)"
+rm -f "$W26_5C_LOG"
+
+# W26-5d 日本語モード: ヒント行が「本文」向け（error.unknown_flag_hint_body）であること。
+# add と同じ「タイトル」向けヒント（error.unknown_flag_hint）が誤配線されていないことも固定する。
+W26_5D_LOG=$(mktemp /tmp/todo-test-w26-5d-XXXXXX)
+: > "$W26_5D_LOG"
+W26_5D_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W26_5D_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run comment 45 --boddy-file /tmp/some-path 2>&1); W26_5D_EC=$?
+assert_exit_fail "W26-5d 日本語モードの未知フラグ: exit非0" "$W26_5D_EC"
+assert_contains "W26-5d: ヒント行が本文向け（本文全体を1つの引数としてクォート）" "本文全体を1つの引数としてクォート" "$W26_5D_OUT"
+assert_not_contains "W26-5d: タイトル向けヒントが誤配線されていない" "タイトル全体を1つの引数" "$W26_5D_OUT"
+assert_contains "W26-5d: Usage 行は日本語モードでも英語（翻訳方針）" "Usage: /todo comment <#> <text>" "$W26_5D_OUT"
+rm -f "$W26_5D_LOG"
 
 # W26-6 後方互換: 従来の位置引数形式（comment <#> <テキスト>）はそのまま動く
 W26_6_LOG=$(mktemp /tmp/todo-test-w26-6-XXXXXX)
@@ -2592,6 +2622,757 @@ W27_26_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W27_RESP" OCT
 assert_exit_ok "W27-26 パフォーマンス: 200トークンのタイトルでも完了する: exit 0" "$W27_26_EC"
 assert_contains "W27-26: title が全200トークンの連結と一致" "\"title\":\"${W27_26_EXPECTED}\"" "$(log_lines_for_method "$W27_26_LOG" issues.create)"
 rm -f "$W27_26_LOG"
+
+# ──────────────────────────────────────────
+# §W28  パターンB・C — 11ハンドラが未知フラグを黙って捨てないこと（Issue #1921 第2弾）
+# 事故の型は §W27（runAdd）と同じ「静かな期待値乖離」。ただし症状は3種類ある。
+#   (a) 指定した値が黙って捨てられる（`due 42 2026-09-10 --note "理由"` の --note は効かない）
+#   (b) フィルタが黙って無視される（`list next --no-duee` は全件表示される）
+#   (c) 自由記述へ混入する（`template use daily --boddy-file /tmp/x` はゴミ Issue、
+#       `rename 42 --boddy-file /tmp/x` は既存タイトルを上書きして消す）
+# 判定器 findUnknownFlag() 自体の単体テストは run-tests.sh §51 を参照。
+# 本セクションは各ハンドラの振る舞い（exit code・API 副作用の抑止・検査順序）を検証する。
+#
+# 【アサーションの書き方の規約（2つ）】
+#  1. エラー判定は必ず**エラーメッセージ全文**（「エラー: 不明なフラグです: <flag>」）で行う。
+#     フラグ名の部分一致にすると、成功時の出力にも字面が現れるハンドラ（template use の
+#     タイトル行等）でガードを外しても PASS したままになる（§W27 実施時に6件発生した罠）。
+#  2. 異常系のスタブ応答は、対になる**正常系で exit 0 になることを確認した応答を使い回す**。
+#     応答不足だと「ガードの有無に関わらず」例外で落ちて assert_exit_fail が常に PASS する。
+#
+# パフォーマンス観点のケースを置いていないのは意図的: 判定器は §51-17（500要素）で
+# カバー済みで、ハンドラを変えても走査は同じ線形1パスのため新しい情報が出ない。
+# ──────────────────────────────────────────
+echo ""
+echo "§W28  パターンB・C — 11ハンドラが未知フラグを黙って捨てない（Issue #1921 第2弾）"
+
+# 各ハンドラの正常系スタブ応答（同じものを異常系でも使い回す。上記規約2）
+W28_LIST_RESP='{"issues.listForRepo":[{"data":[]}]}'
+W28_MOVE_RESP='{"issues.get":[{"data":{"number":42,"id":942,"title":"元のタイトル","body":"","labels":[{"name":"📥 inbox"}]}}],"issues.removeLabel":[{}],"issues.addLabels":[{}],"issues.createComment":[{"data":{"id":1}}]}'
+W28_DONE_RESP='{"issues.get":[{"data":{"number":42,"id":942,"title":"T","body":"","labels":[{"name":"🎯 next"}]}}],"issues.update":[{},{}],"issues.listForRepo":[{"data":[]}],"issues.createComment":[{"data":{"id":1}}]}'
+W28_EDIT_RESP='{"issues.get":[{"data":{"number":42,"id":942,"title":"T","body":"","labels":[{"name":"p3"}]}}],"issues.removeLabel":[{}],"GET /repos/{owner}/{repo}/labels/{name}":[{}],"issues.addLabels":[{}],"issues.update":[{}]}'
+W28_LABEL_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{}]}'
+W28_LABEL_LIST_RESP='{"issues.listLabelsForRepo":[{"data":[{"name":"@office","color":"FBCA04","description":""}]}]}'
+W28_LABEL_DEL_RESP='{"issues.deleteLabel":[{}]}'
+# GET が 404（＝そのラベルはまだ存在しない）→ ensureLabel が createLabel まで進む形
+W28_LABEL_NEW_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{"__throw":true,"status":404,"message":"Not Found"}],"issues.createLabel":[{}]}'
+W28_LABEL_REN_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{}],"issues.listForRepo":[{"data":[]}],"issues.deleteLabel":[{}]}'
+# tag rename 用。label rename 用（上）と違い @oldctx を持つ Issue を1件返す。
+# こうしないと targets が空になり addLabels が「ガードの有無に関わらず」0回になってしまい、
+# 「addLabels が0回」というアサーションが何も検証しない（§論点6 罠2 と同型）。
+W28_TAG_REN_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{}],"issues.listForRepo":[{"data":[{"number":42,"id":942,"title":"T","body":"","labels":[{"name":"@oldctx"}]}]}],"issues.addLabels":[{}],"issues.removeLabel":[{}],"issues.deleteLabel":[{}]}'
+W28_SIMPLE_RESP='{"issues.get":[{"data":{"number":42,"id":942,"title":"T","body":"","labels":[]}}],"issues.update":[{}]}'
+W28_PRI_RESP='{"issues.get":[{"data":{"number":42,"id":942,"title":"T","body":"","labels":[{"name":"p3"}]}}],"issues.removeLabel":[{}],"GET /repos/{owner}/{repo}/labels/{name}":[{}],"issues.addLabels":[{}]}'
+W28_LINK_RESP='{"issues.get":[{"data":{"number":42,"id":942,"title":"T","body":"","labels":[]}},{"data":{"number":100,"id":9100,"title":"P","body":"","labels":[{"name":"📁 project"}]}}],"issues.update":[{}],"POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues":[{}]}'
+W28_RENAME_RESP='{"issues.update":[{}]}'
+W28_BULKMOVE_RESP='{"issues.get":[{"data":{"number":41,"id":941,"title":"A","body":"","labels":[{"name":"📥 inbox"}]}},{"data":{"number":42,"id":942,"title":"B","body":"","labels":[{"name":"📥 inbox"}]}}],"issues.removeLabel":[{},{}],"issues.addLabels":[{},{}]}'
+W28_BULKDONE_RESP='{"issues.get":[{"data":{"number":41,"id":941,"title":"A","body":"","labels":[{"name":"🎯 next"}]}},{"data":{"number":42,"id":942,"title":"B","body":"","labels":[{"name":"🎯 next"}]}}],"issues.update":[{},{}],"issues.listForRepo":[{"data":[]},{"data":[]}]}'
+W28_BULKPRI_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{}],"issues.get":[{"data":{"number":41,"id":941,"title":"A","body":"","labels":[]}},{"data":{"number":42,"id":942,"title":"B","body":"","labels":[]}}],"issues.addLabels":[{},{}]}'
+W28_TMPLUSE_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{},{},{}],"issues.create":[{"data":{"number":7002,"id":97002}}]}'
+
+# 実行ヘルパー: スタブ + ログを固定の環境変数セットで渡す
+# （呼び出し側で W28_LOG に一時ファイルパスを入れてから使う）
+w28_run() {
+  OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W28_RESP_CUR" OCTOKIT_STUB_LOG_ENV="$W28_LOG" \
+    TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-09-02 \
+    node "$ENGINE" run "$@" 2>&1
+}
+
+# ── C-1 正常系（許可リストが効いていること・guard が既存の正常入力を誤検知しないこと） ──
+# 各ハンドラの一般的な正常系は §W1/§W2/§W5/§W6/§W16 が既に持つため、ここでは
+# 「本修正で新たに壊れうる入力」だけに絞る。
+
+# W28-1【許可リスト】`list --group` の初の end-to-end テスト。
+# 既存の §28/§28b は list-all 診断サブコマンド + FILTER_*_ENV 経由で、
+# `run list --group` を実際に叩くテストは本ケースが最初。
+W28_LOG=$(mktemp /tmp/todo-test-w28-1-XXXXXX); W28_RESP_CUR="$W28_LIST_RESP"
+W28_1_OUT=$(w28_run list next --group); W28_1_EC=$?
+assert_exit_ok "W28-1【許可リスト】list next --group: exit 0" "$W28_1_EC"
+assert_eq "W28-1: issues.listForRepo が呼ばれる（フィルタが実行された）" "1" "$(log_count "$W28_LOG" issues.listForRepo)"
+rm -f "$W28_LOG"
+
+# W28-2【許可リスト】--no-due
+W28_LOG=$(mktemp /tmp/todo-test-w28-2-XXXXXX); W28_RESP_CUR="$W28_LIST_RESP"
+W28_2_OUT=$(w28_run list next --no-due); W28_2_EC=$?
+assert_exit_ok "W28-2【許可リスト】list next --no-due: exit 0" "$W28_2_EC"
+rm -f "$W28_LOG"
+
+# W28-3【許可リスト】--no-estimate
+W28_LOG=$(mktemp /tmp/todo-test-w28-3-XXXXXX); W28_RESP_CUR="$W28_LIST_RESP"
+W28_3_OUT=$(w28_run list next --no-estimate); W28_3_EC=$?
+assert_exit_ok "W28-3【許可リスト】list next --no-estimate: exit 0" "$W28_3_EC"
+rm -f "$W28_LOG"
+
+# W28-3b/3c/3d【許可リスト・複合形】`--json` は parseArgs より前に除去され、残りの
+# --group / --no-due は許可リストで通る。この2系統の除去が同時に働く形をテストで固定する
+# （どちらか一方の実装を変えたときに、複合形だけが壊れるのを検知するため）。
+# 引数の順序も入れ替えて確認する（--json は tokens のどこにあっても除去される）。
+W28_LOG=$(mktemp /tmp/todo-test-w28-3b-XXXXXX); W28_RESP_CUR="$W28_LIST_RESP"
+W28_3B_OUT=$(w28_run list next --json --group); W28_3B_EC=$?
+assert_exit_ok "W28-3b【複合形】list next --json --group: exit 0" "$W28_3B_EC"
+assert_not_contains "W28-3b: 未知フラグ扱いされていない" "不明なフラグ" "$W28_3B_OUT"
+assert_eq "W28-3b: issues.listForRepo が呼ばれる" "1" "$(log_count "$W28_LOG" issues.listForRepo)"
+rm -f "$W28_LOG"
+
+W28_LOG=$(mktemp /tmp/todo-test-w28-3c-XXXXXX); W28_RESP_CUR="$W28_LIST_RESP"
+W28_3C_OUT=$(w28_run list --group --json next); W28_3C_EC=$?
+assert_exit_ok "W28-3c【複合形・順序違い】list --group --json next: exit 0" "$W28_3C_EC"
+assert_not_contains "W28-3c: 未知フラグ扱いされていない" "不明なフラグ" "$W28_3C_OUT"
+rm -f "$W28_LOG"
+
+W28_LOG=$(mktemp /tmp/todo-test-w28-3d-XXXXXX); W28_RESP_CUR="$W28_LIST_RESP"
+W28_3D_OUT=$(w28_run list next --no-due --json); W28_3D_EC=$?
+assert_exit_ok "W28-3d【複合形】list next --no-due --json: exit 0" "$W28_3D_EC"
+assert_not_contains "W28-3d: 未知フラグ扱いされていない" "不明なフラグ" "$W28_3D_OUT"
+rm -f "$W28_LOG"
+
+# W28-4【仕様固定】フラグでない位置引数が extra に残る形（runList だけが持つ構造）。
+# 判定を「extra が空でなければエラー」にすると本ケースが壊れる。
+W28_LOG=$(mktemp /tmp/todo-test-w28-4-XXXXXX)
+W28_RESP_CUR='{"issues.listForRepo":[{"data":[]}],"GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues":[{"data":[]}]}'
+W28_4_OUT=$(w28_run list next p1 project 5); W28_4_EC=$?
+assert_exit_ok "W28-4【仕様固定】位置引数が extra に残る形(list next p1 project 5): exit 0" "$W28_4_EC"
+assert_not_contains "W28-4: 位置引数の余剰は未知フラグ扱いしない" "不明なフラグ" "$W28_4_OUT"
+rm -f "$W28_LOG"
+
+# W28-4b【誤検知なし】edit にフラグを7種類まとめて渡しても通ること。
+# edit は parsed から10フィールドを読む最も複雑なハンドラで、誤検知の影響が最も広い。
+W28_LOG=$(mktemp /tmp/todo-test-w28-4b-XXXXXX); W28_RESP_CUR="$W28_EDIT_RESP"
+W28_4B_OUT=$(w28_run edit 42 --due 2026-09-10 --priority p1 --estimate 2h --activate 2026-09-05 --before 2d --desc "説明文" --recur weekly); W28_4B_EC=$?
+assert_exit_ok "W28-4b【誤検知なし】edit の既知フラグ7種同時指定: exit 0" "$W28_4B_EC"
+assert_contains "W28-4b: 7フィールドすべてが更新される" "due → 2026-09-10" "$W28_4B_OUT"
+assert_eq "W28-4b: issues.update が呼ばれる（body 更新）" "1" "$(log_count "$W28_LOG" issues.update)"
+rm -f "$W28_LOG"
+
+# W28-5【誤検知なし】done の --actual / --note が従来どおり効くこと
+W28_LOG=$(mktemp /tmp/todo-test-w28-5-XXXXXX); W28_RESP_CUR="$W28_DONE_RESP"
+W28_5_OUT=$(w28_run done 42 --actual 2h --note "振り返り"); W28_5_EC=$?
+assert_exit_ok "W28-5【誤検知なし】done 42 --actual 2h --note: exit 0" "$W28_5_EC"
+assert_eq "W28-5: --note がコメントとして投稿される" "1" "$(log_count "$W28_LOG" issues.createComment)"
+assert_contains "W28-5: コメント本文が --note の値" '"body":"振り返り"' "$(log_lines_for_method "$W28_LOG" issues.createComment)"
+rm -f "$W28_LOG"
+
+# W28-6【誤検知なし】move の --note が従来どおり効くこと
+W28_LOG=$(mktemp /tmp/todo-test-w28-6-XXXXXX); W28_RESP_CUR="$W28_MOVE_RESP"
+W28_6_OUT=$(w28_run move 42 next --note "降格理由"); W28_6_EC=$?
+assert_exit_ok "W28-6【誤検知なし】move 42 next --note: exit 0" "$W28_6_EC"
+assert_eq "W28-6: ラベル付与1回" "1" "$(log_count "$W28_LOG" issues.addLabels)"
+assert_eq "W28-6: --note がコメントとして投稿される" "1" "$(log_count "$W28_LOG" issues.createComment)"
+rm -f "$W28_LOG"
+
+# W28-7【誤検知なし】label add の --color が従来どおり効くこと
+W28_LOG=$(mktemp /tmp/todo-test-w28-7-XXXXXX); W28_RESP_CUR="$W28_LABEL_RESP"
+W28_7_OUT=$(w28_run label add newctx --color FBCA04); W28_7_EC=$?
+assert_exit_ok "W28-7【誤検知なし】label add newctx --color FBCA04: exit 0" "$W28_7_EC"
+assert_eq "W28-7: ラベル存在確認(GET) が呼ばれる" "1" "$(log_count "$W28_LOG" 'GET /repos/{owner}/{repo}/labels/{name}')"
+rm -f "$W28_LOG"
+
+# W28-7b【誤検知なし・推奨箇所】label list に guard を入れても正常系が壊れないこと
+W28_LOG=$(mktemp /tmp/todo-test-w28-7b-XXXXXX); W28_RESP_CUR="$W28_LABEL_LIST_RESP"
+W28_7B_OUT=$(w28_run label list); W28_7B_EC=$?
+assert_exit_ok "W28-7b【誤検知なし】label list: exit 0" "$W28_7B_EC"
+assert_contains "W28-7b: ラベル一覧が表示される" "@office" "$W28_7B_OUT"
+rm -f "$W28_LOG"
+
+# ── template 系はテンプレート DB（~/.claude/todo-templates.json）を読み書きするため、
+#    実 HOME を汚さない隔離 HOME で実行する（§W3 と同じ方式）。 ──
+W28_REAL_HOME="$HOME"
+W28_FAKE_HOME=$(mktemp -d /tmp/todo-test-w28-home-XXXXXX)
+mkdir -p "$W28_FAKE_HOME/.claude"
+printf '%s' '{"daily":{"gtd":"next","context":["@office"],"priority":"p1","due-offset":"1","desc":"日次テンプレの説明"}}' > "$W28_FAKE_HOME/.claude/todo-templates.json"
+export HOME="$W28_FAKE_HOME"
+if [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* ]]; then
+  W28_REAL_USERPROFILE="${USERPROFILE:-}"
+  export USERPROFILE="$W28_FAKE_HOME"
+fi
+
+# W28-8【誤検知なし】template save のインライン引数（--due-offset / --priority）が効くこと
+W28_LOG=$(mktemp /tmp/todo-test-w28-8-XXXXXX); W28_RESP_CUR='{}'
+W28_8_OUT=$(w28_run template save tmpl next @office --due-offset 3 --priority p1); W28_8_EC=$?
+assert_exit_ok "W28-8【誤検知なし】template save tmpl next @office --due-offset 3 --priority p1: exit 0" "$W28_8_EC"
+assert_contains "W28-8: テンプレートが保存される" '"due-offset": 3' "$(cat "$W28_FAKE_HOME/.claude/todo-templates.json")"
+rm -f "$W28_LOG"
+
+# W28-8b【誤検知なし・推奨箇所】template show に guard を入れても正常系が壊れないこと
+W28_LOG=$(mktemp /tmp/todo-test-w28-8b-XXXXXX); W28_RESP_CUR='{}'
+W28_8B_OUT=$(w28_run template show daily); W28_8B_EC=$?
+assert_exit_ok "W28-8b【誤検知なし】template show daily: exit 0" "$W28_8B_EC"
+rm -f "$W28_LOG"
+
+# ── C-2 異常系: パターンB（parseArgs を呼ぶハンドラ） ──
+
+# W28-9【核心】move: 未知フラグでラベル変更に到達しない。
+# 上の W28-6 と同じスタブ応答を使う（ガードを外せば exit 0 で成功する状態）。
+W28_LOG=$(mktemp /tmp/todo-test-w28-9-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_MOVE_RESP"
+W28_9_OUT=$(w28_run move 42 next --boddy-file /tmp/x); W28_9_EC=$?
+assert_exit_fail "W28-9【核心】move に未知フラグ: exit非0" "$W28_9_EC"
+assert_contains "W28-9: エラー本文が未知フラグのもの" "エラー: 不明なフラグです: --boddy-file" "$W28_9_OUT"
+assert_eq "W28-9【副作用ゼロ】API 呼び出しログが0行（issues.get/removeLabel/addLabels すべて未到達）" "0" "$(wc -l < "$W28_LOG" | tr -d ' ')"
+assert_not_contains "W28-9: GTD ラベル付与が発生していない（反証）" '"labels":["🎯 next"]' "$(log_lines_for_method "$W28_LOG" issues.addLabels)"
+rm -f "$W28_LOG"
+
+# W28-10【核心・ゴミ Issue】template use: パターンA とまったく同型の経路（runAdd を
+# 経由せず自前に issues.create を呼ぶ）。修正前は title「--boddy-file /tmp/x」の
+# Issue が exit 0 で作られていた。反証アサーションの needle は、ガードを外した状態で
+# 実際に出力されるログ行から確定してある。
+W28_LOG=$(mktemp /tmp/todo-test-w28-10-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_TMPLUSE_RESP"
+W28_10_OUT=$(w28_run template use daily --boddy-file /tmp/x); W28_10_EC=$?
+assert_exit_fail "W28-10【核心・ゴミIssue】template use に未知フラグ: exit非0" "$W28_10_EC"
+assert_contains "W28-10: エラー本文が未知フラグのもの（成功時の出力にも字面が出るため全文で判定）" "エラー: 不明なフラグです: --boddy-file" "$W28_10_OUT"
+assert_eq "W28-10【核心】issues.create は呼ばれない" "0" "$(log_count "$W28_LOG" issues.create)"
+assert_not_contains "W28-10【核心・反証】汚染タイトルでの issues.create が発生していない" \
+  '"title":"--boddy-file /tmp/x"' "$(log_lines_for_method "$W28_LOG" issues.create)"
+rm -f "$W28_LOG"
+
+# W28-16 template save: --due-offset のタイポ。テンプレートファイルが更新されないこと。
+W28_16_BEFORE=$(cat "$W28_FAKE_HOME/.claude/todo-templates.json")
+W28_LOG=$(mktemp /tmp/todo-test-w28-16-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR='{}'
+W28_16_OUT=$(w28_run template save tmpl2 next --due-ofset 3); W28_16_EC=$?
+assert_exit_fail "W28-16 template save に未知フラグ(--due-ofset): exit非0" "$W28_16_EC"
+assert_contains "W28-16: エラー本文が未知フラグのもの" "エラー: 不明なフラグです: --due-ofset" "$W28_16_OUT"
+assert_eq "W28-16【副作用ゼロ】テンプレートファイルが更新されていない" "$W28_16_BEFORE" "$(cat "$W28_FAKE_HOME/.claude/todo-templates.json")"
+rm -f "$W28_LOG"
+
+# W28-16b【推奨箇所】template show の余剰フラグ（読み取り系だが契約を揃える）
+W28_LOG=$(mktemp /tmp/todo-test-w28-16b-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR='{}'
+W28_16B_OUT=$(w28_run template show daily --json); W28_16B_EC=$?
+assert_exit_fail "W28-16b【推奨箇所】template show に未知フラグ(--json): exit非0" "$W28_16B_EC"
+assert_contains "W28-16b: エラー本文が未知フラグのもの" "エラー: 不明なフラグです: --json" "$W28_16B_OUT"
+rm -f "$W28_LOG"
+
+# ── template の「名前の位置」（tokens[1]）— レビュー指摘での追加分 ──
+# validateName('--foo') は通る（FORBIDDEN_CHARS にハイフンが含まれない）ため、名前位置を
+# 検査対象から外すと `template save --foo next` がローカルの todo-templates.json へ
+# `--foo` エントリを書き込めてしまう（レビュー中に実際に踏んで手動復旧が必要になった経路）。
+# 本ブロックは隔離 HOME 内で実行しているので、実 HOME のファイルには一切触れない。
+
+# W28-35【核心・ローカル DB 汚染】template save の名前位置にフラグ字面
+W28_35_BEFORE=$(cat "$W28_FAKE_HOME/.claude/todo-templates.json")
+W28_LOG=$(mktemp /tmp/todo-test-w28-35-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR='{}'
+W28_35_OUT=$(w28_run template save --foo next); W28_35_EC=$?
+assert_exit_fail "W28-35【核心】template save の名前位置に未知フラグ: exit非0" "$W28_35_EC"
+assert_contains "W28-35: エラー本文が未知フラグのもの" "エラー: 不明なフラグです: --foo" "$W28_35_OUT"
+assert_eq "W28-35【核心・副作用ゼロ】テンプレートファイルの内容が変化していない" "$W28_35_BEFORE" "$(cat "$W28_FAKE_HOME/.claude/todo-templates.json")"
+assert_not_contains "W28-35【反証】--foo エントリが書き込まれていない" '"--foo"' "$(cat "$W28_FAKE_HOME/.claude/todo-templates.json")"
+rm -f "$W28_LOG"
+
+# W28-35b template save from <#> 形式でも名前位置が検査されること（guard は分岐より前）
+W28_35B_BEFORE=$(cat "$W28_FAKE_HOME/.claude/todo-templates.json")
+W28_LOG=$(mktemp /tmp/todo-test-w28-35b-XXXXXX); : > "$W28_LOG"
+W28_RESP_CUR='{"issues.get":[{"data":{"number":42,"id":942,"title":"T","body":"","labels":[{"name":"🎯 next"}]}}]}'
+W28_35B_OUT=$(w28_run template save --foo from 42); W28_35B_EC=$?
+assert_exit_fail "W28-35b template save from の名前位置に未知フラグ: exit非0" "$W28_35B_EC"
+assert_contains "W28-35b: エラー本文が未知フラグのもの" "エラー: 不明なフラグです: --foo" "$W28_35B_OUT"
+assert_eq "W28-35b【副作用ゼロ】Issue 取得(issues.get)にも到達していない" "0" "$(log_count "$W28_LOG" issues.get)"
+assert_eq "W28-35b【副作用ゼロ】テンプレートファイルの内容が変化していない" "$W28_35B_BEFORE" "$(cat "$W28_FAKE_HOME/.claude/todo-templates.json")"
+rm -f "$W28_LOG"
+
+# W28-35c【未テストだった guard】template save <name> from <#> の余剰トークン
+# （設計 §102-117 の表で「必須」に区分されていながらテストがなかった箇所）
+W28_35C_BEFORE=$(cat "$W28_FAKE_HOME/.claude/todo-templates.json")
+W28_LOG=$(mktemp /tmp/todo-test-w28-35c-XXXXXX); : > "$W28_LOG"
+W28_RESP_CUR='{"issues.get":[{"data":{"number":42,"id":942,"title":"T","body":"","labels":[{"name":"🎯 next"}]}}]}'
+W28_35C_OUT=$(w28_run template save tmpl3 from 42 --note "x"); W28_35C_EC=$?
+assert_exit_fail "W28-35c template save from の余剰フラグ: exit非0" "$W28_35C_EC"
+assert_contains "W28-35c: エラー本文が未知フラグのもの" "エラー: 不明なフラグです: --note" "$W28_35C_OUT"
+assert_eq "W28-35c【副作用ゼロ】Issue 取得(issues.get)にも到達していない" "0" "$(log_count "$W28_LOG" issues.get)"
+assert_eq "W28-35c【副作用ゼロ】テンプレートファイルの内容が変化していない" "$W28_35C_BEFORE" "$(cat "$W28_FAKE_HOME/.claude/todo-templates.json")"
+rm -f "$W28_LOG"
+
+# W28-35d【正常系・スタブ応答の妥当性確認】W28-35c と同じ応答でフラグなしなら exit 0
+W28_LOG=$(mktemp /tmp/todo-test-w28-35d-XXXXXX); : > "$W28_LOG"
+W28_RESP_CUR='{"issues.get":[{"data":{"number":42,"id":942,"title":"T","body":"","labels":[{"name":"🎯 next"}]}}]}'
+W28_35D_OUT=$(w28_run template save tmpl3 from 42); W28_35D_EC=$?
+assert_exit_ok "W28-35d【スタブ応答の妥当性】template save tmpl3 from 42（フラグなし）: exit 0" "$W28_35D_EC"
+assert_contains "W28-35d: テンプレートが保存される" '"tmpl3"' "$(cat "$W28_FAKE_HOME/.claude/todo-templates.json")"
+rm -f "$W28_LOG"
+
+# W28-36 template show の名前位置にフラグ字面（読み取り系だが契約を揃える）
+W28_LOG=$(mktemp /tmp/todo-test-w28-36-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR='{}'
+W28_36_OUT=$(w28_run template show --foo); W28_36_EC=$?
+assert_exit_fail "W28-36 template show の名前位置に未知フラグ: exit非0" "$W28_36_EC"
+assert_contains "W28-36: エラー本文が未知フラグのもの" "エラー: 不明なフラグです: --foo" "$W28_36_OUT"
+rm -f "$W28_LOG"
+
+# W28-37 template delete の名前位置にフラグ字面。
+# ガードを外すと exit 0 で「削除しました」と表示されるので、エラー全文で判定する。
+W28_37_BEFORE=$(cat "$W28_FAKE_HOME/.claude/todo-templates.json")
+W28_LOG=$(mktemp /tmp/todo-test-w28-37-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR='{}'
+W28_37_OUT=$(w28_run template delete --foo); W28_37_EC=$?
+assert_exit_fail "W28-37 template delete の名前位置に未知フラグ: exit非0" "$W28_37_EC"
+assert_contains "W28-37: エラー本文が未知フラグのもの" "エラー: 不明なフラグです: --foo" "$W28_37_OUT"
+assert_eq "W28-37【副作用ゼロ】テンプレートファイルの内容が変化していない" "$W28_37_BEFORE" "$(cat "$W28_FAKE_HOME/.claude/todo-templates.json")"
+rm -f "$W28_LOG"
+
+# W28-37b【未テストだった guard】template delete の余剰トークン
+W28_37B_BEFORE=$(cat "$W28_FAKE_HOME/.claude/todo-templates.json")
+W28_LOG=$(mktemp /tmp/todo-test-w28-37b-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR='{}'
+W28_37B_OUT=$(w28_run template delete daily --force); W28_37B_EC=$?
+assert_exit_fail "W28-37b template delete の余剰フラグ(--force): exit非0" "$W28_37B_EC"
+assert_contains "W28-37b: エラー本文が未知フラグのもの" "エラー: 不明なフラグです: --force" "$W28_37B_OUT"
+assert_eq "W28-37b【副作用ゼロ】daily テンプレートが削除されていない" "$W28_37B_BEFORE" "$(cat "$W28_FAKE_HOME/.claude/todo-templates.json")"
+rm -f "$W28_LOG"
+
+# W28-38【核心・ゴミ Issue】template use の名前位置にフラグ字面。
+# ガードを外したとき「別の理由（テンプレート未登録）」で exit 1 になると検証にならないため
+# （§論点6 罠2）、隔離 HOME のテンプレートファイルへ一時的に「--foo」を直接書き込み、
+# 「ガードを外せば exit 0 で issues.create に到達する」状態を作ってから実行する。
+W28_38_SAVED=$(cat "$W28_FAKE_HOME/.claude/todo-templates.json")
+printf '%s' '{"--foo":{"gtd":"next","context":[],"priority":"p3"}}' > "$W28_FAKE_HOME/.claude/todo-templates.json"
+W28_LOG=$(mktemp /tmp/todo-test-w28-38-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_TMPLUSE_RESP"
+W28_38_OUT=$(w28_run template use --foo); W28_38_EC=$?
+assert_exit_fail "W28-38【核心・ゴミIssue】template use の名前位置に未知フラグ: exit非0" "$W28_38_EC"
+assert_contains "W28-38: エラー本文が未知フラグのもの（未登録エラーではない）" "エラー: 不明なフラグです: --foo" "$W28_38_OUT"
+assert_eq "W28-38【核心】issues.create は呼ばれない" "0" "$(log_count "$W28_LOG" issues.create)"
+rm -f "$W28_LOG"
+
+# W28-38b【正常系・スタブ応答の妥当性確認】同じテンプレート・同じ応答で、名前を
+# フラグ字面でない形に変えれば exit 0 で Issue が作られること（ガードを外すと W28-38 が
+# この状態になる、ということの証明）
+printf '%s' '{"foo":{"gtd":"next","context":[],"priority":"p3"}}' > "$W28_FAKE_HOME/.claude/todo-templates.json"
+W28_LOG=$(mktemp /tmp/todo-test-w28-38b-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_TMPLUSE_RESP"
+W28_38B_OUT=$(w28_run template use foo); W28_38B_EC=$?
+assert_exit_ok "W28-38b【スタブ応答の妥当性】template use foo（フラグ字面でない名前）: exit 0" "$W28_38B_EC"
+assert_eq "W28-38b: issues.create が1回呼ばれる" "1" "$(log_count "$W28_LOG" issues.create)"
+rm -f "$W28_LOG"
+printf '%s' "$W28_38_SAVED" > "$W28_FAKE_HOME/.claude/todo-templates.json"
+
+# W28-25【入力文字】template use のタイトル上書きで Markdown 水平線を誤検知しないこと
+W28_LOG=$(mktemp /tmp/todo-test-w28-25-XXXXXX); W28_RESP_CUR="$W28_TMPLUSE_RESP"
+W28_25_OUT=$(w28_run template use daily "--- 区切り線 --- を含むタイトル"); W28_25_EC=$?
+assert_exit_ok "W28-25【入力文字】template use のタイトルに Markdown 水平線: exit 0" "$W28_25_EC"
+assert_contains "W28-25: title がそのまま" '"title":"--- 区切り線 --- を含むタイトル"' "$(log_lines_for_method "$W28_LOG" issues.create)"
+rm -f "$W28_LOG"
+
+# W28-30【セキュリティ】template use のタイトル上書きでコマンド置換が起きないこと
+W28_LOG=$(mktemp /tmp/todo-test-w28-30-XXXXXX); W28_RESP_CUR="$W28_TMPLUSE_RESP"
+W28_30_OUT=$(w28_run template use daily '$(whoami) を含むタイトル'); W28_30_EC=$?
+assert_exit_ok "W28-30【セキュリティ】template use のタイトルにコマンド置換の形: exit 0" "$W28_30_EC"
+assert_contains "W28-30: title が \$(whoami) のリテラル（展開されていない）" '"title":"$(whoami) を含むタイトル"' "$(log_lines_for_method "$W28_LOG" issues.create)"
+rm -f "$W28_LOG"
+
+# 隔離 HOME を元に戻す
+export HOME="$W28_REAL_HOME"
+if [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* ]]; then
+  export USERPROFILE="${W28_REAL_USERPROFILE:-}"
+fi
+rm -rf "$W28_FAKE_HOME"
+
+# W28-11 done: 未知フラグで Issue 取得にも到達しない
+W28_LOG=$(mktemp /tmp/todo-test-w28-11-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_DONE_RESP"
+W28_11_OUT=$(w28_run done 42 --boddy-file /tmp/x); W28_11_EC=$?
+assert_exit_fail "W28-11 done に未知フラグ: exit非0" "$W28_11_EC"
+assert_contains "W28-11: エラー本文が未知フラグのもの" "エラー: 不明なフラグです: --boddy-file" "$W28_11_OUT"
+assert_eq "W28-11【副作用ゼロ】API 呼び出しログが0行（close に到達していない）" "0" "$(wc -l < "$W28_LOG" | tr -d ' ')"
+rm -f "$W28_LOG"
+
+# ── edit は parsed から10フィールドを読む最も複雑なハンドラなので、失敗の型ごとにケースを持つ。
+#    (1) 短いフラグのタイポ (2) ハイフン付き長いフラグのタイポ (3) 値欠落（フラグごとに別トークン列） ──
+
+# W28-12 edit: --due のタイポ
+W28_LOG=$(mktemp /tmp/todo-test-w28-12-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_EDIT_RESP"
+W28_12_OUT=$(w28_run edit 42 --duee 2026-09-10); W28_12_EC=$?
+assert_exit_fail "W28-12 edit に未知フラグ(--duee タイポ): exit非0" "$W28_12_EC"
+assert_contains "W28-12: エラー本文が未知フラグのもの" "エラー: 不明なフラグです: --duee" "$W28_12_OUT"
+assert_eq "W28-12【副作用ゼロ】API 呼び出しログが0行" "0" "$(wc -l < "$W28_LOG" | tr -d ' ')"
+rm -f "$W28_LOG"
+
+# W28-12b edit: --priority のタイポ（優先度ラベルの付け替えという別の副作用経路）
+W28_LOG=$(mktemp /tmp/todo-test-w28-12b-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_EDIT_RESP"
+W28_12B_OUT=$(w28_run edit 42 --priorityy p1); W28_12B_EC=$?
+assert_exit_fail "W28-12b edit に未知フラグ(--priorityy タイポ): exit非0" "$W28_12B_EC"
+assert_contains "W28-12b: エラー本文が未知フラグのもの" "エラー: 不明なフラグです: --priorityy" "$W28_12B_OUT"
+# API ログ全体で判定する。「addLabels が0回」だけを見ると、ガードを外しても --priorityy は
+# parseArgs に消費されず parsed.priority が null のままなので addLabels は元々0回になり、
+# 何も検証しないアサーションになる（W28-R6 の実測で発覚し書き換えた）。
+assert_eq "W28-12b【副作用ゼロ】API 呼び出しログが0行（Issue 取得にも到達していない）" "0" "$(wc -l < "$W28_LOG" | tr -d ' ')"
+rm -f "$W28_LOG"
+
+# W28-12c edit: ハイフンを含む長いフラグのタイポ（--resume-condition）。
+# UNKNOWN_FLAG_RE の [A-Za-z0-9-]* 部分がハイフン付きフラグでも効くことの確認を兼ねる。
+W28_LOG=$(mktemp /tmp/todo-test-w28-12c-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_EDIT_RESP"
+W28_12C_OUT=$(w28_run edit 42 --resume-conditon "承認が下りたら"); W28_12C_EC=$?
+assert_exit_fail "W28-12c edit に未知フラグ(--resume-conditon タイポ): exit非0" "$W28_12C_EC"
+assert_contains "W28-12c: エラー本文が未知フラグのもの（ハイフン付きフラグ名も正しく報告される）" "エラー: 不明なフラグです: --resume-conditon" "$W28_12C_OUT"
+assert_eq "W28-12c【副作用ゼロ】API 呼び出しログが0行" "0" "$(wc -l < "$W28_LOG" | tr -d ' ')"
+rm -f "$W28_LOG"
+
+# W28-13 edit: 値が欠落した既知フラグ（末尾の --due。parseArgs の i+1 条件を満たさず extra に残る）
+W28_LOG=$(mktemp /tmp/todo-test-w28-13-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_EDIT_RESP"
+W28_13_OUT=$(w28_run edit 42 --due); W28_13_EC=$?
+assert_exit_fail "W28-13 edit の値欠落フラグ(末尾の --due): exit非0" "$W28_13_EC"
+assert_contains "W28-13: エラー本文が未知フラグのもの" "エラー: 不明なフラグです: --due" "$W28_13_OUT"
+assert_eq "W28-13【副作用ゼロ】API 呼び出しログが0行" "0" "$(wc -l < "$W28_LOG" | tr -d ' ')"
+rm -f "$W28_LOG"
+
+# W28-13b edit: 別のフラグでの値欠落（--activate）。他フラグが先に指定されていても検出すること。
+W28_LOG=$(mktemp /tmp/todo-test-w28-13b-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_EDIT_RESP"
+W28_13B_OUT=$(w28_run edit 42 --due 2026-09-10 --activate); W28_13B_EC=$?
+assert_exit_fail "W28-13b edit の値欠落フラグ(有効フラグの後に末尾 --activate): exit非0" "$W28_13B_EC"
+assert_contains "W28-13b: エラー本文が未知フラグのもの" "エラー: 不明なフラグです: --activate" "$W28_13B_OUT"
+assert_eq "W28-13b【副作用ゼロ】--due だけが適用されて保存される、ということが起きていない" "0" "$(log_count "$W28_LOG" issues.update)"
+rm -f "$W28_LOG"
+
+# W28-14 list: 未知フラグでフィルタが黙って無視されない。
+# ガードを外すと exit 0 で全件表示されるため、exit code だけでなく API 0回も見る
+# （ガードの目的は「検査を副作用より前に置く」ことなので、exit code だけでは順序を検証できない）。
+W28_LOG=$(mktemp /tmp/todo-test-w28-14-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_LIST_RESP"
+W28_14_OUT=$(w28_run list next --no-duee); W28_14_EC=$?
+assert_exit_fail "W28-14 list に未知フラグ(--no-duee): exit非0" "$W28_14_EC"
+assert_contains "W28-14: エラー本文が未知フラグのもの" "エラー: 不明なフラグです: --no-duee" "$W28_14_OUT"
+assert_eq "W28-14【副作用ゼロ】issues.listForRepo は呼ばれない（一覧取得より前で落ちる）" "0" "$(log_count "$W28_LOG" issues.listForRepo)"
+rm -f "$W28_LOG"
+
+# W28-15 label add: 英国綴りのタイポ（--colour）
+W28_LOG=$(mktemp /tmp/todo-test-w28-15-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_LABEL_RESP"
+W28_15_OUT=$(w28_run label add newctx --colour FBCA04); W28_15_EC=$?
+assert_exit_fail "W28-15 label add に未知フラグ(--colour 英国綴り): exit非0" "$W28_15_EC"
+assert_contains "W28-15: エラー本文が未知フラグのもの" "エラー: 不明なフラグです: --colour" "$W28_15_OUT"
+assert_eq "W28-15【副作用ゼロ】ラベル作成の GET/POST に到達していない" "0" "$(wc -l < "$W28_LOG" | tr -d ' ')"
+rm -f "$W28_LOG"
+
+# W28-15b【推奨箇所】label list の余剰フラグ（読み取り系だが契約を揃える）
+W28_LOG=$(mktemp /tmp/todo-test-w28-15b-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_LABEL_LIST_RESP"
+W28_15B_OUT=$(w28_run label list --json); W28_15B_EC=$?
+assert_exit_fail "W28-15b【推奨箇所】label list に未知フラグ(--json): exit非0" "$W28_15B_EC"
+assert_contains "W28-15b: エラー本文が未知フラグのもの" "エラー: 不明なフラグです: --json" "$W28_15B_OUT"
+assert_eq "W28-15b: issues.listLabelsForRepo は呼ばれない" "0" "$(log_count "$W28_LOG" issues.listLabelsForRepo)"
+rm -f "$W28_LOG"
+
+# ── label の「名前の位置」（tokens[1]）— レビュー指摘での追加分 ──
+# 設計時は「位置1にフラグ字面が来たら既存バリデータが loud に落とす」と一般化していたが、
+# それが確認されていたのは due / recur / link / priority の4件だけだった。
+# label / template ではこの一般化が成立しない: FORBIDDEN_CHARS（ファイル冒頭）に
+# ハイフンが含まれないため validateCtx('--foo') / validateName('--foo') が通ってしまう。
+# label add は GitHub 上に手動削除の要るゴミラベルを残すので、template use のゴミ Issue と
+# 同じ「不可逆な副作用」区分に属する。
+
+# W28-31【核心・ゴミラベル】label add の名前位置にフラグ字面。
+# スタブは「そのラベルはまだ存在しない」（GET が 404）を返す形にしてある。W28-7 の応答
+# （GET が 200 = 既存）を使い回すと、ガードを外しても ensureLabel は GET だけで return し
+# createLabel に到達しないため、「createLabel が0回」が何も検証しないアサーションになる
+# （§W28-12b と同型の罠。DEVELOPMENT.md の「罠3」を参照）。ここでは実際にゴミラベルが
+# 作られる状態を用意したうえで、0回であることを確認する。
+W28_LOG=$(mktemp /tmp/todo-test-w28-31-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_LABEL_NEW_RESP"
+W28_31_OUT=$(w28_run label add --boddy-file); W28_31_EC=$?
+assert_exit_fail "W28-31【核心・ゴミラベル】label add の名前位置に未知フラグ: exit非0" "$W28_31_EC"
+assert_contains "W28-31: エラー本文が未知フラグのもの" "エラー: 不明なフラグです: --boddy-file" "$W28_31_OUT"
+assert_eq "W28-31【核心】issues.createLabel は呼ばれない（ゴミラベルが作られない）" "0" "$(log_count "$W28_LOG" issues.createLabel)"
+assert_eq "W28-31【核心】ラベル存在確認(request/GET labels)にも到達していない" "0" "$(log_count "$W28_LOG" 'GET /repos/{owner}/{repo}/labels/{name}')"
+assert_eq "W28-31【副作用ゼロ】API 呼び出しログが0行" "0" "$(wc -l < "$W28_LOG" | tr -d ' ')"
+assert_not_contains "W28-31【反証】@--boddy-file というラベル名が API へ渡っていない" '"name":"@--boddy-file"' "$(cat "$W28_LOG")"
+rm -f "$W28_LOG"
+
+# W28-31b【正常系・スタブ応答の妥当性確認】同じ応答（GET が 404）でフラグ字面でない名前なら
+# exit 0 で createLabel が実際に1回呼ばれること。これが成り立つので W28-31 の
+# 「createLabel が0回」はガードを検証していることになる（§論点6 罠2）。
+W28_LOG=$(mktemp /tmp/todo-test-w28-31b-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_LABEL_NEW_RESP"
+W28_31B_OUT=$(w28_run label add newctx2); W28_31B_EC=$?
+assert_exit_ok "W28-31b【スタブ応答の妥当性】label add newctx2（フラグ字面でない名前）: exit 0" "$W28_31B_EC"
+assert_eq "W28-31b: issues.createLabel が1回呼ばれる" "1" "$(log_count "$W28_LOG" issues.createLabel)"
+rm -f "$W28_LOG"
+
+# W28-32 label delete の名前位置にフラグ字面（誤って実在ラベルを消す事故は起きないが、
+# 契約を label add と揃える。ガードを外すと deleteLabel が実際に呼ばれる）
+W28_LOG=$(mktemp /tmp/todo-test-w28-32-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_LABEL_DEL_RESP"
+W28_32_OUT=$(w28_run label delete --foo); W28_32_EC=$?
+assert_exit_fail "W28-32 label delete の名前位置に未知フラグ: exit非0" "$W28_32_EC"
+assert_contains "W28-32: エラー本文が未知フラグのもの" "エラー: 不明なフラグです: --foo" "$W28_32_OUT"
+assert_eq "W28-32【副作用ゼロ】issues.deleteLabel は呼ばれない" "0" "$(log_count "$W28_LOG" issues.deleteLabel)"
+rm -f "$W28_LOG"
+
+# W28-32b【正常系・スタブ応答の妥当性確認】同じ応答でフラグなしなら exit 0（§論点6 罠2）
+W28_LOG=$(mktemp /tmp/todo-test-w28-32b-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_LABEL_DEL_RESP"
+W28_32B_OUT=$(w28_run label delete oldctx); W28_32B_EC=$?
+assert_exit_ok "W28-32b【スタブ応答の妥当性】label delete oldctx（フラグなし）: exit 0" "$W28_32B_EC"
+assert_eq "W28-32b: issues.deleteLabel が1回呼ばれる" "1" "$(log_count "$W28_LOG" issues.deleteLabel)"
+rm -f "$W28_LOG"
+
+# W28-33【核心・不可逆】label rename の old 位置にフラグ字面。
+# rename は「@new を作って @old を消す」操作なので、どちらの位置が汚染されても
+# 既存ラベルの削除という不可逆な副作用になる。
+W28_LOG=$(mktemp /tmp/todo-test-w28-33-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_LABEL_REN_RESP"
+W28_33_OUT=$(w28_run label rename --foo newctx); W28_33_EC=$?
+assert_exit_fail "W28-33【核心】label rename の old 位置に未知フラグ: exit非0" "$W28_33_EC"
+assert_contains "W28-33: エラー本文が未知フラグのもの" "エラー: 不明なフラグです: --foo" "$W28_33_OUT"
+assert_eq "W28-33【核心】ラベル削除に到達していない" "0" "$(log_count "$W28_LOG" issues.deleteLabel)"
+assert_eq "W28-33【副作用ゼロ】API 呼び出しログが0行" "0" "$(wc -l < "$W28_LOG" | tr -d ' ')"
+rm -f "$W28_LOG"
+
+# W28-34【核心・不可逆】label rename の new 位置にフラグ字面（@--bar というゴミラベルを
+# 作ったうえで実在の @oldctx を削除する、という最も損害の大きい形）
+W28_LOG=$(mktemp /tmp/todo-test-w28-34-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_LABEL_REN_RESP"
+W28_34_OUT=$(w28_run label rename oldctx --bar); W28_34_EC=$?
+assert_exit_fail "W28-34【核心】label rename の new 位置に未知フラグ: exit非0" "$W28_34_EC"
+assert_contains "W28-34: エラー本文が未知フラグのもの" "エラー: 不明なフラグです: --bar" "$W28_34_OUT"
+assert_eq "W28-34【核心】@oldctx の削除に到達していない" "0" "$(log_count "$W28_LOG" issues.deleteLabel)"
+assert_not_contains "W28-34【反証】@--bar というゴミラベルが作られていない" '"name":"@--bar"' "$(cat "$W28_LOG")"
+rm -f "$W28_LOG"
+
+# W28-34b【正常系・スタブ応答の妥当性確認】同じ応答でフラグなしなら exit 0（§論点6 罠2）
+W28_LOG=$(mktemp /tmp/todo-test-w28-34b-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_LABEL_REN_RESP"
+W28_34B_OUT=$(w28_run label rename oldctx newctx); W28_34B_EC=$?
+assert_exit_ok "W28-34b【スタブ応答の妥当性】label rename oldctx newctx（フラグなし）: exit 0" "$W28_34B_EC"
+assert_eq "W28-34b: 旧ラベルの削除が1回呼ばれる" "1" "$(log_count "$W28_LOG" issues.deleteLabel)"
+rm -f "$W28_LOG"
+
+# ── W28-34c/d/e  tag rename（label rename と同じ renameCtxLabel を共用する第2の入口） ──
+# runTag の rename 分岐は renameCtxLabel を label rename とまったく同じ引数で呼ぶ。
+# W28-33/34 のガードは runLabel 側にあるため tag 経由では素通りし、@--foo というゴミラベルを
+# 作ったうえで実在の @oldctx を削除できてしまう（label rename と実害が同一）。
+# 対策は runTag ではなく renameCtxLabel の冒頭に guardUnknownFlag を1つ置く形で、
+# 両経路を同時に塞いでいる。runLabel rename 側の既存ガードは
+# 「余剰トークン」をカバーするため残してある（renameCtxLabel は raw1/raw2 しか見えない）。
+
+# W28-34c【核心・不可逆】tag rename の old 位置にフラグ字面
+W28_LOG=$(mktemp /tmp/todo-test-w28-34c-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_TAG_REN_RESP"
+W28_34C_OUT=$(w28_run tag rename --foo newctx); W28_34C_EC=$?
+assert_exit_fail "W28-34c【核心】tag rename の old 位置に未知フラグ: exit非0" "$W28_34C_EC"
+assert_contains "W28-34c: エラー本文が未知フラグのもの" "エラー: 不明なフラグです: --foo" "$W28_34C_OUT"
+assert_eq "W28-34c【核心】既存ラベルの削除に到達していない（deleteLabel 0回）" "0" "$(log_count "$W28_LOG" issues.deleteLabel)"
+assert_eq "W28-34c【核心】ラベル付け替えに到達していない（addLabels 0回）" "0" "$(log_count "$W28_LOG" issues.addLabels)"
+assert_eq "W28-34c【副作用ゼロ】API 呼び出しログが0行" "0" "$(wc -l < "$W28_LOG" | tr -d ' ')"
+rm -f "$W28_LOG"
+
+# W28-34d【核心・不可逆】tag rename の new 位置にフラグ字面（@--bar を作ったうえで
+# 実在の @oldctx を削除する、最も損害の大きい形）
+W28_LOG=$(mktemp /tmp/todo-test-w28-34d-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_TAG_REN_RESP"
+W28_34D_OUT=$(w28_run tag rename oldctx --bar); W28_34D_EC=$?
+assert_exit_fail "W28-34d【核心】tag rename の new 位置に未知フラグ: exit非0" "$W28_34D_EC"
+assert_contains "W28-34d: エラー本文が未知フラグのもの" "エラー: 不明なフラグです: --bar" "$W28_34D_OUT"
+assert_eq "W28-34d【核心】@oldctx の削除に到達していない（deleteLabel 0回）" "0" "$(log_count "$W28_LOG" issues.deleteLabel)"
+assert_eq "W28-34d【核心】ラベル付け替えに到達していない（addLabels 0回）" "0" "$(log_count "$W28_LOG" issues.addLabels)"
+assert_not_contains "W28-34d【反証】@--bar というゴミラベルが API へ渡っていない" '"name":"@--bar"' "$(cat "$W28_LOG")"
+rm -f "$W28_LOG"
+
+# W28-34e【正常系・スタブ応答の妥当性確認】同じ応答でフラグなしなら exit 0 になり、
+# deleteLabel / addLabels が実際に1回ずつ呼ばれる。これが成り立つので W28-34c/d の
+# 「0回」はガードを検証していることになる（§論点6 罠2）
+W28_LOG=$(mktemp /tmp/todo-test-w28-34e-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_TAG_REN_RESP"
+W28_34E_OUT=$(w28_run tag rename oldctx newctx); W28_34E_EC=$?
+assert_exit_ok "W28-34e【スタブ応答の妥当性】tag rename oldctx newctx（フラグなし）: exit 0" "$W28_34E_EC"
+assert_eq "W28-34e: 旧ラベルの削除が1回呼ばれる" "1" "$(log_count "$W28_LOG" issues.deleteLabel)"
+assert_eq "W28-34e: 新ラベルの付与が1回呼ばれる" "1" "$(log_count "$W28_LOG" issues.addLabels)"
+rm -f "$W28_LOG"
+
+# W28-17【核心】bulk move: 単体 move と違い --note は効かない（rest[0] しか読まない）。
+# ガードは per-issue ループの外にあり、1件目の処理にも入らないこと。
+# bulk.item_error（per-item エラーとして握りつぶす経路）に落ちていないことも確認する。
+W28_LOG=$(mktemp /tmp/todo-test-w28-17-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_BULKMOVE_RESP"
+W28_17_OUT=$(w28_run bulk move 41 42 next --note "x"); W28_17_EC=$?
+assert_exit_fail "W28-17【核心】bulk move に未知フラグ: exit非0" "$W28_17_EC"
+assert_contains "W28-17: エラー本文が未知フラグのもの" "エラー: 不明なフラグです: --note" "$W28_17_OUT"
+assert_eq "W28-17【副作用ゼロ】API 呼び出しログが0行（1件目の処理にも入っていない）" "0" "$(wc -l < "$W28_LOG" | tr -d ' ')"
+assert_not_contains "W28-17: per-item エラーとして握りつぶされていない（サマリー行が出ない）" "件を" "$W28_17_OUT"
+rm -f "$W28_LOG"
+
+# W28-17b【正常系・スタブ応答の妥当性確認】W28-17 と同じ応答でフラグなしなら exit 0（§論点6 罠2）
+W28_LOG=$(mktemp /tmp/todo-test-w28-17b-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_BULKMOVE_RESP"
+W28_17B_OUT=$(w28_run bulk move 41 42 next); W28_17B_EC=$?
+assert_exit_ok "W28-17b【スタブ応答の妥当性】bulk move 41 42 next（フラグなし）: exit 0" "$W28_17B_EC"
+assert_eq "W28-17b: 2件ともラベル付与される" "2" "$(log_count "$W28_LOG" issues.addLabels)"
+rm -f "$W28_LOG"
+
+# W28-18 bulk done: parseArgs をループ外へ巻き上げた箇所の検証
+W28_LOG=$(mktemp /tmp/todo-test-w28-18-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_BULKDONE_RESP"
+W28_18_OUT=$(w28_run bulk done 41 42 --boddy-file /tmp/x); W28_18_EC=$?
+assert_exit_fail "W28-18 bulk done に未知フラグ: exit非0" "$W28_18_EC"
+assert_contains "W28-18: エラー本文が未知フラグのもの" "エラー: 不明なフラグです: --boddy-file" "$W28_18_OUT"
+assert_eq "W28-18【副作用ゼロ】API 呼び出しログが0行（1件も close されていない）" "0" "$(wc -l < "$W28_LOG" | tr -d ' ')"
+rm -f "$W28_LOG"
+
+# W28-18c【正常系・スタブ応答の妥当性確認】W28-18 と同じ応答でフラグなしなら exit 0（§論点6 罠2）
+W28_LOG=$(mktemp /tmp/todo-test-w28-18c-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_BULKDONE_RESP"
+W28_18C_OUT=$(w28_run bulk done 41 42); W28_18C_EC=$?
+assert_exit_ok "W28-18c【スタブ応答の妥当性】bulk done 41 42（フラグなし）: exit 0" "$W28_18C_EC"
+assert_eq "W28-18c: 2件とも close される（issues.update ×2）" "2" "$(log_count "$W28_LOG" issues.update)"
+rm -f "$W28_LOG"
+
+# W28-18b bulk priority: rest.slice(1) の余剰フラグ
+W28_LOG=$(mktemp /tmp/todo-test-w28-18b-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_BULKPRI_RESP"
+W28_18B_OUT=$(w28_run bulk priority 41 42 p1 --note "x"); W28_18B_EC=$?
+assert_exit_fail "W28-18b bulk priority に未知フラグ: exit非0" "$W28_18B_EC"
+assert_contains "W28-18b: エラー本文が未知フラグのもの" "エラー: 不明なフラグです: --note" "$W28_18B_OUT"
+assert_eq "W28-18b【副作用ゼロ】優先度ラベル作成(ensureLabel)に到達していない" "0" "$(wc -l < "$W28_LOG" | tr -d ' ')"
+rm -f "$W28_LOG"
+
+# W28-18d【正常系・スタブ応答の妥当性確認】W28-18b と同じ応答でフラグなしなら exit 0（§論点6 罠2）
+W28_LOG=$(mktemp /tmp/todo-test-w28-18d-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_BULKPRI_RESP"
+W28_18D_OUT=$(w28_run bulk priority 41 42 p1); W28_18D_EC=$?
+assert_exit_ok "W28-18d【スタブ応答の妥当性】bulk priority 41 42 p1（フラグなし）: exit 0" "$W28_18D_EC"
+assert_eq "W28-18d: 2件とも優先度ラベルが付与される" "2" "$(log_count "$W28_LOG" issues.addLabels)"
+rm -f "$W28_LOG"
+
+# ── C-3 異常系: パターンC（parseArgs を通らず固定インデックスで読むハンドラ） ──
+# 位置1（tokens[1]）にフラグ字面が来た場合は既存バリデータ（validateDue / validateRecur /
+# parseInt / validatePriority）が既に loud に落とすため、新たに塞ぐのは slice(2) 以降だけ。
+
+# W28-19 due: `due 42 2026-09-10 --note "理由"` の --note は従来黙って捨てられていた
+W28_LOG=$(mktemp /tmp/todo-test-w28-19-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_SIMPLE_RESP"
+W28_19_OUT=$(w28_run due 42 2026-09-10 --note "理由"); W28_19_EC=$?
+assert_exit_fail "W28-19 due の余剰フラグ(--note): exit非0" "$W28_19_EC"
+assert_contains "W28-19: エラー本文が未知フラグのもの" "エラー: 不明なフラグです: --note" "$W28_19_OUT"
+assert_eq "W28-19【副作用ゼロ】API 呼び出しログが0行" "0" "$(wc -l < "$W28_LOG" | tr -d ' ')"
+rm -f "$W28_LOG"
+
+# W28-19b【後方互換】位置引数の余剰（`due 42 今週 金曜`）は従来どおり通る。
+# 手順書に日本語日付の未クォート運用が実在するため、本Issueでは塞がない（第3弾送り）。
+W28_LOG=$(mktemp /tmp/todo-test-w28-19b-XXXXXX); W28_RESP_CUR="$W28_SIMPLE_RESP"
+W28_19B_OUT=$(w28_run due 42 2026-09-10 余剰トークン); W28_19B_EC=$?
+assert_exit_ok "W28-19b【後方互換・仕様固定】位置引数の余剰は従来どおり通る: exit 0" "$W28_19B_EC"
+assert_eq "W28-19b: 期日が設定される" "1" "$(log_count "$W28_LOG" issues.update)"
+rm -f "$W28_LOG"
+
+# W28-20 recur
+W28_LOG=$(mktemp /tmp/todo-test-w28-20-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_SIMPLE_RESP"
+W28_20_OUT=$(w28_run recur 42 weekly --note "x"); W28_20_EC=$?
+assert_exit_fail "W28-20 recur の余剰フラグ(--note): exit非0" "$W28_20_EC"
+assert_contains "W28-20: エラー本文が未知フラグのもの" "エラー: 不明なフラグです: --note" "$W28_20_OUT"
+assert_eq "W28-20【副作用ゼロ】API 呼び出しログが0行" "0" "$(wc -l < "$W28_LOG" | tr -d ' ')"
+rm -f "$W28_LOG"
+
+# W28-20b【正常系・スタブ応答の妥当性確認】W28-20 と同じ応答でフラグなしなら exit 0（§論点6 罠2）
+W28_LOG=$(mktemp /tmp/todo-test-w28-20b-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_SIMPLE_RESP"
+W28_20B_OUT=$(w28_run recur 42 weekly); W28_20B_EC=$?
+assert_exit_ok "W28-20b【スタブ応答の妥当性】recur 42 weekly（フラグなし）: exit 0" "$W28_20B_EC"
+assert_eq "W28-20b: recur が保存される（issues.update 1回）" "1" "$(log_count "$W28_LOG" issues.update)"
+rm -f "$W28_LOG"
+
+# W28-21 link（ガードを外すと issues.get を2回呼ぶ。スタブ応答は W28_LINK_RESP で
+# `link 42 100` が exit 0 になることを確認済みのものを使い回している）
+W28_LOG=$(mktemp /tmp/todo-test-w28-21-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_LINK_RESP"
+W28_21_OUT=$(w28_run link 42 100 --note "x"); W28_21_EC=$?
+assert_exit_fail "W28-21 link の余剰フラグ(--note): exit非0" "$W28_21_EC"
+assert_contains "W28-21: エラー本文が未知フラグのもの" "エラー: 不明なフラグです: --note" "$W28_21_OUT"
+assert_eq "W28-21【副作用ゼロ】API 呼び出しログが0行" "0" "$(wc -l < "$W28_LOG" | tr -d ' ')"
+rm -f "$W28_LOG"
+
+# W28-21b【正常系・スタブ応答の妥当性確認】W28-21 と同じ応答でフラグなしなら exit 0 になること。
+# これが exit 0 でないと W28-21 の assert_exit_fail は「ガードを外しても PASS」になる（§論点6 罠2）。
+W28_LOG=$(mktemp /tmp/todo-test-w28-21b-XXXXXX); W28_RESP_CUR="$W28_LINK_RESP"
+W28_21B_OUT=$(w28_run link 42 100); W28_21B_EC=$?
+assert_exit_ok "W28-21b【スタブ応答の妥当性】link 42 100（フラグなし）: exit 0" "$W28_21B_EC"
+rm -f "$W28_LOG"
+
+# W28-22 priority
+W28_LOG=$(mktemp /tmp/todo-test-w28-22-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_PRI_RESP"
+W28_22_OUT=$(w28_run priority 42 p1 --note "x"); W28_22_EC=$?
+assert_exit_fail "W28-22 priority の余剰フラグ(--note): exit非0" "$W28_22_EC"
+assert_contains "W28-22: エラー本文が未知フラグのもの" "エラー: 不明なフラグです: --note" "$W28_22_OUT"
+assert_eq "W28-22【副作用ゼロ】API 呼び出しログが0行" "0" "$(wc -l < "$W28_LOG" | tr -d ' ')"
+rm -f "$W28_LOG"
+
+# W28-22a【正常系・スタブ応答の妥当性確認】W28-22 と同じ応答でフラグなしなら exit 0（§論点6 罠2）
+W28_LOG=$(mktemp /tmp/todo-test-w28-22a-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_PRI_RESP"
+W28_22A_OUT=$(w28_run priority 42 p1); W28_22A_EC=$?
+assert_exit_ok "W28-22a【スタブ応答の妥当性】priority 42 p1（フラグなし）: exit 0" "$W28_22A_EC"
+assert_eq "W28-22a: 優先度ラベルが付与される" "1" "$(log_count "$W28_LOG" issues.addLabels)"
+rm -f "$W28_LOG"
+
+# W28-22b【核心・元タイトル喪失】rename: tokens.slice(1) をそのまま新タイトルにするため、
+# 修正前は `rename 42 --boddy-file /tmp/x` が既存タイトルを「--boddy-file /tmp/x」で
+# 上書きしていた（exit 0）。add のゴミ Issue と違い元タイトルが復旧できない。
+# issues.update が0回であること＝元タイトルが失われていないこと。
+W28_LOG=$(mktemp /tmp/todo-test-w28-22b-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_RENAME_RESP"
+W28_22B_OUT=$(w28_run rename 42 --boddy-file /tmp/x); W28_22B_EC=$?
+assert_exit_fail "W28-22b【核心】rename に未知フラグ: exit非0" "$W28_22B_EC"
+assert_contains "W28-22b: エラー本文が未知フラグのもの" "エラー: 不明なフラグです: --boddy-file" "$W28_22B_OUT"
+assert_eq "W28-22b【核心・元タイトル喪失の防止】issues.update は0回（既存タイトルが上書きされていない）" "0" "$(log_count "$W28_LOG" issues.update)"
+assert_not_contains "W28-22b【反証】汚染タイトルでの issues.update が発生していない" \
+  '"title":"--boddy-file /tmp/x"' "$(log_lines_for_method "$W28_LOG" issues.update)"
+rm -f "$W28_LOG"
+
+# W28-22c【正常系・スタブ応答の妥当性確認】W28-22b と同じ応答でフラグなしなら exit 0 になること
+W28_LOG=$(mktemp /tmp/todo-test-w28-22c-XXXXXX); W28_RESP_CUR="$W28_RENAME_RESP"
+W28_22C_OUT=$(w28_run rename 42 新しいタイトル); W28_22C_EC=$?
+assert_exit_ok "W28-22c【スタブ応答の妥当性】rename 42 <タイトル>（フラグなし）: exit 0" "$W28_22C_EC"
+assert_contains "W28-22c: タイトルが更新される" '"title":"新しいタイトル"' "$(log_lines_for_method "$W28_LOG" issues.update)"
+rm -f "$W28_LOG"
+
+# W28-22d desc: rename と同型（tokens.slice(1) を連結して desc へ追記する）
+W28_LOG=$(mktemp /tmp/todo-test-w28-22d-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_SIMPLE_RESP"
+W28_22D_OUT=$(w28_run desc 42 --boddy-file /tmp/x); W28_22D_EC=$?
+assert_exit_fail "W28-22d desc に未知フラグ: exit非0" "$W28_22D_EC"
+assert_contains "W28-22d: エラー本文が未知フラグのもの" "エラー: 不明なフラグです: --boddy-file" "$W28_22D_OUT"
+assert_contains "W28-22d: ヒント行が本文向け（desc の自由記述は本文）" "本文全体を1つの引数としてクォート" "$W28_22D_OUT"
+assert_eq "W28-22d【副作用ゼロ】API 呼び出しログが0行" "0" "$(wc -l < "$W28_LOG" | tr -d ' ')"
+rm -f "$W28_LOG"
+
+# W28-22e【正常系・スタブ応答の妥当性確認】W28-22d と同じ応答でフラグなしなら exit 0 になること
+W28_LOG=$(mktemp /tmp/todo-test-w28-22e-XXXXXX); W28_RESP_CUR="$W28_SIMPLE_RESP"
+W28_22E_OUT=$(w28_run desc 42 追記する説明); W28_22E_EC=$?
+assert_exit_ok "W28-22e【スタブ応答の妥当性】desc 42 <テキスト>（フラグなし）: exit 0" "$W28_22E_EC"
+rm -f "$W28_LOG"
+
+# ── C-4 i18n ──
+#
+# 【W28-23 / W28-24 の3つの補助アサーションについて（読み手向けの注記）】
+# 下記のうち W28-23 の assert_no_japanese と W28-24 の assert_not_contains ×2 は、
+# ガードを取り除いた状態でも PASS したままになる（成功時の英語出力にも日本語は含まれず、
+# 成功時の出力にもタイトル向け・本文向けのヒント文言は現れないため）。これは意図した設計で、
+# この3つが見ているのは「ガードが存在すること」ではなく「**ガードが発火したときの**出力が
+# en で日本語混じりでないこと / ヒントキーの配線が正しいこと」という別の性質である。
+# ガードの存在自体は、同じケース内の assert_exit_fail と assert_contains（エラー全文）が
+# 担保しており、ガード除去実験ではケース全体として FAIL する。1つのアサーションに
+# 2つの役割を負わせないための分担なので、回帰検出器として読み替えないこと。
+
+# W28-23 英語モード: 日本語が1文字も出ないこと
+W28_LOG=$(mktemp /tmp/todo-test-w28-23-XXXXXX); : > "$W28_LOG"
+W28_23_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W28_MOVE_RESP" OCTOKIT_STUB_LOG_ENV="$W28_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo LANG_ENV=en \
+  node "$ENGINE" run move 42 next --boddy-file /tmp/x 2>&1); W28_23_EC=$?
+assert_exit_fail "W28-23 i18n(en) move の未知フラグ: exit非0" "$W28_23_EC"
+assert_contains "W28-23: 英語のエラー本文" "Error: unknown flag: --boddy-file" "$W28_23_OUT"
+assert_contains "W28-23: 英語のヒント行（options 版）" "run /todo help to see the options" "$W28_23_OUT"
+assert_contains "W28-23: Usage 行（常時英語）" "Usage: /todo move <#> <GTD>" "$W28_23_OUT"
+assert_no_japanese "W28-23: 出力に日本語が1文字も含まれない" "$W28_23_OUT"
+rm -f "$W28_LOG"
+
+# W28-24 日本語モード: ヒント行が options 版であること（タイトル向け／本文向けの誤配線を排除）
+W28_LOG=$(mktemp /tmp/todo-test-w28-24-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_MOVE_RESP"
+W28_24_OUT=$(w28_run move 42 next --boddy-file /tmp/x); W28_24_EC=$?
+assert_exit_fail "W28-24 i18n(ja) move の未知フラグ: exit非0" "$W28_24_EC"
+assert_contains "W28-24: ヒント行が options 版" "このコマンドで使えるオプションは /todo help" "$W28_24_OUT"
+assert_not_contains "W28-24: タイトル向けヒントが誤配線されていない" "タイトル全体を1つの引数" "$W28_24_OUT"
+assert_not_contains "W28-24: 本文向けヒントが誤配線されていない" "本文全体を1つの引数" "$W28_24_OUT"
+rm -f "$W28_LOG"
+
+# ── C-5 入力文字パターン（template use のケースは隔離 HOME ブロック内の W28-25/30 を参照） ──
+
+# W28-26【入力文字】--note の値は parseArgs が消費するため guard に到達しない
+W28_LOG=$(mktemp /tmp/todo-test-w28-26-XXXXXX); W28_RESP_CUR="$W28_DONE_RESP"
+W28_26_OUT=$(w28_run done 42 --note "--- 区切り線 ---"); W28_26_EC=$?
+assert_exit_ok "W28-26【入力文字】--note の値が Markdown 水平線でも通る: exit 0" "$W28_26_EC"
+assert_contains "W28-26: コメント本文が水平線テキストそのまま" '"body":"--- 区切り線 ---"' "$(log_lines_for_method "$W28_LOG" issues.createComment)"
+rm -f "$W28_LOG"
+
+# ── C-6 境界値 ──
+
+# W28-27【設計判断の固定】bulk tag / untag には guard を入れない。
+# normalizeTagTokens（#1686）が既に `-` 始まりトークンを loud に落としており、
+# guard を足すとメッセージが変わる。従来の「オプション指定に見えます」が出続けること。
+W28_LOG=$(mktemp /tmp/todo-test-w28-27-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR='{}'
+W28_27_OUT=$(w28_run bulk tag 6101 6102 -- @本業); W28_27_EC=$?
+assert_exit_fail "W28-27【設計判断の固定】bulk tag に -- を渡す: exit非0（従来どおり）" "$W28_27_EC"
+assert_contains "W28-27: 従来の option_like_token エラーが出る" "オプション指定に見えます" "$W28_27_OUT"
+assert_not_contains "W28-27: 未知フラグエラーに置き換わっていない（tag に guard を入れない設計判断）" "不明なフラグ" "$W28_27_OUT"
+rm -f "$W28_LOG"
+
+# W28-28【境界】--json は runList が parseArgs より前に除去するため guard に到達しない
+# （だから許可リストにも入れていない）
+W28_LOG=$(mktemp /tmp/todo-test-w28-28-XXXXXX); W28_RESP_CUR="$W28_LIST_RESP"
+W28_28_OUT=$(w28_run list --json); W28_28_EC=$?
+assert_exit_ok "W28-28【境界】list --json は guard に到達しない: exit 0" "$W28_28_EC"
+assert_not_contains "W28-28: --json が未知フラグ扱いされていない" "不明なフラグ" "$W28_28_OUT"
+rm -f "$W28_LOG"
+
+# W28-29【境界】内部生成の引数列（activate → runEdit へ ['42','--activate',<date>] を渡す）が
+# guard に引っかからないこと
+W28_LOG=$(mktemp /tmp/todo-test-w28-29-XXXXXX); W28_RESP_CUR="$W28_SIMPLE_RESP"
+W28_29_OUT=$(w28_run activate 42 2026-09-10); W28_29_EC=$?
+assert_exit_ok "W28-29【境界】内部生成の引数列(activate → runEdit): exit 0" "$W28_29_EC"
+assert_contains "W28-29: activate が更新される" "activate → 2026-09-10" "$W28_29_OUT"
+rm -f "$W28_LOG"
 
 # ──────────────────────────────────────────
 # 結果サマリー（run-tests.sh から集計加算するための機械可読な行）
