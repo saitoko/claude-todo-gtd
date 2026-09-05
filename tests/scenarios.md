@@ -2158,3 +2158,104 @@ LANG_ENV=en bash ~/.claude/todo.sh add next "write the design doc" --boddy-file 
 
 既存のテストスイート全件が本変更後も引き続き PASS することで確認する（`bash tests/run-tests.sh`）。
 `--` を含む正当なタイトル（`add next "--- 区切り線 --- を含むタスク"` 等）が従来どおり通ることも §W27-13〜19 で自動検証済み。
+
+## 48. ハンドラが読まないフラグ・トークンの検出（Issue #1934 パート1・パート1.5）
+
+`parseArgs()` は消費するが、そのハンドラ自身が読まないフラグ（17種の値付きフラグ）・位置トークン（`@ctx`/`#tag`）が、
+エラーも警告も出さずに黙って消えないことを確認する。
+自動テストは `tests/run-tests.sh` §52（判定器の単体テスト）と `tests/run-tests-write.sh` §W29（8ハンドラの振る舞い）でカバー済み。
+以下は実 GitHub 接続での手動確認用（**エラーになるケースのみ実施すること**。API は呼ばれない）。
+
+### 48-1. `add` に他コマンド専用フラグを渡すとエラーになること（パート1）
+
+```
+bash ~/.claude/todo.sh add next "テスト" --note "メモ"
+```
+
+期待:
+- exit 1
+- stderr に `Usage: /todo add [GTD] <title> ...` の行
+- stderr に `エラー: --note はこのコマンドでは使えません`
+- stderr に `ヒント: --note は /todo done / /todo move で使えます。`
+- GitHub 上に Issue が作られていないこと（`/todo list next` で確認）
+
+### 48-2. `list` にフラグ形の `--due` を渡すとエラーになること（パート1）
+
+```
+bash ~/.claude/todo.sh list --due 2026-09-10
+```
+
+期待: exit 1 / `エラー: --due はこのコマンドでは使えません`（フィルタが効かず全件表示されるのではなく、エラーで気づけること）
+
+### 48-3. `done` / `move` / `edit` / `label add` / `bulk done` に `@ctx`/`#tag` を渡すとエラーになること（パート1.5）
+
+```
+bash ~/.claude/todo.sh done <既存のIssue番号> @外出
+```
+
+期待: exit 1 / `エラー: @ctx はこのコマンドでは使えません` / `ヒント: @ctx は /todo add / /todo list / /todo template save で使えます。` / API が呼ばれず対象Issueの状態が変わらないこと
+
+### 48-4. `template save`（インライン形式）は `@ctx` は使えるが `#tag` は使えないこと（パート1.5・非対称の確認）
+
+```
+bash ~/.claude/todo.sh template save 動作確認用 next @外出
+bash ~/.claude/todo.sh template save 動作確認用2 next "#tag例"
+```
+
+期待: 1つ目は exit 0 でテンプレートが保存される（後片付けに `template delete 動作確認用` を実行）。2つ目は exit 1 / `エラー: #tag はこのコマンドでは使えません`（テンプレートは保存されない）
+
+### 48-5. `LANG_ENV=en` で英語メッセージが出ること
+
+```
+LANG_ENV=en bash ~/.claude/todo.sh add next "test" --note "memo"
+```
+
+期待: exit 1 / `Error: --note is not supported by this command` / `Hint: --note is supported by: /todo done / /todo move.` / 日本語が1文字も含まれないこと
+
+### 48-6. 正常系のリグレッション（サポート対象フラグ・`@ctx`/`#tag` が壊れていないこと）
+
+既存のテストスイート全件が本変更後も引き続き PASS することで確認する（`bash tests/run-tests.sh`）。
+`add`/`list` への `@ctx`/`#tag` 併用（`add next "テスト" @外出 "#タグ"` 等）が従来どおり通ることも §W29-35/36 で自動検証済み。
+
+## 49. 位置引数の余剰・`search`/`archive search` のフラグ字面混入（Issue #1934 パート2・パート4、全パート完了）
+
+固定インデックス型ハンドラ（`due`/`recur`/`link`/`priority`）の値の直後に残った非フラグの余剰トークンと、
+`search`/`archive search` のフラグ字面混入がエラーになることを確認する。
+自動テストは `tests/run-tests-write.sh` §W31（パート2）・§W32（パート4）でカバー済み。
+以下は実 GitHub 接続での手動確認用（**エラーになるケースのみ実施すること**。API は呼ばれない）。
+
+### 49-1. `due` に余剰の日本語トークンを渡すとエラーになること（パート2）
+
+```
+bash ~/.claude/todo.sh due <既存のIssue番号> 2026-09-10 余剰トークン
+```
+
+期待:
+- exit 1
+- stderr に `エラー: 余分な引数があります: 余剰トークン`
+- stderr に `ヒント: 値に空白が含まれる場合はクォートしてください: /todo due <番号> "2026-09-10 余剰トークン"`
+- 対象Issueの期日が変わっていないこと（`/todo show <番号>` で確認）
+
+クォートすれば通ることも確認する（例: `due <番号> "2026-09-10"`）。
+
+### 49-2. `link` / `priority` に値を2つ渡すとエラーになること（パート2）
+
+```
+bash ~/.claude/todo.sh priority <既存のIssue番号> p1 p2
+```
+
+期待: exit 1 / `エラー: 余分な引数があります: p2` / `ヒント: このコマンドは値を1つだけ指定できます: /todo priority <番号> p1` / 優先度が変わっていないこと
+
+### 49-3. `search` にフラグのタイプミスを渡すとエラーになること（パート4）
+
+```
+bash ~/.claude/todo.sh search --keywrd foo
+```
+
+期待: exit 1 / `エラー: 不明なフラグです: --keywrd`（`"--keywrd foo"` のままゼロ件検索されない）
+
+### 49-4. 正常系のリグレッション
+
+既存のテストスイート全件が本変更後も引き続き PASS することで確認する（`bash tests/run-tests.sh`）。
+`due`/`recur`/`link`/`priority` の余剰なし呼び出し、`search`/`archive search` のフラグなしキーワードが従来どおり通ることは
+§W16-5・§W28-20b/21b/22a・§W31-7・§W32-2/4 で自動検証済み。

@@ -35,6 +35,55 @@ const RECUR_WEEKDAY_TO_DOW = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, s
 // 落ちる。実装時に実測（2026-09-01）。
 const UNKNOWN_FLAG_RE = /^--[A-Za-z][A-Za-z0-9-]*$/;
 
+// フィールド名（parseArgs() の戻り値のキー） → 代表フラグ表記（エラーメッセージ用）。
+// #1934 パート1: 「parseArgs は消費するがハンドラが読まないフラグ」を検出するための対応表。
+// priority には --p1/--p2/--p3 のショートハンドもあるが、代表表記は --priority とする
+// （メッセージが伝えたいのは「このコマンドでは使えない」であり、入力トークンの再現ではない）。
+// 【この定数をここ（ファイル冒頭の定数ブロック）から動かさないこと】理由は UNKNOWN_FLAG_RE の
+// コメント（24-35行）と同じ（診断サブコマンド find-unsupported-flag から間接参照するため）。
+const FLAG_FIELD_MAP = {
+  due: '--due', desc: '--desc', recur: '--recur', project: '--project',
+  priority: '--priority', estimate: '--estimate', actual: '--actual',
+  dueOffset: '--due-offset', color: '--color', activate: '--activate',
+  before: '--before', dependsOn: '--depends-on',
+  resumeCondition: '--resume-condition', note: '--note',
+  body: '--body', bodyFile: '--body-file', labels: '--label',
+  // #1934 パート1.5: `@ctx` / `#tag` は「フラグ」ではなく parseArgs() が消費する位置トークン
+  // だが、消費されたのに読まれない同型の問題があるため対象に含める（代表表記は入力の字面
+  // そのもの。--foo 形式ではないため「エラー: --contexts はこのコマンドでは使えません」の
+  // ような実在しないフラグ名を出さないよう `@ctx`/`#tag` を代表表記とする）。
+  contexts: '@ctx', tags: '#tag',
+};
+
+// フィールド名 → それを実際に読むコマンドの一覧（エラーメッセージのヒント用）。
+// 「/todo <cmd>」の <cmd> 部分の文字列のみを保持する（コマンド行の組み立ては呼び出し側）。
+// 本設計の「ハンドラ別 実測表」と1対1で対応する。表を更新したら必ずこちらも更新すること。
+const FLAG_SUPPORTED_BY = {
+  due: ['add', 'edit', 'template save'],
+  desc: ['add', 'edit', 'template save'],
+  recur: ['add', 'edit', 'template save'],
+  project: ['add', 'edit', 'template save'],
+  priority: ['add', 'edit', 'template save'],
+  estimate: ['add', 'edit'],
+  actual: ['done', 'bulk done'],
+  dueOffset: ['template save'],
+  color: ['label add'],
+  activate: ['add', 'edit'],
+  before: ['add', 'edit'],
+  dependsOn: ['add', 'edit'],
+  resumeCondition: ['add', 'edit'],
+  note: ['done', 'move'],
+  body: ['add'],
+  bodyFile: ['add'],
+  labels: ['add'],
+  // #1934 パート1.5: @ctx は add / list / template save（インライン形式）で読まれる。
+  // #tag は add / list のみ（template save インラインは parsed.tags を読まない非対称が
+  // 実装コード上に存在する。これは仕様上望ましいか未確定のため tags には含めない。
+  // 詳細は todo-engine.js の runTemplate save インライン分岐のコメント参照）。
+  contexts: ['add', 'list', 'template save'],
+  tags: ['add', 'list'],
+};
+
 // ─── i18n ───
 const LANG = process.env.LANG_ENV || 'ja';
 
@@ -221,7 +270,7 @@ const MESSAGES = {
     // help
     'help.routine_hint': '🔁 routine ラベルは繰り返しタスク専用です。--recur オプションと組み合わせて使用してください。',
     'help.desc_note': '※ desc/edit のテキストに due:/activate: 等を含めると body で重複表示されます',
-    'help.unknown_flag_note': '※ 未知フラグをエラーにするコマンド: add / list / done / move / edit / comment / rename / due / desc / recur / priority / link / label / template / bulk。フラグ名のタイプミスと、値を書き忘れた既知フラグが対象です（-- で始まる語をタイトルや本文に含めたい場合は全体をクォートしてください）\n※ 対象外: 上記以外のコマンド（show / search / stats など）は -- で始まる引数を従来どおり黙って無視します。対象コマンドでも、そのコマンドが読まないフラグ（例: add の --note、edit の --actual）は現時点では黙って捨てられます',
+    'help.unknown_flag_note': '※ 未知フラグをエラーにするコマンド: add / list / done / move / edit / comment / rename / due / desc / recur / priority / link / label / template / bulk / search / archive（search サブコマンドのみ）。フラグ名のタイプミスと、値を書き忘れた既知フラグが対象です（-- で始まる語をタイトルや本文に含めたい場合は全体をクォートしてください）\n※ 対象外: 上記以外のコマンド（show / stats など）は -- で始まる引数を従来どおり黙って無視します。\n※ 対象コマンドであっても、そのコマンドが読まないフラグ（例: add の --note）を渡すとエラーになります（不明なフラグとは別のメッセージです）。@ctx / #tag も同様で、そのコマンドが読まないものを渡すとエラーになります（例: done / move / edit / label add / bulk done の @ctx・#tag）。template save は @ctx は使えますが #tag は使えません\n※ due / recur / link / priority は値の直後に余分な引数を渡すとエラーになります（例: due 42 今週 金曜 は「金曜」が余剰）。空白を含む日付・パターンを渡す場合は値全体をクォートしてください（例: due 42 "今週 金曜"）',
     // promote / activate
     'error.before_needs_due': 'エラー: --before を使うには --due が必要です',
     'error.before_format': 'エラー: --before は 14d / 2w 形式で指定してください（例: 14d, 2w）',
@@ -280,6 +329,11 @@ const MESSAGES = {
     'error.unknown_flag_hint': 'ヒント: この語をタイトルに含めたい場合は、タイトル全体を1つの引数としてクォートしてください（例: /todo add next "--dry-run を追加する"）。タイトルがこの語1語だけの場合は、前後に語を足してください（例: 「--dry-run」の扱いを決める）。',
     'error.unknown_flag_hint_body': 'ヒント: この語を本文に含めたい場合は、本文全体を1つの引数としてクォートしてください（例: /todo comment 42 "--dry-run を追加した"）。',
     'error.unknown_flag_hint_options': 'ヒント: このコマンドで使えるオプションは /todo help で確認してください。',
+    'error.flag_not_supported': 'エラー: {flag} はこのコマンドでは使えません',
+    'error.flag_not_supported_hint': 'ヒント: {flag} は {commands} で使えます。',
+    'error.extra_positional': 'エラー: 余分な引数があります: {extra}',
+    'error.extra_positional_hint_quote': 'ヒント: 値に空白が含まれる場合はクォートしてください: {example}',
+    'error.extra_positional_hint_single': 'ヒント: このコマンドは値を1つだけ指定できます: {example}',
     'hint.project_outcome': '💡 ヒント: プロジェクト名は「〜している状態」「〜が完了している」のような\n   成果物（outcome）の形で書くと Next Action を導出しやすくなります。',
     'label.desc_context': 'コンテキスト',
     'label.desc_tag': 'タグ',
@@ -591,7 +645,7 @@ const MESSAGES = {
     // help
     'help.routine_hint': '🔁 routine label is for recurring tasks. Recommended to use with --recur option.',
     'help.desc_note': 'Note: including due:/activate: in desc/edit text causes duplicate display in body',
-    'help.unknown_flag_note': 'Note: unknown flags are rejected by these commands: add / list / done / move / edit / comment / rename / due / desc / recur / priority / link / label / template / bulk. This covers misspelled flag names and known flags whose value is missing (to keep a word starting with -- inside a title or body, quote the whole text).\nNote: not covered - other commands (show / search / stats, etc.) ignore arguments starting with -- silently, and even in the commands above, a flag that the command itself does not read (e.g. --note on add, --actual on edit) is currently dropped silently.',
+    'help.unknown_flag_note': 'Note: unknown flags are rejected by these commands: add / list / done / move / edit / comment / rename / due / desc / recur / priority / link / label / template / bulk / search / archive (search subcommand only). This covers misspelled flag names and known flags whose value is missing (to keep a word starting with -- inside a title or body, quote the whole text).\nNote: not covered - other commands (show / stats, etc.) ignore arguments starting with -- silently.\nNote: even within the commands above, a flag the command itself does not read (e.g. --note on add) is now rejected with an error (a different message from an unknown-flag error). The same applies to @ctx / #tag (e.g. @ctx/#tag on done / move / edit / label add / bulk done). template save accepts @ctx but not #tag.\nNote: due / recur / link / priority reject extra arguments after the value (e.g. due 42 this week friday has an extra token). Quote the whole value if it contains spaces (e.g. due 42 "this week friday").',
     // promote / activate
     'error.before_needs_due': 'Error: --before requires --due',
     'error.before_format': 'Error: --before must be in 14d / 2w format (e.g. 14d, 2w)',
@@ -650,6 +704,11 @@ const MESSAGES = {
     'error.unknown_flag_hint': 'Hint: to keep this word in the title, quote the whole title as a single argument (e.g. /todo add next "add --dry-run"). If the title is only this word, add words around it (e.g. "decide how to handle --dry-run").',
     'error.unknown_flag_hint_body': 'Hint: to keep this word in the body text, quote the whole body as a single argument (e.g. /todo comment 42 "added --dry-run").',
     'error.unknown_flag_hint_options': 'Hint: run /todo help to see the options this command accepts.',
+    'error.flag_not_supported': 'Error: {flag} is not supported by this command',
+    'error.flag_not_supported_hint': 'Hint: {flag} is supported by: {commands}.',
+    'error.extra_positional': 'Error: extra arguments: {extra}',
+    'error.extra_positional_hint_quote': 'Hint: if the value contains spaces, quote it: {example}',
+    'error.extra_positional_hint_single': 'Hint: this command accepts only one value: {example}',
     'hint.project_outcome': '💡 Hint: Project titles are easier to derive Next Actions from when written\n   as an outcome (e.g. "X is done", "X has been completed").',
     'label.desc_context': 'Context',
     'label.desc_tag': 'Tag',
@@ -2928,6 +2987,28 @@ switch (cmd) {
     process.stdout.write(findUnknownFlag(toks, allowed) || '');
     break;
   }
+  case 'find-unsupported-flag': {
+    // findUnsupportedFlagField() の単体テスト用（#1934 パート1）。入力は「値が設定されている
+    // とみなすフィールド名の JSON配列」（例: '["note","actual"]'）と「そのハンドラの許可
+    // フィールド一覧」（例: '["actual"]'）。判定結果（最初に見つかった未サポートフィールド名。
+    // なければ空文字列）を stdout へ返す。メッセージ整形（guardUnsupportedFlag）は経由しない
+    // ので FLAG_SUPPORTED_BY への依存はここには生じない。
+    const setFields = JSON.parse(args[1] || '[]');
+    const supportedFields = JSON.parse(args[2] || '[]');
+    // 未設定のフィールドは parseArgs() の初期値（null、labels のみ空配列）に揃えておく必要が
+    // ある。ここを省略すると dummyParsed[field] が undefined のままになり、
+    // findUnsupportedFlagField() の isSet 判定（val !== null）が「undefined !== null」で
+    // 常に true になってしまい、setFields に含めていないフィールドまで誤検出する
+    // （実装時に §52 実測で発見。設計書のサンプルコードのままでは動かない）。
+    // #1934 パート1.5: contexts/tags も labels と同じ配列フィールドなのでダミー初期化を揃える
+    // （文字列でも isSet 判定上は動作するが、実際の parseArgs() の型と一致させておく）。
+    const ARRAY_FIELDS = ['labels', 'contexts', 'tags'];
+    const dummyParsed = {};
+    for (const f of Object.keys(FLAG_FIELD_MAP)) dummyParsed[f] = ARRAY_FIELDS.includes(f) ? [] : null;
+    for (const f of setFields) dummyParsed[f] = ARRAY_FIELDS.includes(f) ? ['x'] : 'x';
+    process.stdout.write(findUnsupportedFlagField(dummyParsed, supportedFields) || '');
+    break;
+  }
   case 'compute-github-ms': {
     // 区間統合アルゴリズム単体テスト用（Issue #455）。入力はms単位の [start, end] 配列
     // （例: '[[0,100],[50,150],[200,250]]'）。内部でns相当に換算してcomputeGithubMs()を
@@ -3232,6 +3313,82 @@ function guardUnknownFlag(tokens, allowedFlags, usage, hintKey) {
   process.exit(1);
 }
 
+// parsed（parseArgs() の戻り値）のうち、supportedFields に載っていない FLAG_FIELD_MAP の
+// キーで値が設定されているものを、FLAG_FIELD_MAP の定義順に探す（#1934 パート1）。
+// 見つかればそのフィールド名（FLAG_FIELD_MAP のキー）、なければ null を返す（副作用なしの純粋関数）。
+// isSet の判定は「値が null でないこと」（配列フィールドは長さ>0）。空文字列 '' も「ユーザーが
+// 明示的にそのフラグへ空値を渡した」とみなして検出対象にする（例: `list --due ''`）。
+// supportedFields: そのハンドラが実際に読む FLAG_FIELD_MAP のキー一覧（guardUnknownFlag の
+// allowedFlags＝フラグ文字列の許可リストとは別物。ここは parsed のフィールド名）。
+function findUnsupportedFlagField(parsed, supportedFields) {
+  const supported = supportedFields || [];
+  for (const field of Object.keys(FLAG_FIELD_MAP)) {
+    if (supported.indexOf(field) >= 0) continue;
+    const val = parsed[field];
+    const isSet = Array.isArray(val) ? val.length > 0 : val !== null;
+    if (isSet) return field;
+  }
+  return null;
+}
+
+// 未サポートのフラグ（parseArgs は消費するがこのハンドラは読まない17フラグ由来フィールド）を
+// 検出したら、Usage・エラー本文・「どのコマンドでは使えるか」のヒントを出して終了する
+// （#1934 パート1）。guardUnknownFlag() とは判定対象が排他（extra 内のトークン vs parsed の
+// フィールド値）なので、同一入力で両方が発火することはない。呼び出し順序は
+// 「guardUnknownFlag() → guardUnsupportedFlag()」に統一する（typo検出を先に、対象外検出を後に）。
+//   parsed         : parseArgs() の戻り値そのもの
+//   supportedFields: そのハンドラが実際に読む FLAG_FIELD_MAP のキー一覧
+//   usage          : そのコマンドの Usage 行（英語固定）
+// 関数宣言で書くこと（guardUnknownFlag と同じ理由。ファイル冒頭 24-35行参照）。
+function guardUnsupportedFlag(parsed, supportedFields, usage) {
+  const field = findUnsupportedFlagField(parsed, supportedFields);
+  if (!field) return;
+  const flag = FLAG_FIELD_MAP[field];
+  const commands = FLAG_SUPPORTED_BY[field].map(c => '/todo ' + c).join(' / ');
+  if (usage) process.stderr.write(`${usage}\n`);
+  process.stderr.write(tpl('error.flag_not_supported', { flag }) + '\n');
+  process.stderr.write(tpl('error.flag_not_supported_hint', { flag, commands }) + '\n');
+  process.exit(1);
+}
+
+// 3つの guard 関数の役割分担（#1934 全パート共通。ここに一元的に記す）:
+//   guardUnknownFlag()     : extra（parseArgs 未消費のトークン、または固定インデックスで
+//                            消費しなかった残り）に残った「未知のフラグ字面」（typo等）を検出する。
+//                            対象データはトークン文字列の配列。
+//   guardUnsupportedFlag() : parseArgs() が消費した parsed.<field> のうち、そのハンドラが
+//                            読まないフィールド（＝別コマンドでは有効だが自分は読まない）を検出する。
+//                            対象データは parsed オブジェクトのフィールド値。
+//   guardExtraPositional() : 固定インデックス型ハンドラ（tokens[0]=番号 / tokens[1]=値、の形で
+//                            読むハンドラ）で、値の直後に残った「非フラグの位置引数の余剰」
+//                            （クォート漏れ・値の指定過多）を検出する（#1934 パート2）。
+//                            対象データは guardUnknownFlag 通過後の残余トークン配列（フラグ字面は
+//                            既に guardUnknownFlag が弾いている前提）。
+// 呼び出し順序はすべて「guardUnknownFlag() → guardUnsupportedFlag() / guardExtraPositional()」に
+// 統一する（typo検出を先に、それ以外の検出を後に。判定対象が排他なので同一入力で二重発火はしない）。
+
+// 固定インデックス型ハンドラ（tokens[0]=番号 / tokens[1]=値）で、値の直後に残った
+// 非フラグの位置引数（クォート漏れ・値の指定過多）を検出したら、Usage・エラー本文・
+// 修正例のヒントを出して終了する（#1934 パート2）。guardUnknownFlag() で既にフラグ字面の
+// トークンは弾かれている前提のため、ここに来る extraTokens は必ず非フラグの文字列である。
+//   extraTokens: guardUnknownFlag 通過後の残余トークン（tokens.slice(2) 等）
+//   usage      : そのコマンドの Usage 行（英語固定）
+//   hintKey    : 'error.extra_positional_hint_quote'（クォート漏れを想定: due / recur。
+//                値が自然文の日付・パターンで空白を含みうるコマンド）
+//                'error.extra_positional_hint_single'（値の指定過多を想定: link / priority。
+//                値が単一トークンで空白を含む余地がないコマンド）
+//   example    : 修正済みの実行例（呼び出し側が実際のトークンから組み立てる。
+//                error.flag_not_supported_hint の {commands} と同じ考え方で、静的文言ではなく
+//                呼び出し側が動的に組み立てた文字列を渡す）
+// 関数宣言で書くこと（guardUnknownFlag と同じ理由。ファイル冒頭 24-35行参照）。
+function guardExtraPositional(extraTokens, usage, hintKey, example) {
+  if (!extraTokens.length) return;
+  const extra = extraTokens.join(' ');
+  if (usage) process.stderr.write(`${usage}\n`);
+  process.stderr.write(tpl('error.extra_positional', { extra }) + '\n');
+  process.stderr.write(tpl(hintKey, { example }) + '\n');
+  process.exit(1);
+}
+
 // /todo add の Usage 行（未知フラグ検出時に stderr へ出す）。
 // DEVELOPMENT.md §翻訳方針「Usage: 文字列は常時英語で統一」に従い t() を通さない。
 // 掲載範囲: runAdd が実際に参照するフラグのみを載せる。parseArgs は --actual / --note /
@@ -3496,6 +3653,15 @@ async function runAdd(octokit, owner, repo, tokens) {
   // #1921 第2弾で共通ヘルパー guardUnknownFlag へ置き換えた（出力は1文字も変えていない）。
   // add はタイトルが自由記述なので hint は「タイトル」向けのキーを使う。
   guardUnknownFlag(parsed.extra, [], ADD_USAGE, 'error.unknown_flag_hint');
+  // #1934 パート1: parseArgs は消費するが runAdd が読まないフラグ（--actual/--due-offset/
+  // --color/--note）を検出してエラー化する（配線直前に上記の実装コードで参照フィールドを
+  // 再確認済み: due/recur/project/priority/estimate/resumeCondition/before/activate/
+  // body/bodyFile/dependsOn/labels）。
+  // #1934 パート1.5: @ctx/#tag も同じ枠組みで検出する（3631-3632/3645-3653行で
+  // parsed.contexts/parsed.tags を実際に読んでいることを配線直前に再確認済み）。
+  guardUnsupportedFlag(parsed, ['due','desc','recur','project','priority','estimate',
+    'resumeCondition','before','activate','body','bodyFile','dependsOn','labels',
+    'contexts','tags'], ADD_USAGE);
 
   // タイトル: 残りトークンを連結
   const titleTokens = parsed.extra.filter(s => s.trim());
@@ -3669,6 +3835,12 @@ async function runList(octokit, owner, repo, tokens) {
   const LIST_ALLOWED_FLAGS = ['--group', '--no-due', '--no-estimate'];
   const LIST_USAGE = 'Usage: /todo list [GTD] [@ctx] [#tag] [p1|p2|p3] [project <#>] [--group] [--no-due] [--no-estimate] [--json]';
   guardUnknownFlag(extra, LIST_ALLOWED_FLAGS, LIST_USAGE, 'error.unknown_flag_hint_options');
+  // #1934 パート1: runList は17フラグ由来フィールドを一切読まない（配線直前に上記の実装
+  // コードで確認済み）。
+  // #1934 パート1.5: parsed.contexts/parsed.tags はこの関数の下方（フィルタ判定の for ループ
+  // 直後）で実際に読んでいる（フィルタとして使う）ため supportedFields に含める
+  // （行番号は変動するので書かない）。
+  guardUnsupportedFlag(parsed, ['contexts', 'tags'], LIST_USAGE);
 
   // フィルタ判定
   let filterGtd = '', filterCtx = '', filterTag = '', filterPri = '', filterProj = '';
@@ -3683,7 +3855,14 @@ async function runList(octokit, owner, repo, tokens) {
     if (tok === '--no-estimate') { noEstimate = true; continue; }
     if (GTD_LABELS.includes(tok)) filterGtd = tok;
     else if (/^p[123]$/.test(tok)) filterPri = tok;
-    else if (tok.startsWith('@')) { validateCtx(tok.slice(1)); filterCtx = tok; }
+    // #1934 パート3: `@` 始まりのトークンを判定する分岐はここに置いていたが削除した。
+    // parseArgs() の `@` 消費条件（tok.startsWith('@')）には空白除外等の追加条件が一切ない
+    // ため、`@` 始まりのトークンは無条件に parsed.contexts へ吸収され、この extra ループへ
+    // 到達すること自体が構造的に不可能（真のデッドコード。実装コードで確認済み）。
+    // 一方 `#` 始まりの分岐（直下）は、parseArgs() の #tag 消費条件に「空白を含まない」
+    // という追加条件があるため、空白入りの `#` トークン（例: list "#1299 タイトルの続き"）が
+    // ここへ到達しうる。この場合 validateTag() が空白を検出してエラー終了する（何もしない
+    // わけではない。挙動が変わるため削除しない。詳細はDEVELOPMENT.md参照）。
     else if (tok.startsWith('#') && !/^#\d+$/.test(tok)) {
       // #tag フィルタ（#42 のような Issue番号は除外）
       validateTag(tok.slice(1)); filterTag = tok;
@@ -3946,6 +4125,8 @@ async function runDone(octokit, owner, repo, tokens) {
   // done は自由記述を持たない（番号は先に取り出し済み）ため許可リストは空。
   const DONE_USAGE = 'Usage: /todo done <#> [--actual <time>] [--note "text"]';
   guardUnknownFlag(parsed.extra, [], DONE_USAGE, 'error.unknown_flag_hint_options');
+  // #1934 パート1: runDone が実際に読むのは actual/note のみ（配線直前にコードを再確認済み）。
+  guardUnsupportedFlag(parsed, ['actual', 'note'], DONE_USAGE);
 
   const issue = await fetchAndParseIssue(octokit, owner, repo, num);
   let actual = issue.actual;
@@ -4030,6 +4211,8 @@ async function runMove(octokit, owner, repo, tokens) {
   // #1921 パターンB: 移動先 GTD 名は tokens[1] で取得済み・slice(2) で除外されるため
   // extra に正当な位置引数は残らない。許可リストは空。ラベル変更（execMoveGtd）より前に落とす。
   guardUnknownFlag(parsed.extra, [], MOVE_USAGE, 'error.unknown_flag_hint_options');
+  // #1934 パート1: runMove が実際に読むのは note のみ（配線直前にコードを再確認済み）。
+  guardUnsupportedFlag(parsed, ['note'], MOVE_USAGE);
   const noteText = parsed.note || null;
   const newLabel = await execMoveGtd(octokit, owner, repo, num, target);
   runOut(tpl('move.done', { num, label: newLabel }));
@@ -4143,6 +4326,10 @@ async function runEdit(octokit, owner, repo, tokens) {
                    + '[--priority p1|p2|p3] [--p1|--p2|--p3] [--project <#>] [--estimate <time>] '
                    + '[--activate <date>] [--before <duration>] [--depends-on <#>] [--resume-condition <text>]';
   guardUnknownFlag(parsed.extra, [], EDIT_USAGE, 'error.unknown_flag_hint_options');
+  // #1934 パート1: runEdit が実際に読むのは due/recur/project/desc/estimate/before/
+  // activate/dependsOn/resumeCondition/priority のみ（配線直前にコードを再確認済み）。
+  guardUnsupportedFlag(parsed, ['due','recur','project','desc','estimate','before',
+    'activate','dependsOn','resumeCondition','priority'], EDIT_USAGE);
 
   const issue = await fetchAndParseIssue(octokit, owner, repo, num);
   let changed = [];
@@ -4283,8 +4470,14 @@ async function runDue(octokit, owner, repo, tokens) {
   // #1921 パターンC: 固定インデックス（tokens[0]=番号 / tokens[1]=日付）で読むため、
   // tokens.slice(2) 以降は従来すべて黙って捨てられていた（`due 42 2026-09-10 --note "理由"` の
   // --note は効かない）。フラグ字面のトークンだけをエラーにする。
-  // 位置引数の余剰（`due 42 今週 金曜` 等）は従来どおり通す（後方互換。手順書に実在する形）。
   guardUnknownFlag(tokens.slice(2), [], DUE_USAGE, 'error.unknown_flag_hint_options');
+  // #1934 パート2: 位置引数の余剰（`due 42 今週 金曜` 等）は従来黙って捨てられていた。
+  // 日本語日付をクォートせず渡す運用（`due <#> 今週金曜` のような単一トークン）は #1930
+  // （コミット 3973ff99）で手順書側がクォート形へ揃えられたため、ここでも塞ぐ。
+  guardExtraPositional(
+    tokens.slice(2), DUE_USAGE, 'error.extra_positional_hint_quote',
+    `/todo due ${tokens[0]} "${[rawDue, ...tokens.slice(2)].join(' ')}"`
+  );
 
   // clear または空文字 → 期日削除
   if (rawDue === 'clear' || rawDue === '') {
@@ -4336,6 +4529,11 @@ async function runRecur(octokit, owner, repo, tokens) {
   validateNumber(String(num));
   // #1921 パターンC: tokens.slice(2) 以降は従来黙って捨てられていた。
   guardUnknownFlag(tokens.slice(2), [], RECUR_USAGE, 'error.unknown_flag_hint_options');
+  // #1934 パート2: 位置引数の余剰（due と同型）を塞ぐ。
+  guardExtraPositional(
+    tokens.slice(2), RECUR_USAGE, 'error.extra_positional_hint_quote',
+    `/todo recur ${tokens[0]} "${[pattern, ...tokens.slice(2)].join(' ')}"`
+  );
   let recur = '';
   if (pattern !== 'clear') { validateRecur(pattern); recur = pattern; }
 
@@ -4353,6 +4551,13 @@ async function runLink(octokit, owner, repo, tokens) {
   validateNumber(String(num)); validateNumber(String(proj));
   // #1921 パターンC: tokens.slice(2) 以降は従来黙って捨てられていた。
   guardUnknownFlag(tokens.slice(2), [], LINK_USAGE, 'error.unknown_flag_hint_options');
+  // #1934 パート2: 位置引数の余剰（`link 42 100 101` 等）を塞ぐ。project番号は単一トークン
+  // でクォート漏れの余地がないため、修正例は余剰分を単純に落とした形にする（due/recurと違い
+  // hint_single を使う）。
+  guardExtraPositional(
+    tokens.slice(2), LINK_USAGE, 'error.extra_positional_hint_single',
+    `/todo link ${num} ${proj}`
+  );
 
   const issue = await fetchAndParseIssue(octokit, owner, repo, num);
 
@@ -4402,6 +4607,12 @@ async function runPriority(octokit, owner, repo, tokens) {
   validateNumber(String(num));
   // #1921 パターンC: tokens.slice(2) 以降は従来黙って捨てられていた。
   guardUnknownFlag(tokens.slice(2), [], PRIORITY_USAGE, 'error.unknown_flag_hint_options');
+  // #1934 パート2: 位置引数の余剰（`priority 42 p1 p2` 等）を塞ぐ。levelは単一トークンで
+  // クォート漏れの余地がないため hint_single を使う（due/recurと違う）。
+  guardExtraPositional(
+    tokens.slice(2), PRIORITY_USAGE, 'error.extra_positional_hint_single',
+    `/todo priority ${num} ${level}`
+  );
   // #1652: validate-before-mutate — 旧priorityラベルを削除する前にlevelを検証する。
   // 逆順だとtypo時に旧ラベルだけ削除された中途半端な状態でエラー終了してしまう。
   if (level !== 'clear') validatePriority(level);
@@ -4526,6 +4737,8 @@ async function runLabel(octokit, owner, repo, tokens) {
     const name = raw1.startsWith('@') ? raw1 : '@'+raw1;
     const parsed = parseArgs(tokens.slice(2));
     guardUnknownFlag(parsed.extra, [], LABEL_USAGE, 'error.unknown_flag_hint_options');
+    // #1934 パート1: label add が実際に読むのは color のみ（配線直前にコードを再確認済み）。
+    guardUnsupportedFlag(parsed, ['color'], LABEL_USAGE);
     validateCtx(name.slice(1));
     const color = parsed.color || 'FBCA04';
     if (parsed.color) validateColor(parsed.color);
@@ -4552,10 +4765,16 @@ async function runLabel(octokit, owner, repo, tokens) {
 }
 
 async function runSearch(octokit, owner, repo, tokens) {
+  const SEARCH_USAGE = 'Usage: run search <keyword> [--json]';
   const jsonMode = tokens.includes('--json');
   const filteredTokens = tokens.filter(t => t !== '--json');
+  // #1934 パート4: filteredTokens はそのまま join(' ') でキーワードにされるため、`--json`
+  // 以外のフラグ字面（typo等）が黙って検索クエリの一部に混入していた（例: `search --keywrd foo`
+  // が文字列 "--keywrd foo" のまま検索されゼロ件になる、静かな期待値乖離）。読み取り専用で
+  // 副作用はないが、他のjoin(' ')型ハンドラ（desc/rename等）と同じ型のため揃える。
+  guardUnknownFlag(filteredTokens, [], SEARCH_USAGE, 'error.unknown_flag_hint_options');
   const keyword = filteredTokens.join(' ');
-  if (!keyword) { process.stderr.write('Usage: run search <keyword>\n'); process.exit(1); }
+  if (!keyword) { process.stderr.write(`${SEARCH_USAGE}\n`); process.exit(1); }
   const q = `${keyword} repo:${owner}/${repo} is:issue is:open`;
   const { data } = await octokit.search.issuesAndPullRequests({ q, per_page: 50 });
 
@@ -4587,8 +4806,12 @@ async function runArchive(octokit, owner, repo, tokens) {
     for (const i of items) runOut(`  #${i.number}  ${i.title||''}  ✅${toJstDateStr(i.closedAt)}`);
     runOut(tpl('archive.count', { n: items.length }));
   } else if (sub === 'search') {
+    const ARCHIVE_SEARCH_USAGE = 'Usage: run archive search <keyword>';
+    // #1934 パート4: runSearch と同型（join(' ')でキーワードを作るため、フラグ字面のtypoが
+    // 黙って検索クエリへ混入していた）。こちらは --json のような自前フラグすら持たない。
+    guardUnknownFlag(tokens.slice(1), [], ARCHIVE_SEARCH_USAGE, 'error.unknown_flag_hint_options');
     const keyword = tokens.slice(1).join(' ');
-    if (!keyword) { process.stderr.write('Usage: run archive search <keyword>\n'); process.exit(1); }
+    if (!keyword) { process.stderr.write(`${ARCHIVE_SEARCH_USAGE}\n`); process.exit(1); }
     const q = `${keyword} in:title repo:${owner}/${repo} is:issue is:closed`;
     const { data } = await octokit.search.issuesAndPullRequests({ q, per_page: 30 });
     for (const i of data.items) runOut(`  #${i.number}  ${i.title}  ✅${toJstDateStr(i.closed_at)}`);
@@ -4730,6 +4953,16 @@ async function runTemplate(octokit, owner, repo, tokens) {
       if (rest.length && (GTD_LABELS.includes(rest[0]) || rest[0] === PROJECT_LABEL)) gtd = rest.shift();
       const parsed = parseArgs(rest);
       guardUnknownFlag(parsed.extra, [], TEMPLATE_USAGE, 'error.unknown_flag_hint_options');
+      // #1934 パート1: template save インライン形式が実際に読むのは due/recur/project/desc/
+      // dueOffset/priority のみ（配線直前にコードを再確認済み）。
+      // #1934 パート1.5: parsed.contexts は次の行（const contexts = parsed.contexts;）で
+      // 読んでいるため supportedFields に含める。parsed.tags はこの分岐のどこからも読まれて
+      // いない非対称が実装コードに存在する（#tag を渡すと黙って消える旧来のバグが残る）。
+      // この非対称を tags 側の実装を直して解消するかはスコープ外の判断とし、完了報告で申し送る
+      // （tags を含めると `template save tmpl next #tag` が exit 1 になり、現状の「黙って
+      // 消える」が「エラーで気づける」に変わるだけで実害は増えないが、意図した挙動かは
+      // 未確定のため今回は contexts のみを追加する）。
+      guardUnsupportedFlag(parsed, ['due','recur','project','desc','dueOffset','priority','contexts'], TEMPLATE_USAGE);
       const contexts = parsed.contexts;
       const priority = parsed.priority || 'p3';
       for (const ctx of contexts) validateCtx(ctx.slice(1));
@@ -5116,6 +5349,8 @@ async function runBulk(octokit, owner, repo, tokens) {
     // に置ける（per-item エラーとして握りつぶされない）。
     const parsed = parseArgs(rest);
     guardUnknownFlag(parsed.extra, [], BULK_USAGE, 'error.unknown_flag_hint_options');
+    // #1934 パート1: bulk done が実際に読むのは actual のみ（配線直前にコードを再確認済み）。
+    guardUnsupportedFlag(parsed, ['actual'], BULK_USAGE);
     let recurCreated = 0;
     for (const num of nums) {
       try {

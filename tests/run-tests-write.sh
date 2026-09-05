@@ -3215,12 +3215,16 @@ assert_contains "W28-19: エラー本文が未知フラグのもの" "エラー:
 assert_eq "W28-19【副作用ゼロ】API 呼び出しログが0行" "0" "$(wc -l < "$W28_LOG" | tr -d ' ')"
 rm -f "$W28_LOG"
 
-# W28-19b【後方互換】位置引数の余剰（`due 42 今週 金曜`）は従来どおり通る。
-# 手順書に日本語日付の未クォート運用が実在するため、本Issueでは塞がない（第3弾送り）。
-W28_LOG=$(mktemp /tmp/todo-test-w28-19b-XXXXXX); W28_RESP_CUR="$W28_SIMPLE_RESP"
+# W28-19b【挙動変更・#1934パート2で反転】位置引数の余剰（`due 42 2026-09-10 余剰トークン`）は
+# #1921当時は「手順書に日本語日付の未クォート運用が実在するため塞がない」という理由で
+# 従来どおり通していたが、#1930（コミット3973ff99）で手順書側がクォート形へ揃えられたため
+# 前提が解消され、#1934パート2で guardExtraPositional() が新設されエラー化された。
+# 詳細な異常系・境界値・i18n・ガード除去回帰は下記 §W31 を参照。ここでは exit 0 → exit 非0
+# への反転のみを固定する（旧テストの直接の後継）。
+W28_LOG=$(mktemp /tmp/todo-test-w28-19b-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_SIMPLE_RESP"
 W28_19B_OUT=$(w28_run due 42 2026-09-10 余剰トークン); W28_19B_EC=$?
-assert_exit_ok "W28-19b【後方互換・仕様固定】位置引数の余剰は従来どおり通る: exit 0" "$W28_19B_EC"
-assert_eq "W28-19b: 期日が設定される" "1" "$(log_count "$W28_LOG" issues.update)"
+assert_exit_fail "W28-19b【#1934パート2で反転】位置引数の余剰は現在はエラーになる: exit非0" "$W28_19B_EC"
+assert_eq "W28-19b【副作用ゼロ】API 呼び出しログが0行" "0" "$(wc -l < "$W28_LOG" | tr -d ' ')"
 rm -f "$W28_LOG"
 
 # W28-20 recur
@@ -3373,6 +3377,615 @@ W28_29_OUT=$(w28_run activate 42 2026-09-10); W28_29_EC=$?
 assert_exit_ok "W28-29【境界】内部生成の引数列(activate → runEdit): exit 0" "$W28_29_EC"
 assert_contains "W28-29: activate が更新される" "activate → 2026-09-10" "$W28_29_OUT"
 rm -f "$W28_LOG"
+
+# ──────────────────────────────────────────
+# §W29  8ハンドラが「別コマンドでは有効だが自分は読まないフラグ」を黙って捨てないこと
+# （Issue #1934 パート1）
+# 事故の型: parseArgs() は消費するがハンドラが読まないフラグ（`add --note` 等）が、
+# 未知フラグ判定（findUnknownFlag、#1921）の対象外（parsed.extra に現れない）のため
+# エラーも警告も出さずに値だけが消えていた（「第3の型」）。
+# 判定器 findUnsupportedFlagField() 自体の単体テストは run-tests.sh §52 を参照。
+# 本セクションは8ハンドラの振る舞い（exit code・API 副作用の抑止・ヒント文言）を検証する。
+# ──────────────────────────────────────────
+echo ""
+echo "§W29  8ハンドラが未サポートフラグを黙って捨てない（Issue #1934 パート1）"
+
+# add 用フル対応フラグ応答（W29-18）: 優先度ラベル + --label 追加ラベルの GET 2回、
+# issues.create 1回、--project 5 のsub-issue登録（issues.get 1回 + POST sub_issues 1回）。
+W29_ADD_FULL_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{},{},{},{}],"issues.create":[{"data":{"number":8001,"id":98001,"html_url":"https://github.com/test-owner/test-repo/issues/8001"}}],"issues.get":[{"data":{"number":5,"id":95,"title":"P","body":"","labels":[{"name":"📁 project"}]}}],"POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues":[{}]}'
+
+# 実行ヘルパー（§W28 の w28_run と同一パターン）
+w29_run() {
+  OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W29_RESP_CUR" OCTOKIT_STUB_LOG_ENV="$W29_LOG" \
+    TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-09-02 \
+    node "$ENGINE" run "$@" 2>&1
+}
+
+# ── D-1 異常系（核心。Issueの再現例をそのまま反映） ──
+
+# W29-1【核心・直接再現】add --note
+W29_LOG=$(mktemp /tmp/todo-test-w29-1-XXXXXX); : > "$W29_LOG"; W29_RESP_CUR="$W27_RESP"
+W29_1_OUT=$(w29_run add next "テスト" --note "メモ"); W29_1_EC=$?
+assert_exit_fail "W29-1【核心・直接再現】add next テスト --note メモ: exit非0" "$W29_1_EC"
+assert_contains "W29-1: エラー本文" "エラー: --note はこのコマンドでは使えません" "$W29_1_OUT"
+assert_eq "W29-1【核心】issues.create は呼ばれない" "0" "$(log_count "$W29_LOG" issues.create)"
+assert_contains "W29-1: ヒントに done が含まれる" "/todo done" "$W29_1_OUT"
+assert_contains "W29-1: ヒントに move が含まれる" "/todo move" "$W29_1_OUT"
+rm -f "$W29_LOG"
+
+# W29-2【核心・直接再現】add --actual
+W29_LOG=$(mktemp /tmp/todo-test-w29-2-XXXXXX); : > "$W29_LOG"; W29_RESP_CUR="$W27_RESP"
+W29_2_OUT=$(w29_run add next "テスト" --actual 3h); W29_2_EC=$?
+assert_exit_fail "W29-2【核心・直接再現】add next テスト --actual 3h: exit非0" "$W29_2_EC"
+assert_contains "W29-2: エラー本文" "エラー: --actual はこのコマンドでは使えません" "$W29_2_OUT"
+assert_eq "W29-2【核心】issues.create は呼ばれない" "0" "$(log_count "$W29_LOG" issues.create)"
+assert_contains "W29-2: ヒントに done が含まれる" "/todo done" "$W29_2_OUT"
+rm -f "$W29_LOG"
+
+# W29-3【核心・直接再現】add --color
+W29_LOG=$(mktemp /tmp/todo-test-w29-3-XXXXXX); : > "$W29_LOG"; W29_RESP_CUR="$W27_RESP"
+W29_3_OUT=$(w29_run add next "テスト" --color FF0000); W29_3_EC=$?
+assert_exit_fail "W29-3【核心・直接再現】add next テスト --color FF0000: exit非0" "$W29_3_EC"
+assert_contains "W29-3: エラー本文" "エラー: --color はこのコマンドでは使えません" "$W29_3_OUT"
+assert_eq "W29-3【核心】issues.create は呼ばれない" "0" "$(log_count "$W29_LOG" issues.create)"
+assert_contains "W29-3: ヒントに label add が含まれる" "/todo label add" "$W29_3_OUT"
+rm -f "$W29_LOG"
+
+# W29-4【核心・直接再現】add --due-offset
+W29_LOG=$(mktemp /tmp/todo-test-w29-4-XXXXXX); : > "$W29_LOG"; W29_RESP_CUR="$W27_RESP"
+W29_4_OUT=$(w29_run add next "テスト" --due-offset 3); W29_4_EC=$?
+assert_exit_fail "W29-4【核心・直接再現】add next テスト --due-offset 3: exit非0" "$W29_4_EC"
+assert_contains "W29-4: エラー本文" "エラー: --due-offset はこのコマンドでは使えません" "$W29_4_OUT"
+assert_eq "W29-4【核心】issues.create は呼ばれない" "0" "$(log_count "$W29_LOG" issues.create)"
+assert_contains "W29-4: ヒントに template save が含まれる" "/todo template save" "$W29_4_OUT"
+rm -f "$W29_LOG"
+
+# W29-5【核心・直接再現】edit --note
+W29_LOG=$(mktemp /tmp/todo-test-w29-5-XXXXXX); : > "$W29_LOG"; W29_RESP_CUR="$W28_EDIT_RESP"
+W29_5_OUT=$(w29_run edit 42 --note "メモ"); W29_5_EC=$?
+assert_exit_fail "W29-5【核心・直接再現】edit 42 --note メモ: exit非0" "$W29_5_EC"
+assert_contains "W29-5: エラー本文" "エラー: --note はこのコマンドでは使えません" "$W29_5_OUT"
+assert_eq "W29-5【核心】API ログ0行（issues.get含む）" "0" "$(wc -l < "$W29_LOG" | tr -d ' ')"
+rm -f "$W29_LOG"
+
+# W29-6【核心・直接再現】list --due
+W29_LOG=$(mktemp /tmp/todo-test-w29-6-XXXXXX); : > "$W29_LOG"; W29_RESP_CUR="$W28_LIST_RESP"
+W29_6_OUT=$(w29_run list --due 2026-09-10); W29_6_EC=$?
+assert_exit_fail "W29-6【核心・直接再現】list --due 2026-09-10: exit非0" "$W29_6_EC"
+assert_contains "W29-6: エラー本文" "エラー: --due はこのコマンドでは使えません" "$W29_6_OUT"
+assert_eq "W29-6【核心】issues.listForRepo は呼ばれない" "0" "$(log_count "$W29_LOG" issues.listForRepo)"
+rm -f "$W29_LOG"
+
+# W29-7 done --due
+W29_LOG=$(mktemp /tmp/todo-test-w29-7-XXXXXX); : > "$W29_LOG"; W29_RESP_CUR="$W28_DONE_RESP"
+W29_7_OUT=$(w29_run done 42 --due 2026-09-10); W29_7_EC=$?
+assert_exit_fail "W29-7 done 42 --due 2026-09-10: exit非0" "$W29_7_EC"
+assert_contains "W29-7: エラー本文" "エラー: --due はこのコマンドでは使えません" "$W29_7_OUT"
+assert_eq "W29-7: API ログ0行" "0" "$(wc -l < "$W29_LOG" | tr -d ' ')"
+rm -f "$W29_LOG"
+
+# W29-8 move --due
+W29_LOG=$(mktemp /tmp/todo-test-w29-8-XXXXXX); : > "$W29_LOG"; W29_RESP_CUR="$W28_MOVE_RESP"
+W29_8_OUT=$(w29_run move 42 next --due 2026-09-10); W29_8_EC=$?
+assert_exit_fail "W29-8 move 42 next --due 2026-09-10: exit非0" "$W29_8_EC"
+assert_contains "W29-8: エラー本文" "エラー: --due はこのコマンドでは使えません" "$W29_8_OUT"
+assert_eq "W29-8: API ログ0行（issues.get含む）" "0" "$(wc -l < "$W29_LOG" | tr -d ' ')"
+rm -f "$W29_LOG"
+
+# W29-9 label add --due
+W29_LOG=$(mktemp /tmp/todo-test-w29-9-XXXXXX); : > "$W29_LOG"; W29_RESP_CUR="$W28_LABEL_RESP"
+W29_9_OUT=$(w29_run label add newctx --due 2026-09-10); W29_9_EC=$?
+assert_exit_fail "W29-9 label add newctx --due 2026-09-10: exit非0" "$W29_9_EC"
+assert_contains "W29-9: エラー本文" "エラー: --due はこのコマンドでは使えません" "$W29_9_OUT"
+assert_eq "W29-9: API ログ0行（GET含む）" "0" "$(wc -l < "$W29_LOG" | tr -d ' ')"
+rm -f "$W29_LOG"
+
+# ── template save 系はテンプレート DB（~/.claude/todo-templates.json）を読み書きするため、
+#    実 HOME を汚さない隔離 HOME で実行する（§W28 と同じ方式） ──
+W29_REAL_HOME="$HOME"
+W29_FAKE_HOME=$(mktemp -d /tmp/todo-test-w29-home-XXXXXX)
+mkdir -p "$W29_FAKE_HOME/.claude"
+export HOME="$W29_FAKE_HOME"
+if [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* ]]; then
+  W29_REAL_USERPROFILE="${USERPROFILE:-}"
+  export USERPROFILE="$W29_FAKE_HOME"
+fi
+
+# W29-10【核心・直接再現】template save --note（テンプレートファイルへ書き込まれないこと）
+W29_LOG=$(mktemp /tmp/todo-test-w29-10-XXXXXX); : > "$W29_LOG"; W29_RESP_CUR='{}'
+W29_10_OUT=$(w29_run template save tmpl next --note "x"); W29_10_EC=$?
+assert_exit_fail "W29-10【核心・直接再現】template save tmpl next --note x: exit非0" "$W29_10_EC"
+assert_contains "W29-10: エラー本文" "エラー: --note はこのコマンドでは使えません" "$W29_10_OUT"
+if [ -f "$W29_FAKE_HOME/.claude/todo-templates.json" ]; then
+  W29_10_FILECONTENT=$(cat "$W29_FAKE_HOME/.claude/todo-templates.json")
+else
+  W29_10_FILECONTENT="__NOT_CREATED__"
+fi
+assert_not_contains "W29-10: テンプレートファイルに tmpl エントリが書き込まれていない" '"tmpl"' "$W29_10_FILECONTENT"
+rm -f "$W29_LOG"
+
+# W29-21【誤検知なし】template save --due-offset --priority（正常系。§W28-8 相当を別名で再固定）
+W29_LOG=$(mktemp /tmp/todo-test-w29-21-XXXXXX); : > "$W29_LOG"; W29_RESP_CUR='{}'
+W29_21_OUT=$(w29_run template save tmpl21 next --due-offset 3 --priority p1); W29_21_EC=$?
+assert_exit_ok "W29-21【誤検知なし】template save tmpl21 next --due-offset 3 --priority p1: exit 0" "$W29_21_EC"
+assert_contains "W29-21: テンプレートが保存される" '"due-offset": 3' "$(cat "$W29_FAKE_HOME/.claude/todo-templates.json")"
+rm -f "$W29_LOG"
+
+export HOME="$W29_REAL_HOME"
+if [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* ]]; then
+  export USERPROFILE="$W29_REAL_USERPROFILE"
+fi
+rm -rf "$W29_FAKE_HOME"
+
+# W29-11 bulk done --due（1件目にも入っていないこと）
+W29_LOG=$(mktemp /tmp/todo-test-w29-11-XXXXXX); : > "$W29_LOG"; W29_RESP_CUR="$W28_BULKDONE_RESP"
+W29_11_OUT=$(w29_run bulk done 41 42 --due 2026-09-10); W29_11_EC=$?
+assert_exit_fail "W29-11 bulk done 41 42 --due 2026-09-10: exit非0" "$W29_11_EC"
+assert_contains "W29-11: エラー本文" "エラー: --due はこのコマンドでは使えません" "$W29_11_OUT"
+assert_eq "W29-11【核心】1件目のissues.getすら呼ばれない" "0" "$(log_count "$W29_LOG" issues.get)"
+rm -f "$W29_LOG"
+
+# ── D-2 境界値 ──
+
+# W29-12【仕様固定】list next project 5（位置引数のproject。フラグ形ではない）→ exit 0
+W29_LOG=$(mktemp /tmp/todo-test-w29-12-XXXXXX)
+W29_RESP_CUR='{"issues.listForRepo":[{"data":[]}],"GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues":[{"data":[]}]}'
+W29_12_OUT=$(w29_run list next project 5); W29_12_EC=$?
+assert_exit_ok "W29-12【仕様固定】list next project 5（位置引数）: exit 0" "$W29_12_EC"
+rm -f "$W29_LOG"
+
+# W29-13【対比】list next --project 5（フラグ形）→ exit非0
+W29_LOG=$(mktemp /tmp/todo-test-w29-13-XXXXXX); : > "$W29_LOG"; W29_RESP_CUR="$W28_LIST_RESP"
+W29_13_OUT=$(w29_run list next --project 5); W29_13_EC=$?
+assert_exit_fail "W29-13【対比】list next --project 5（フラグ形）: exit非0" "$W29_13_EC"
+assert_contains "W29-13: エラー本文" "エラー: --project はこのコマンドでは使えません" "$W29_13_OUT"
+rm -f "$W29_LOG"
+
+# W29-14【核心・部分適用防止】edit のサポート対象(--due)＋未サポート(--note)混在
+W29_LOG=$(mktemp /tmp/todo-test-w29-14-XXXXXX); : > "$W29_LOG"; W29_RESP_CUR="$W28_EDIT_RESP"
+W29_14_OUT=$(w29_run edit 42 --due 2026-09-10 --note "x"); W29_14_EC=$?
+assert_exit_fail "W29-14【核心・部分適用防止】edit --due(サポート)+--note(未サポート): exit非0" "$W29_14_EC"
+assert_contains "W29-14: エラー本文は --note のみ（--due は許可済みのため出ない）" "エラー: --note はこのコマンドでは使えません" "$W29_14_OUT"
+assert_not_contains "W29-14: --due 自体はエラーメッセージに現れない" "エラー: --due はこのコマンドでは使えません" "$W29_14_OUT"
+assert_eq "W29-14【核心】issues.update は0回（サポート対象側が先に適用される部分適用が起きていない）" "0" "$(log_count "$W29_LOG" issues.update)"
+rm -f "$W29_LOG"
+
+# W29-15 list --due ''（未サポートフラグに空文字列。空でも「指定された」とみなして検出する）
+W29_LOG=$(mktemp /tmp/todo-test-w29-15-XXXXXX); : > "$W29_LOG"; W29_RESP_CUR="$W28_LIST_RESP"
+W29_15_OUT=$(w29_run list --due ''); W29_15_EC=$?
+assert_exit_fail "W29-15 list --due ''（空文字列でも検出する）: exit非0" "$W29_15_EC"
+assert_contains "W29-15: エラー本文" "エラー: --due はこのコマンドでは使えません" "$W29_15_OUT"
+rm -f "$W29_LOG"
+
+# W29-15b【自己申告2の実測固定】--due-offset の値が '+' 単独 → parseArgs 内部で
+# '.replace(/^\+/, '')' により空文字列化される（実測: node -e "console.log('+'.replace(/^\+/,''))" === ''）。
+# 空文字列は isSet 判定（val !== null）で true になるため、add（due-offset非サポート）に
+# 渡すと検出されることを固定する。
+W29_LOG=$(mktemp /tmp/todo-test-w29-15b-XXXXXX); : > "$W29_LOG"; W29_RESP_CUR="$W27_RESP"
+W29_15B_OUT=$(w29_run add next "テスト" --due-offset +); W29_15B_EC=$?
+assert_exit_fail "W29-15b【境界・自己申告2】add --due-offset +（空文字列化されても検出される）: exit非0" "$W29_15B_EC"
+assert_contains "W29-15b: エラー本文" "エラー: --due-offset はこのコマンドでは使えません" "$W29_15B_OUT"
+rm -f "$W29_LOG"
+
+# ── D-3 i18n ──
+
+# W29-16 英語モード: add --note
+W29_LOG=$(mktemp /tmp/todo-test-w29-16-XXXXXX); : > "$W29_LOG"
+W29_16_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W27_RESP" OCTOKIT_STUB_LOG_ENV="$W29_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo LANG_ENV=en \
+  node "$ENGINE" run add next "T" --note "x" 2>&1); W29_16_EC=$?
+assert_exit_fail "W29-16 i18n(en) add next T --note x: exit非0" "$W29_16_EC"
+assert_contains "W29-16: 英語のエラー本文" "Error: --note is not supported by this command" "$W29_16_OUT"
+assert_contains "W29-16: 英語のヒント" "Hint: --note is supported by: /todo done / /todo move." "$W29_16_OUT"
+# 【読み手向けの注記（§W28-23/24 と同型）】このアサーションは単独では回帰検出器として機能
+# しない（ガードを外した場合の英語モード成功メッセージにも日本語は含まれないため）。同じ
+# ケース内の assert_exit_fail / assert_contains（エラー全文）が回帰検出を担保する。
+assert_no_japanese "W29-16: 出力に日本語が1文字も含まれない" "$W29_16_OUT"
+rm -f "$W29_LOG"
+
+# W29-17 日本語モード（既定）: 同じ入力
+W29_LOG=$(mktemp /tmp/todo-test-w29-17-XXXXXX); : > "$W29_LOG"; W29_RESP_CUR="$W27_RESP"
+W29_17_OUT=$(w29_run add next "T" --note "x"); W29_17_EC=$?
+assert_exit_fail "W29-17 i18n(ja) add next T --note x: exit非0" "$W29_17_EC"
+assert_contains "W29-17: ヒント" "ヒント: --note は /todo done / /todo move で使えます。" "$W29_17_OUT"
+rm -f "$W29_LOG"
+
+# ── D-4 正常系（誤検知しないことの確認。8ケース） ──
+
+# W29-18 add にサポート対象を全種類同時指定 → exit 0
+W29_LOG=$(mktemp /tmp/todo-test-w29-18-XXXXXX); W29_RESP_CUR="$W29_ADD_FULL_RESP"
+W29_18_OUT=$(w29_run add next "T" --due 2026-09-10 --desc "x" --recur weekly --project 5 --priority p1 --estimate 1h --resume-condition "x" --before 3d --body "x" --depends-on 10 --label extra); W29_18_EC=$?
+assert_exit_ok "W29-18【誤検知なし】add にサポート対象を全種類同時指定: exit 0" "$W29_18_EC"
+rm -f "$W29_LOG"
+
+# W29-19 edit --due --priority → exit 0
+W29_LOG=$(mktemp /tmp/todo-test-w29-19-XXXXXX); W29_RESP_CUR="$W28_EDIT_RESP"
+W29_19_OUT=$(w29_run edit 42 --due 2026-09-10 --priority p1); W29_19_EC=$?
+assert_exit_ok "W29-19【誤検知なし】edit --due --priority: exit 0" "$W29_19_EC"
+rm -f "$W29_LOG"
+
+# W29-20 label add --color → exit 0
+W29_LOG=$(mktemp /tmp/todo-test-w29-20-XXXXXX); W29_RESP_CUR="$W28_LABEL_RESP"
+W29_20_OUT=$(w29_run label add newctx --color FBCA04); W29_20_EC=$?
+assert_exit_ok "W29-20【誤検知なし】label add --color: exit 0" "$W29_20_EC"
+rm -f "$W29_LOG"
+
+# W29-21 は上（template save 隔離HOMEブロック内）で実施済み
+
+# W29-22 bulk done --actual → exit 0
+W29_LOG=$(mktemp /tmp/todo-test-w29-22-XXXXXX); W29_RESP_CUR="$W28_BULKDONE_RESP"
+W29_22_OUT=$(w29_run bulk done 41 42 --actual 2h); W29_22_EC=$?
+assert_exit_ok "W29-22【誤検知なし】bulk done --actual: exit 0" "$W29_22_EC"
+rm -f "$W29_LOG"
+
+# W29-23 done --actual --note（両方サポート）→ exit 0
+W29_LOG=$(mktemp /tmp/todo-test-w29-23-XXXXXX); W29_RESP_CUR="$W28_DONE_RESP"
+W29_23_OUT=$(w29_run done 42 --actual 2h --note "x"); W29_23_EC=$?
+assert_exit_ok "W29-23【誤検知なし】done --actual --note: exit 0" "$W29_23_EC"
+rm -f "$W29_LOG"
+
+# W29-24 move --note → exit 0
+W29_LOG=$(mktemp /tmp/todo-test-w29-24-XXXXXX); W29_RESP_CUR="$W28_MOVE_RESP"
+W29_24_OUT=$(w29_run move 42 next --note "x"); W29_24_EC=$?
+assert_exit_ok "W29-24【誤検知なし】move --note: exit 0" "$W29_24_EC"
+rm -f "$W29_LOG"
+
+# W29-25 list next --group（17フラグ以外のフィールドには関知しないことの確認。既存 §W28-1 のリグレッション兼用）
+W29_LOG=$(mktemp /tmp/todo-test-w29-25-XXXXXX); W29_RESP_CUR="$W28_LIST_RESP"
+W29_25_OUT=$(w29_run list next --group); W29_25_EC=$?
+assert_exit_ok "W29-25【誤検知なし】list next --group: exit 0" "$W29_25_EC"
+rm -f "$W29_LOG"
+
+# ──────────────────────────────────────────
+# §W29 パート1.5  @ctx / #tag の同型問題（Issue #1934 パート1.5）
+# 事故の型はパート1と同一だが、対象は「フラグ」ではなく parseArgs() が消費する位置トークン
+# （@ctx → parsed.contexts / #tag → parsed.tags）。FLAG_FIELD_MAP に contexts/tags を追加し、
+# done / move / edit / label add / bulk done（いずれも contexts/tags を一切読まない）へ渡すと
+# 検出されることを確認する。add / list / template save（contexts のみ）は既存どおり通ることの
+# リグレッションも兼ねる。
+# ──────────────────────────────────────────
+echo ""
+echo "§W29 パート1.5  @ctx / #tag の同型問題（Issue #1934 パート1.5）"
+
+# W29-26【核心・直接再現】done @ctx
+W29_LOG=$(mktemp /tmp/todo-test-w29-26-XXXXXX); : > "$W29_LOG"; W29_RESP_CUR="$W28_DONE_RESP"
+W29_26_OUT=$(w29_run done 42 @office); W29_26_EC=$?
+assert_exit_fail "W29-26【核心・直接再現】done 42 @office: exit非0" "$W29_26_EC"
+assert_contains "W29-26: エラー本文" "エラー: @ctx はこのコマンドでは使えません" "$W29_26_OUT"
+assert_contains "W29-26: ヒントに add / list / template save が含まれる" "/todo add / /todo list / /todo template save" "$W29_26_OUT"
+assert_eq "W29-26【核心】API ログ0行" "0" "$(wc -l < "$W29_LOG" | tr -d ' ')"
+rm -f "$W29_LOG"
+
+# W29-27【核心・直接再現】done #tag
+W29_LOG=$(mktemp /tmp/todo-test-w29-27-XXXXXX); : > "$W29_LOG"; W29_RESP_CUR="$W28_DONE_RESP"
+W29_27_OUT=$(w29_run done 42 '#urgent'); W29_27_EC=$?
+assert_exit_fail "W29-27【核心・直接再現】done 42 #urgent: exit非0" "$W29_27_EC"
+assert_contains "W29-27: エラー本文" "エラー: #tag はこのコマンドでは使えません" "$W29_27_OUT"
+assert_contains "W29-27: ヒントに add / list が含まれる" "/todo add / /todo list" "$W29_27_OUT"
+assert_eq "W29-27【核心】API ログ0行" "0" "$(wc -l < "$W29_LOG" | tr -d ' ')"
+rm -f "$W29_LOG"
+
+# W29-28 move @ctx
+W29_LOG=$(mktemp /tmp/todo-test-w29-28-XXXXXX); : > "$W29_LOG"; W29_RESP_CUR="$W28_MOVE_RESP"
+W29_28_OUT=$(w29_run move 42 next @office); W29_28_EC=$?
+assert_exit_fail "W29-28 move 42 next @office: exit非0" "$W29_28_EC"
+assert_contains "W29-28: エラー本文" "エラー: @ctx はこのコマンドでは使えません" "$W29_28_OUT"
+assert_eq "W29-28: API ログ0行（issues.get含む）" "0" "$(wc -l < "$W29_LOG" | tr -d ' ')"
+rm -f "$W29_LOG"
+
+# W29-29 edit @ctx
+W29_LOG=$(mktemp /tmp/todo-test-w29-29-XXXXXX); : > "$W29_LOG"; W29_RESP_CUR="$W28_EDIT_RESP"
+W29_29_OUT=$(w29_run edit 42 @office); W29_29_EC=$?
+assert_exit_fail "W29-29 edit 42 @office: exit非0" "$W29_29_EC"
+assert_contains "W29-29: エラー本文" "エラー: @ctx はこのコマンドでは使えません" "$W29_29_OUT"
+assert_eq "W29-29: API ログ0行" "0" "$(wc -l < "$W29_LOG" | tr -d ' ')"
+rm -f "$W29_LOG"
+
+# W29-30 label add <name> @ctx（名前以外に追加のコンテキストトークンを渡した場合）
+W29_LOG=$(mktemp /tmp/todo-test-w29-30-XXXXXX); : > "$W29_LOG"; W29_RESP_CUR="$W28_LABEL_RESP"
+W29_30_OUT=$(w29_run label add newctx @office); W29_30_EC=$?
+assert_exit_fail "W29-30 label add newctx @office: exit非0" "$W29_30_EC"
+assert_contains "W29-30: エラー本文" "エラー: @ctx はこのコマンドでは使えません" "$W29_30_OUT"
+assert_eq "W29-30: API ログ0行（GET含む。ゴミラベル作成が起きていないこと）" "0" "$(wc -l < "$W29_LOG" | tr -d ' ')"
+rm -f "$W29_LOG"
+
+# W29-31 bulk done @ctx（1件目にも入っていないこと）
+W29_LOG=$(mktemp /tmp/todo-test-w29-31-XXXXXX); : > "$W29_LOG"; W29_RESP_CUR="$W28_BULKDONE_RESP"
+W29_31_OUT=$(w29_run bulk done 41 42 @office); W29_31_EC=$?
+assert_exit_fail "W29-31 bulk done 41 42 @office: exit非0" "$W29_31_EC"
+assert_contains "W29-31: エラー本文" "エラー: @ctx はこのコマンドでは使えません" "$W29_31_OUT"
+assert_eq "W29-31【核心】1件目のissues.getすら呼ばれない" "0" "$(log_count "$W29_LOG" issues.get)"
+rm -f "$W29_LOG"
+
+# ── template save 系（#tag の非対称・@ctx の正常系）は隔離 HOME で実行する ──
+W29B_FAKE_HOME=$(mktemp -d /tmp/todo-test-w29b-home-XXXXXX)
+mkdir -p "$W29B_FAKE_HOME/.claude"
+export HOME="$W29B_FAKE_HOME"
+if [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* ]]; then
+  export USERPROFILE="$W29B_FAKE_HOME"
+fi
+
+# W29-32【核心・非対称】template save #tag（このインライン分岐は parsed.tags をどこからも
+# 読まない非対称が実装コードに存在する。従来は黙って#tagが消えていたが、本パートの実装で
+# 「使えません」エラーとして気づけるようになる。tags 側の実装を直すかはスコープ外の判断
+# として完了報告で申し送る。詳細は runTemplate save インライン分岐のコメント参照）。
+W29_LOG=$(mktemp /tmp/todo-test-w29-32-XXXXXX); : > "$W29_LOG"; W29_RESP_CUR='{}'
+W29_32_OUT=$(w29_run template save tmpl32 next '#urgent'); W29_32_EC=$?
+assert_exit_fail "W29-32【核心・非対称】template save tmpl32 next #urgent: exit非0" "$W29_32_EC"
+assert_contains "W29-32: エラー本文" "エラー: #tag はこのコマンドでは使えません" "$W29_32_OUT"
+if [ -f "$W29B_FAKE_HOME/.claude/todo-templates.json" ]; then
+  W29_32_FILECONTENT=$(cat "$W29B_FAKE_HOME/.claude/todo-templates.json")
+else
+  W29_32_FILECONTENT="__NOT_CREATED__"
+fi
+assert_not_contains "W29-32: テンプレートファイルに tmpl32 エントリが書き込まれていない" '"tmpl32"' "$W29_32_FILECONTENT"
+rm -f "$W29_LOG"
+
+# W29-33 label add <name> #tag（tags も contexts と同様に label add では未サポート）
+W29_LOG=$(mktemp /tmp/todo-test-w29-33-XXXXXX); : > "$W29_LOG"; W29_RESP_CUR="$W28_LABEL_RESP"
+W29_33_OUT=$(w29_run label add newctx3 '#urgent'); W29_33_EC=$?
+assert_exit_fail "W29-33 label add newctx3 #urgent: exit非0" "$W29_33_EC"
+assert_contains "W29-33: エラー本文" "エラー: #tag はこのコマンドでは使えません" "$W29_33_OUT"
+rm -f "$W29_LOG"
+
+# W29-34 i18n(en): done @ctx
+W29_LOG=$(mktemp /tmp/todo-test-w29-34-XXXXXX); : > "$W29_LOG"
+W29_34_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W28_DONE_RESP" OCTOKIT_STUB_LOG_ENV="$W29_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo LANG_ENV=en \
+  node "$ENGINE" run done 42 @office 2>&1); W29_34_EC=$?
+assert_exit_fail "W29-34 i18n(en) done 42 @office: exit非0" "$W29_34_EC"
+assert_contains "W29-34: 英語のエラー本文" "Error: @ctx is not supported by this command" "$W29_34_OUT"
+assert_contains "W29-34: 英語のヒント" "Hint: @ctx is supported by: /todo add / /todo list / /todo template save." "$W29_34_OUT"
+# 【読み手向けの注記（§W28-23/24・§W29-16 と同型）】単独では回帰検出器として機能しない
+# （ガードを外した場合の英語モード成功メッセージにも日本語は含まれないため）。同じケース内の
+# assert_exit_fail / assert_contains（エラー全文）が回帰検出を担保する。
+assert_no_japanese "W29-34: 出力に日本語が1文字も含まれない" "$W29_34_OUT"
+rm -f "$W29_LOG"
+
+# W29-35【誤検知なし・回帰】add に @ctx + #tag（既存どおり通ること）
+W29_ADD_CTXTAG_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{},{},{}],"issues.create":[{"data":{"number":9001,"id":99001,"html_url":"https://github.com/test-owner/test-repo/issues/9001"}}]}'
+W29_LOG=$(mktemp /tmp/todo-test-w29-35-XXXXXX); W29_RESP_CUR="$W29_ADD_CTXTAG_RESP"
+W29_35_OUT=$(w29_run add next "T" @office '#urgent'); W29_35_EC=$?
+assert_exit_ok "W29-35【誤検知なし・回帰】add next T @office #urgent: exit 0" "$W29_35_EC"
+rm -f "$W29_LOG"
+
+# W29-36【誤検知なし・回帰】list に @ctx + #tag（既存どおり通ること）
+W29_LOG=$(mktemp /tmp/todo-test-w29-36-XXXXXX); W29_RESP_CUR="$W28_LIST_RESP"
+W29_36_OUT=$(w29_run list next @office '#urgent'); W29_36_EC=$?
+assert_exit_ok "W29-36【誤検知なし・回帰】list next @office #urgent: exit 0" "$W29_36_EC"
+rm -f "$W29_LOG"
+
+# W29-37【誤検知なし】template save @ctx（contexts はこの分岐で読まれるため通る。#tagの
+# 非対称とは対になる正常系。§W29-32 が exit1 になるのがガードのせいではなく tags 固有の
+# 非対称であることの反証を兼ねる）
+W29_LOG=$(mktemp /tmp/todo-test-w29-37-XXXXXX); W29_RESP_CUR='{}'
+W29_37_OUT=$(w29_run template save tmpl37 next @office); W29_37_EC=$?
+assert_exit_ok "W29-37【誤検知なし】template save tmpl37 next @office: exit 0" "$W29_37_EC"
+assert_contains "W29-37: テンプレートに@officeが保存される" '"@office"' "$(cat "$W29B_FAKE_HOME/.claude/todo-templates.json")"
+rm -f "$W29_LOG"
+
+export HOME="$W29_REAL_HOME"
+if [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* ]]; then
+  export USERPROFILE="$W29_REAL_USERPROFILE"
+fi
+rm -rf "$W29B_FAKE_HOME"
+
+# ──────────────────────────────────────────
+# §W30  runList の `extra` ループから `@` 始まり分岐を削除（Issue #1934 パート3）
+# `@` 始まり分岐は parseArgs() が `@` トークンを無条件消費するため到達不能なデッドコードと
+# 判明し削除した。`#` 始まり分岐は「空白を含む #トークン」が到達しうる（parseArgs() の
+# #tag 消費条件に「空白を含まない」制約があるため）ため削除していない。本セクションは
+# 削除前後で挙動が変わっていないこと（回帰）と、残した `#` 分岐が実際に機能することを固定する。
+# ──────────────────────────────────────────
+echo ""
+echo "§W30  runList extra ループの @ デッドコード削除（Issue #1934 パート3）"
+
+# W30-1【回帰】list @-- は削除前後で同一のエラーメッセージ（parsed.contexts経由のvalidateCtx）
+W30_LOG=$(mktemp /tmp/todo-test-w30-1-XXXXXX); W30_RESP_CUR='{"issues.listForRepo":[{"data":[]}]}'
+W30_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W30_RESP_CUR" OCTOKIT_STUB_LOG_ENV="$W30_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-09-02 \
+  node "$ENGINE" run list '@--' 2>&1); W30_1_EC=$?
+assert_exit_fail "W30-1【回帰】list @--: exit非0（記号のみのコンテキスト名は不可）" "$W30_1_EC"
+assert_contains "W30-1: エラー本文（parsed.contexts経由のvalidateCtxが引き続き発火）" "エラー: コンテキスト名に文字・数字が含まれていません" "$W30_1_OUT"
+rm -f "$W30_LOG"
+
+# W30-2【回帰】list @office は削除前後で同一（正常なコンテキストフィルタとして通る）
+W30_LOG=$(mktemp /tmp/todo-test-w30-2-XXXXXX); W30_RESP_CUR='{"issues.listForRepo":[{"data":[]}]}'
+W30_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W30_RESP_CUR" OCTOKIT_STUB_LOG_ENV="$W30_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-09-02 \
+  node "$ENGINE" run list @office 2>&1); W30_2_EC=$?
+assert_exit_ok "W30-2【回帰】list @office: exit 0（正常なコンテキストフィルタ）" "$W30_2_EC"
+rm -f "$W30_LOG"
+
+# W30-3【非対称の固定】list "#1299 タイトルの続き"（空白入り#トークン）は削除しなかった
+# #分岐が引き続き捕捉し、validateTag が空白を検出してエラー終了する（「何もしない」ではない）
+W30_LOG=$(mktemp /tmp/todo-test-w30-3-XXXXXX); W30_RESP_CUR='{"issues.listForRepo":[{"data":[]}]}'
+W30_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W30_RESP_CUR" OCTOKIT_STUB_LOG_ENV="$W30_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-09-02 \
+  node "$ENGINE" run list "#1299 depends-on強化について" 2>&1); W30_3_EC=$?
+assert_exit_fail "W30-3【非対称の固定・核心】list \"#1299 タイトルの続き\": exit非0（空白入りタグとしてvalidateTagが検出）" "$W30_3_EC"
+assert_contains "W30-3: エラー本文（#分岐は生きている。デッドコードではない）" "エラー: タグ名に不正文字が含まれています" "$W30_3_OUT"
+rm -f "$W30_LOG"
+
+# W30-4【回帰】list "#42"（純粋な数字）は #分岐の自身の条件で除外され、フィルタなしの
+# 全件表示になる（従来どおり「何もしない」。削除前後で不変）
+W30_LOG=$(mktemp /tmp/todo-test-w30-4-XXXXXX); W30_RESP_CUR='{"issues.listForRepo":[{"data":[]}]}'
+W30_4_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W30_RESP_CUR" OCTOKIT_STUB_LOG_ENV="$W30_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-09-02 \
+  node "$ENGINE" run list "#42" 2>&1); W30_4_EC=$?
+assert_exit_ok "W30-4【回帰】list #42: exit 0（数字のみのタグは#分岐の対象外・フィルタなし全件表示）" "$W30_4_EC"
+rm -f "$W30_LOG"
+
+# ──────────────────────────────────────────
+# §W31  固定インデックス型ハンドラ（due/recur/link/priority）の位置引数の余剰（Issue #1934 パート2）
+# tokens[0]=番号 / tokens[1]=値 で読むハンドラは、guardUnknownFlag() でフラグ字面のtypoは
+# 既に弾かれているが、非フラグの余剰トークン（クォート漏れ・値の指定過多）はguardUnknownFlagの
+# 対象外のため従来黙って捨てられていた（W28-19bが「従来どおり通る」と仕様固定していた挙動）。
+# #1930（コミット3973ff99）でweekly-review.md/daily-review.mdのクォート漏れ運用が解消され
+# 前提条件が満たされたため、guardExtraPositional() を新設してエラー化した。
+# ──────────────────────────────────────────
+echo ""
+echo "§W31  due/recur/link/priority の位置引数の余剰（Issue #1934 パート2）"
+
+# W31-1【核心・直接再現】due: 単一の余剰トークン（W28-19bの後継）
+W28_LOG=$(mktemp /tmp/todo-test-w31-1-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_SIMPLE_RESP"
+W31_1_OUT=$(w28_run due 42 2026-09-10 余剰トークン); W31_1_EC=$?
+assert_exit_fail "W31-1【核心】due 42 2026-09-10 余剰トークン: exit非0" "$W31_1_EC"
+assert_contains "W31-1: エラー本文（余分な引数）" "エラー: 余分な引数があります: 余剰トークン" "$W31_1_OUT"
+assert_contains "W31-1: ヒントにクォート済み実行例" 'ヒント: 値に空白が含まれる場合はクォートしてください: /todo due 42 "2026-09-10 余剰トークン"' "$W31_1_OUT"
+assert_eq "W31-1【副作用ゼロ】API 呼び出しログが0行" "0" "$(wc -l < "$W28_LOG" | tr -d ' ')"
+rm -f "$W28_LOG"
+
+# W31-1b【境界値】due: 複数トークンの余剰（空白を含む日本語日付のクォート漏れを再現）
+W28_LOG=$(mktemp /tmp/todo-test-w31-1b-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_SIMPLE_RESP"
+W31_1B_OUT=$(w28_run due 42 2026-09-10 今週 金曜); W31_1B_EC=$?
+assert_exit_fail "W31-1b【境界値】due 42 2026-09-10 今週 金曜: exit非0" "$W31_1B_EC"
+assert_contains "W31-1b: エラー本文（複数トークンが空白結合される）" "エラー: 余分な引数があります: 今週 金曜" "$W31_1B_OUT"
+assert_contains "W31-1b: ヒント例（tokens[1]から余剰まで全体をクォート）" 'ヒント: 値に空白が含まれる場合はクォートしてください: /todo due 42 "2026-09-10 今週 金曜"' "$W31_1B_OUT"
+rm -f "$W28_LOG"
+
+# W31-1c【境界値】due: clear でも余剰があればガードが効く
+W28_LOG=$(mktemp /tmp/todo-test-w31-1c-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_SIMPLE_RESP"
+W31_1C_OUT=$(w28_run due 42 clear 余剰); W31_1C_EC=$?
+assert_exit_fail "W31-1c【境界値】due 42 clear 余剰: exit非0（clearでも同様にガードされる）" "$W31_1C_EC"
+assert_eq "W31-1c【副作用ゼロ】API 呼び出しログが0行" "0" "$(wc -l < "$W28_LOG" | tr -d ' ')"
+rm -f "$W28_LOG"
+
+# W31-1d【呼び出し順序の固定】フラグ字面と非フラグ余剰の混在では guardUnknownFlag が先に発火する
+# （guardExtraPositional のエラーではなく、既存の未知フラグエラーになること）
+W28_LOG=$(mktemp /tmp/todo-test-w31-1d-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_SIMPLE_RESP"
+W31_1D_OUT=$(w28_run due 42 2026-09-10 --note "理由" 余剰); W31_1D_EC=$?
+assert_exit_fail "W31-1d【呼び出し順序】フラグ+非フラグ余剰混在: exit非0" "$W31_1D_EC"
+assert_contains "W31-1d: guardUnknownFlagが先に発火（未知フラグのエラー）" "エラー: 不明なフラグです: --note" "$W31_1D_OUT"
+assert_not_contains "W31-1d: guardExtraPositionalのエラーは出ない" "余分な引数があります" "$W31_1D_OUT"
+rm -f "$W28_LOG"
+
+# W31-2【核心・直接再現】recur: 単一の余剰トークン
+W28_LOG=$(mktemp /tmp/todo-test-w31-2-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_SIMPLE_RESP"
+W31_2_OUT=$(w28_run recur 42 weekly 予備); W31_2_EC=$?
+assert_exit_fail "W31-2【核心】recur 42 weekly 予備: exit非0" "$W31_2_EC"
+assert_contains "W31-2: エラー本文（余分な引数）" "エラー: 余分な引数があります: 予備" "$W31_2_OUT"
+assert_contains "W31-2: ヒントにクォート済み実行例" 'ヒント: 値に空白が含まれる場合はクォートしてください: /todo recur 42 "weekly 予備"' "$W31_2_OUT"
+assert_eq "W31-2【副作用ゼロ】API 呼び出しログが0行" "0" "$(wc -l < "$W28_LOG" | tr -d ' ')"
+rm -f "$W28_LOG"
+
+# W31-3【核心・直接再現】link: 単一の余剰トークン（project番号を2つ渡した誤り）
+W28_LOG=$(mktemp /tmp/todo-test-w31-3-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_LINK_RESP"
+W31_3_OUT=$(w28_run link 42 100 101); W31_3_EC=$?
+assert_exit_fail "W31-3【核心】link 42 100 101: exit非0" "$W31_3_EC"
+assert_contains "W31-3: エラー本文（余分な引数）" "エラー: 余分な引数があります: 101" "$W31_3_OUT"
+assert_contains "W31-3: ヒント（値1つのみ・クォートではなく単純に落とす例）" "ヒント: このコマンドは値を1つだけ指定できます: /todo link 42 100" "$W31_3_OUT"
+assert_eq "W31-3【副作用ゼロ】API 呼び出しログが0行（issues.getにも到達しない）" "0" "$(wc -l < "$W28_LOG" | tr -d ' ')"
+rm -f "$W28_LOG"
+
+# W31-4【核心・直接再現】priority: 単一の余剰トークン（優先度を2つ渡した誤り）
+W28_LOG=$(mktemp /tmp/todo-test-w31-4-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_PRI_RESP"
+W31_4_OUT=$(w28_run priority 42 p1 p2); W31_4_EC=$?
+assert_exit_fail "W31-4【核心】priority 42 p1 p2: exit非0" "$W31_4_EC"
+assert_contains "W31-4: エラー本文（余分な引数）" "エラー: 余分な引数があります: p2" "$W31_4_OUT"
+assert_contains "W31-4: ヒント（値1つのみ）" "ヒント: このコマンドは値を1つだけ指定できます: /todo priority 42 p1" "$W31_4_OUT"
+assert_eq "W31-4【副作用ゼロ】API 呼び出しログが0行" "0" "$(wc -l < "$W28_LOG" | tr -d ' ')"
+rm -f "$W28_LOG"
+
+# i18n
+# W31-5【en】due
+W31_5_OUT=$(LANG_ENV=en OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W28_SIMPLE_RESP" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-09-02 \
+  node "$ENGINE" run due 42 2026-09-10 extra 2>&1); W31_5_EC=$?
+assert_exit_fail "W31-5【en】due 42 2026-09-10 extra: exit非0" "$W31_5_EC"
+assert_contains "W31-5(en): エラー本文" "Error: extra arguments: extra" "$W31_5_OUT"
+assert_contains "W31-5(en): ヒント" 'Hint: if the value contains spaces, quote it: /todo due 42 "2026-09-10 extra"' "$W31_5_OUT"
+assert_no_japanese "W31-5(en): 出力に日本語が含まれない" "$W31_5_OUT"
+
+# W31-6【en】link（hint_single側の英語文言も確認）
+W31_6_OUT=$(LANG_ENV=en OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W28_LINK_RESP" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-09-02 \
+  node "$ENGINE" run link 42 100 101 2>&1); W31_6_EC=$?
+assert_exit_fail "W31-6【en】link 42 100 101: exit非0" "$W31_6_EC"
+assert_contains "W31-6(en): エラー本文" "Error: extra arguments: 101" "$W31_6_OUT"
+assert_contains "W31-6(en): ヒント" "Hint: this command accepts only one value: /todo link 42 100" "$W31_6_OUT"
+assert_no_japanese "W31-6(en): 出力に日本語が含まれない" "$W31_6_OUT"
+
+# 正常系（誤検知しないことの確認。余剰なしなら従来どおり通る。W16-5a/b・W28-20b・W28-21b・
+# W28-22aで基本形は既にカバー済みのため、ここでは重複を避け「境界に近い正常系」のみ追加する）
+# W31-7【正常系】due: clear のみ（余剰なし）
+W28_LOG=$(mktemp /tmp/todo-test-w31-7-XXXXXX); W28_RESP_CUR="$W28_SIMPLE_RESP"
+W31_7_OUT=$(w28_run due 42 clear); W31_7_EC=$?
+assert_exit_ok "W31-7【正常系】due 42 clear（余剰なし）: exit 0" "$W31_7_EC"
+rm -f "$W28_LOG"
+
+# ガード除去による回帰検出は #1921/#1934 各弾と同型のため、テストコード内には実装しない
+# （guardExtraPositional の呼び出し4箇所を一時的にコメントアウトして実行し、
+# W31-1/1b/1c/2/3/4/5/6 が全件 FAIL することを実装時に手動で確認済み。詳細は
+# DEVELOPMENT.md の完了報告を参照）。
+
+# ──────────────────────────────────────────
+# §W32  runSearch / runArchive search のフラグ字面混入（Issue #1934 パート4）
+# tokens.slice(1).join(' ')（または --json 除去後の join(' ')）でキーワードを組み立てる
+# ため、フラグ字面のtypoが黙って検索クエリの一部に混入していた。読み取り専用で副作用は
+# ないが、他のjoin(' ')型ハンドラ（desc/rename/template use）と同じ guardUnknownFlag を
+# 揃えて配線した。
+# ──────────────────────────────────────────
+echo ""
+echo "§W32  runSearch / runArchive search のフラグ字面混入（Issue #1934 パート4）"
+
+# W32-1【核心・直接再現】search: --json 以外のフラグ字面はキーワードに混入せずエラーになる
+# （応答を用意しておく。ガードを外したときに「別の理由（スタブ応答不足）」で exit 非0に
+# なると回帰検出にならないため。§論点6 罠2 と同型の対策）
+W32_LOG=$(mktemp /tmp/todo-test-w32-1-XXXXXX); : > "$W32_LOG"
+W32_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W32_LOG" \
+  OCTOKIT_STUB_RESPONSES_ENV='{"search.issuesAndPullRequests":[{"data":{"items":[]}}]}' \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run search --keywrd foo 2>&1); W32_1_EC=$?
+assert_exit_fail "W32-1【核心】search --keywrd foo: exit非0" "$W32_1_EC"
+assert_contains "W32-1: エラー本文が未知フラグのもの" "エラー: 不明なフラグです: --keywrd" "$W32_1_OUT"
+assert_eq "W32-1【副作用ゼロ】search.issuesAndPullRequests が呼ばれない" "0" "$(wc -l < "$W32_LOG" | tr -d ' ')"
+rm -f "$W32_LOG"
+
+# W32-2【正常系・誤検知なし】--json は引き続きフラグとして機能する（キーワードに混入しない）
+W32_LOG=$(mktemp /tmp/todo-test-w32-2-XXXXXX)
+W32_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W32_LOG" \
+  OCTOKIT_STUB_RESPONSES_ENV='{"search.issuesAndPullRequests":[{"data":{"items":[]}}]}' \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run search --json foo 2>&1); W32_2_EC=$?
+assert_exit_ok "W32-2【正常系】search --json foo: exit 0（--jsonは許可されたフラグ）" "$W32_2_EC"
+assert_contains "W32-2: JSON配列が出力される" "[]" "$W32_2_OUT"
+rm -f "$W32_LOG"
+
+# W32-3【核心・直接再現】archive search: フラグ字面はキーワードに混入せずエラーになる
+# （応答を用意しておく。理由はW32-1と同じ）
+W32_LOG=$(mktemp /tmp/todo-test-w32-3-XXXXXX); : > "$W32_LOG"
+W32_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W32_LOG" \
+  OCTOKIT_STUB_RESPONSES_ENV='{"search.issuesAndPullRequests":[{"data":{"items":[]}}]}' \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run archive search --keywrd foo 2>&1); W32_3_EC=$?
+assert_exit_fail "W32-3【核心】archive search --keywrd foo: exit非0" "$W32_3_EC"
+assert_contains "W32-3: エラー本文が未知フラグのもの" "エラー: 不明なフラグです: --keywrd" "$W32_3_OUT"
+assert_eq "W32-3【副作用ゼロ】search.issuesAndPullRequests が呼ばれない" "0" "$(wc -l < "$W32_LOG" | tr -d ' ')"
+rm -f "$W32_LOG"
+
+# W32-4【正常系・誤検知なし】search: フラグなしのキーワードは従来どおり通る（既存§W16-14で
+# 基本形はカバー済みのため、ここでは guardUnknownFlag 配線後も壊れていないことのみ確認）
+W32_LOG=$(mktemp /tmp/todo-test-w32-4-XXXXXX)
+W32_4_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_LOG_ENV="$W32_LOG" \
+  OCTOKIT_STUB_RESPONSES_ENV='{"search.issuesAndPullRequests":[{"data":{"items":[]}}]}' \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run search normal keyword 2>&1); W32_4_EC=$?
+assert_exit_ok "W32-4【正常系】search normal keyword: exit 0" "$W32_4_EC"
+rm -f "$W32_LOG"
+
+# W32-5【en】search（応答を用意しておく。理由はW32-1と同じ）
+W32_5_OUT=$(LANG_ENV=en OCTOKIT_STUB_ENV="$STUB" \
+  OCTOKIT_STUB_RESPONSES_ENV='{"search.issuesAndPullRequests":[{"data":{"items":[]}}]}' \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run search --keywrd foo 2>&1); W32_5_EC=$?
+assert_exit_fail "W32-5【en】search --keywrd foo: exit非0" "$W32_5_EC"
+assert_contains "W32-5(en): エラー本文" "Error: unknown flag: --keywrd" "$W32_5_OUT"
+assert_no_japanese "W32-5(en): 出力に日本語が含まれない" "$W32_5_OUT"
+
+# ガード除去による回帰検出: guardUnknownFlag 呼び出し2箇所（runSearch/runArchive search）を
+# 一時的にコメントアウトして実行し、W32-1/3/5 が全件 FAIL する（--keywrd foo がキーワードの
+# 一部として黙って検索されてしまう。exit 0 に戻る）ことを実装時に手動で確認済み。
 
 # ──────────────────────────────────────────
 # 結果サマリー（run-tests.sh から集計加算するための機械可読な行）

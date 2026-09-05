@@ -4554,6 +4554,68 @@ assert_eq "§51-19 境界値: 許可リストは完全一致（--groupp は --gr
   "--groupp" "$(node "$ENGINE" find-unknown-flag '["next","--groupp"]' '["--group","--no-due","--no-estimate"]')"
 
 # ──────────────────────────────────────────
+# §52  未サポートフラグ判定 findUnsupportedFlagField() 単体テスト（Issue #1934 パート1）
+# 事故: `add next "テスト" --note "メモ"` のように parseArgs() は消費するがハンドラが
+# 読まないフラグが、エラーも警告もなく値だけ消えていた（findUnknownFlag では検出できない
+# 「第3の型」）。本セクションは判定器そのもの（純粋関数）を検証する。
+# CLI: find-unsupported-flag '<設定フィールドのJSON配列>' '<許可フィールドのJSON配列>'
+#      → 検出した未サポートフィールド名、なければ空文字列を stdout へ返す。
+# 8ハンドラの振る舞い（exit code・API呼び出し抑止・ヒント文言）は run-tests-write.sh §W29 参照。
+# ──────────────────────────────────────────
+echo ""
+echo "§52  未サポートフラグ判定 findUnsupportedFlagField()（Issue #1934 パート1）"
+
+assert_eq "§52-1 正常系: 設定フィールドなし・許可フィールドなし → 検出なし" \
+  "" "$(node "$ENGINE" find-unsupported-flag '[]' '[]')"
+assert_eq "§52-2 正常系: 設定フィールドがすべて許可されている → 検出なし" \
+  "" "$(node "$ENGINE" find-unsupported-flag '["due","desc"]' '["due","desc"]')"
+assert_eq "§52-3 異常系(Issue再現例1): --note を add 相当（許可なし）に渡す → note を検出" \
+  "note" "$(node "$ENGINE" find-unsupported-flag '["note"]' '[]')"
+assert_eq "§52-4 異常系(Issue再現例2): --actual を add 相当に渡す → actual を検出" \
+  "actual" "$(node "$ENGINE" find-unsupported-flag '["actual"]' '[]')"
+assert_eq "§52-5 異常系(Issue再現例3): --color を add 相当に渡す → color を検出" \
+  "color" "$(node "$ENGINE" find-unsupported-flag '["color"]' '[]')"
+assert_eq "§52-6 異常系(Issue再現例4): --due-offset を add 相当に渡す → dueOffset を検出" \
+  "dueOffset" "$(node "$ENGINE" find-unsupported-flag '["dueOffset"]' '[]')"
+assert_eq "§52-7 異常系(Issue再現例5): --note を edit 相当に渡す → note を検出" \
+  "note" "$(node "$ENGINE" find-unsupported-flag '["note"]' '[]')"
+assert_eq "§52-8 異常系(Issue再現例6): --due を list 相当（許可なし）に渡す → due を検出" \
+  "due" "$(node "$ENGINE" find-unsupported-flag '["due"]' '[]')"
+assert_eq "§52-9 境界値: 許可フィールドがある場合（done相当: actual許可・noteは未サポート）" \
+  "note" "$(node "$ENGINE" find-unsupported-flag '["actual","note"]' '["actual"]')"
+assert_eq "§52-10 境界値: 複数未サポート・FLAG_FIELD_MAP定義順で先頭が勝つ（dueが最初）" \
+  "due" "$(node "$ENGINE" find-unsupported-flag '["note","actual","due"]' '[]')"
+assert_eq "§52-11 境界値: labels（配列フィールド）を許可なしに渡す → labels を検出" \
+  "labels" "$(node "$ENGINE" find-unsupported-flag '["labels"]' '[]')"
+assert_eq "§52-12 境界値: 完全一致判定（大文字違いのDueはdueの許可にならない）" \
+  "due" "$(node "$ENGINE" find-unsupported-flag '["due"]' '["Due"]')"
+assert_eq "§52-13 境界値: FLAG_FIELD_MAP に存在しないフィールド名は走査対象外 → 検出なし" \
+  "" "$(node "$ENGINE" find-unsupported-flag '["nonexistent"]' '[]')"
+assert_eq "§52-14 入力パターン: 許可フィールド引数省略 → 空配列扱いでdueを検出" \
+  "due" "$(node "$ENGINE" find-unsupported-flag '["due"]')"
+
+# --- パフォーマンス（全17フィールド設定・全17フィールド許可。線形走査で完了すること） ---
+_ISSUE1934_ALLFIELDS=$(node -e '
+  const fields = ["due","desc","recur","project","priority","estimate","actual","dueOffset",
+    "color","activate","before","dependsOn","resumeCondition","note","body","bodyFile","labels"];
+  process.stdout.write(JSON.stringify(fields));
+')
+assert_eq "§52-15 パフォーマンス: 全17フィールド設定・全17フィールド許可 → 検出なし" \
+  "" "$(node "$ENGINE" find-unsupported-flag "$_ISSUE1934_ALLFIELDS" "$_ISSUE1934_ALLFIELDS")"
+
+# --- パート1.5: @ctx / #tag も parseArgs() が消費する同型フィールド（contexts/tags） ---
+# `@ctx` / `#tag` はフラグではなく位置トークンだが、parseArgs() が消費した後にハンドラが
+# 読まないと値が黙って消えるという構造はパート1の17フラグと同一（Issue #1934 パート1.5）。
+assert_eq "§52-16 異常系(パート1.5): contexts を許可なしに渡す → contexts を検出" \
+  "contexts" "$(node "$ENGINE" find-unsupported-flag '["contexts"]' '[]')"
+assert_eq "§52-17 異常系(パート1.5): tags を許可なしに渡す → tags を検出" \
+  "tags" "$(node "$ENGINE" find-unsupported-flag '["tags"]' '[]')"
+assert_eq "§52-18 正常系(パート1.5): contexts/tags を両方許可（add/list相当） → 検出なし" \
+  "" "$(node "$ENGINE" find-unsupported-flag '["contexts","tags"]' '["contexts","tags"]')"
+assert_eq "§52-19 境界値(パート1.5): contexts は許可・tags は許可なし（template save相当の非対称） → tags を検出" \
+  "tags" "$(node "$ENGINE" find-unsupported-flag '["contexts","tags"]' '["contexts"]')"
+
+# ──────────────────────────────────────────
 # 書き込み系ハンドラのスタブベーステスト（run-tests-write.sh、Issue #1648）
 # 3,266行超に肥大化した本ファイルへの追記を避けるため別ファイルに分離し、
 # ここで子プロセスとして呼び出して結果を合算する。実行口は
