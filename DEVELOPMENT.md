@@ -51,7 +51,7 @@ cp todo.sh ~/.claude/todo.sh
 ## テスト
 
 - テストランナー: `bash tests/run-tests.sh`（+ 書き込み系は `bash tests/run-tests-write.sh` として個別実行も可能。通常は `run-tests.sh` から自動的に呼び出される）
-- 自動テスト総件数: **1,747件**（read-only系 928 + 書き込み系 819。`bash tests/run-tests.sh` の最終行が出す実測値。2026-09-02 時点。全件PASSが目安）
+- 自動テスト総件数: **1,914件**（read-only系 947 + 書き込み系 967。`bash tests/run-tests.sh` の最終行が出す実測値。2026-09-05 時点。全件PASSが目安）
 - シナリオ一覧: `tests/scenarios.md`
 - 全件 PASS が Pull Request マージの必須条件
 - 件数を更新する際は README.md の記載も合わせて更新する
@@ -401,6 +401,134 @@ function guardUnknownFlag(tokens, allowedFlags, usage, hintKey) {
 **アサーション粒度で残る例外（3件。意図的）:** ガード除去実験ではケース単位で見れば異常系は1件の例外もなく FAIL するが、**アサーション単位では W28-23 の `assert_no_japanese` と W28-24 の `assert_not_contains` ×2 が PASS したまま残る**（成功時の英語出力にも日本語は含まれず、成功時の出力にもタイトル向け・本文向けのヒント文言は現れないため）。この3つが見ているのは「ガードが存在すること」ではなく「ガードが発火したときの出力の i18n / ヒントキーの配線」という別の性質で、ガードの存在自体は同じケース内の `assert_exit_fail` と `assert_contains`（エラー全文）が担保している。**回帰検出器として読み替えないよう、テストコード側にも同趣旨の注記を置いてある**。§W26 側にも同型が4件ある（`runComment` はガードを外すと「本文が空」で別経路の exit 1 になるため）。
 
 **対象ファイル:** `todo-engine.js`（新設 `guardUnknownFlag()`、`MESSAGES` ja/en 2キー、`help.unknown_flag_note` ja/en とその出力配線、`runAdd()` / `runComment()` の共通ヘルパーへの置き換え、`runList` / `runDone` / `runMove` / `runEdit` / `runDue` / `runDesc` / `runRecur` / `runLink` / `runRename` / `runPriority` / `runLabel`×5 / `runTemplate`×8 / `runBulk`×3 への配線、`runBulk done` の `parseArgs` 巻き上げ、`label` / `bulk` に残っていた旧 `Usage: run ...` 4本を各コマンドの Usage 定数へ差し替えて1コマンド1本に統一）、`todo.md`
+
+### 2026-09-05: 8ハンドラが「別コマンドでは有効だが自分は読まないフラグ」を黙って捨てていた（Issue #1934 パート1）
+
+**症状:** #1921 パターンB・C（上記）が塞いだのは「`parseArgs()` が解釈できなかったトークン（`parsed.extra`）」だけで、「`parseArgs()` は正しく消費したが、そのハンドラ自身が読まないフィールド」という**第3の型**は塞げていなかった。`parseArgs()` が消費する17種の値付きフラグ（`--due` / `--desc` / `--recur` / `--project` / `--priority` / `--estimate` / `--actual` / `--due-offset` / `--color` / `--activate` / `--before` / `--depends-on` / `--resume-condition` / `--note` / `--body` / `--body-file` / `--label`）のうち、各ハンドラは一部しか読まない。読まないフラグは `parsed.<field>` に値として残るが `extra` には現れないため、`findUnknownFlag()` の対象にならず、エラーも警告も出さずに値だけが消える（いずれも exit 0）。
+
+| 入力 | 修正前の挙動 |
+|---|---|
+| `add next "テスト" --note "メモ"` | exit 0。`--note` は捨てられ、コメントは投稿されない |
+| `add next "テスト" --actual 3h` / `--color FF0000` / `--due-offset 3` | exit 0。いずれも黙って無視される |
+| `edit 42 --note "メモ"` | exit 0。`--note` は捨てられる |
+| `list --due 2026-09-10` | exit 0。フィルタが効かず全件表示される |
+
+**原因:** `parseArgs()` を呼ぶハンドラは8つ（`runAdd` / `runList` / `runDone` / `runMove` / `runEdit` / `runLabel`の`add`分岐 / `runTemplate`の`save`インライン分岐 / `runBulk`の`done`分岐）。各ハンドラは `parsed.<field>` のうち一部しか読まないコードになっており（例: `runList` は `parsed.contexts`/`parsed.tags` しか読まず17フラグは全滅、`runMove` は `parsed.note` しか読まない）、「読まれなかった残り」を検出する仕組みがなかった。
+
+**修正:** ハンドラ単位で「実際に読むフィールド」を明示し、それ以外が指定されたらエラー化する `guardUnsupportedFlag()` を新設した。
+
+```js
+// フィールド名 → 代表フラグ表記（エラーメッセージ用）
+const FLAG_FIELD_MAP = {
+  due: '--due', desc: '--desc', /* ...17種... */ labels: '--label',
+};
+// フィールド名 → それを実際に読むコマンドの一覧（ヒント用）
+const FLAG_SUPPORTED_BY = {
+  note: ['done', 'move'], actual: ['done', 'bulk done'], /* ... */
+};
+// parsed のうち supportedFields に載っていないフィールドで値が設定されているものを探す（純粋関数）
+function findUnsupportedFlagField(parsed, supportedFields) { /* ... */ }
+// 検出したら Usage・エラー本文・ヒントを出して終了する
+function guardUnsupportedFlag(parsed, supportedFields, usage) { /* ... */ }
+```
+
+各ハンドラで、既存の `guardUnknownFlag(...)` 呼び出しの**直後**に `guardUnsupportedFlag(parsed, [...], USAGE)` を1行追加した（呼び出し順序は「typo検出 → 対象外検出」に統一）。8ハンドラの `supportedFields` は配線直前に実装コードを再読して確定した（設計書の実測表と1件も食い違いなし）。
+
+**設計上の判断（3点）:**
+
+1. **`guardUnknownFlag()` の `allowedFlags`（トークン文字列の許可リスト）とは判定対象がまったく逆**。`guardUnsupportedFlag()` の `supportedFields` は `parsed` のフィールド名（`parseArgs()` が既に消費した側）を扱う。変数名で区別する（`*_ALLOWED_FLAGS` はトークン文字列配列、本設計の引数は `parsed` のキー名配列）
+2. **エラー（exit 1）に倒す**。誤検知（本来使いたいのに拒否される）はほぼ発生しない（17フラグは全て正式な綴りで、拒否されるのは「そのハンドラでは元々効かなかった」場合のみ）。見逃し（黙って値が消える）の実害の方が大きい
+3. **typo（`error.unknown_flag`）と対象外（新設 `error.flag_not_supported`）はメッセージキーを分離**。「`--note` は `add` にとって『不明』ではなく『対象外』」という区別を伝えるため
+
+**実装時に見つけた設計書との差分（診断サブコマンドのバグ）:** 設計書のサンプルコード `find-unsupported-flag` は、指定しなかったフィールドを `dummyParsed[f]` に代入しないままにしていたため `undefined` となり、`findUnsupportedFlagField()` の `isSet` 判定（`val !== null`）が「`undefined !== null` は true」で常に検出してしまうバグがあった（§52 実測で発見。設計書のサンプルコードのままでは動かない）。`Object.keys(FLAG_FIELD_MAP)` で全フィールドを `null`（`labels` のみ `[]`）に初期化してから `setFields` の値で上書きするよう修正した。
+
+**自己申告の実測結果（設計書「自信が持てない箇所」への回答）:**
+
+- **`--due-offset` の `+` 単独入力**: `parseArgs()` 内部の `.replace(/^\+/, '')` により空文字列になる（実測: `'+'.replace(/^\+/, '') === ''`）。空文字列は `isSet` 判定で「指定された」とみなされるため、`add`（`--due-offset` 非サポート）に渡すと正しく検出される（W29-15b で固定）
+- **サポート対象＋未サポート混在時の部分適用**: `edit 42 --due 2026-09-10 --note "x"` で実測。ガードは `parsed` 全体を検査してから `exit 1` する設計どおり、`--due` は適用されず（`issues.update` 0回）、エラーは `--note` のみを報告する（W29-14）
+
+**テスト:** `tests/run-tests.sh` に判定器の単体テスト §52（15アサーション: 正常系・異常系・境界値・パフォーマンス）、`tests/run-tests-write.sh` に8ハンドラの振る舞いテスト §W29（64アサーション: 異常系11・境界値5（W29-15b含む）・i18n2・正常系8の26ケース、他はエラー全文・API呼び出し0回の確認）を新設した。追加した8箇所のガードを一時的に無効化して実行し、異常系14ケース（W29-1〜11・W29-13〜15）が全件確実に FAIL することを実測で確認した（§W28 と同型の回帰検出。W29-16 の `assert_no_japanese` のみ、ガード除去後の英語成功メッセージにも日本語が含まれないため PASS したまま残るが、これは同じケース内の `assert_exit_fail`/`assert_contains` が担保する範囲外の性質であり§W28-23と同型の既知の例外）。全1,826件PASS（書き込み系883/883）。GitHub への実書き込みは行わず、スタブ経由のみで検証した。
+
+**対象ファイル:** `todo-engine.js`（新設 `FLAG_FIELD_MAP`/`FLAG_SUPPORTED_BY`/`findUnsupportedFlagField()`/`guardUnsupportedFlag()`/診断サブコマンド `find-unsupported-flag`、`MESSAGES` ja/en 2キー追加、`help.unknown_flag_note` 更新、`runAdd`/`runList`/`runDone`/`runMove`/`runEdit`/`runLabel`の`add`分岐/`runTemplate`の`save`インライン分岐/`runBulk`の`done`分岐への配線）、`todo.md`（共通注記・`add`行の更新）、`CHANGELOG.md`
+
+### 2026-09-05: `@ctx` / `#tag` にも「読まれない位置トークンが黙って消える」同型問題が残っていた（Issue #1934 パート1.5）
+
+**症状:** パート1（上記）が塞いだのは17種の値付きフラグのみで、`@ctx`/`#tag`（`parseArgs()` が消費する位置トークン。フラグではない）には同型の問題が残っていた。`done` / `move` / `edit` / `label add` / `bulk done` はいずれも `parsed.contexts`/`parsed.tags` を一切読んでおらず、`@ctx`/`#tag` を渡しても値が黙って消えていた（`add`/`list` は元から両方読んでいる）。
+
+| 入力 | 修正前の挙動 |
+|---|---|
+| `done 42 @外出` | exit 0。`@外出` は無視される |
+| `move 42 next #tag` | exit 0。`#tag` は無視される |
+| `label add newctx @office` | exit 0。`@office` は無視される（名前 `newctx` のみでラベル作成） |
+| `bulk done 41 42 @office` | exit 0。`@office` は無視される |
+
+**原因・修正:** パート1と完全に同じ枠組みで対応した。`FLAG_FIELD_MAP` に `contexts`（代表表記 `@ctx`）/`tags`（代表表記 `#tag`）を追加し、`guardUnsupportedFlag()` の走査対象を17→19フィールドへ拡張した。8ハンドラの `supportedFields` へ配線する直前に実装コードを再確認したところ、以下の実測表になった（○=読む/✗=読まない）。
+
+| フィールド | add | list | done | move | edit | label add | template save(inline) | bulk done |
+|---|---|---|---|---|---|---|---|---|
+| `contexts`（@ctx） | ○ | ○ | ✗ | ✗ | ✗ | ✗ | ○ | ✗ |
+| `tags`（#tag） | ○ | ○ | ✗ | ✗ | ✗ | ✗ | **✗** | ✗ |
+
+**実装時に見つけた非対称:** `runTemplate` の `save` インライン分岐は `const contexts = parsed.contexts;` で `contexts` を読んで `validateCtx` するが、`parsed.tags` はこの分岐のどこからも読まれていない（実装コードを直接確認して判明）。`runList` は `contexts`/`tags` の両方を3806-3807行で読んでいるため `supportedFields` に `['contexts','tags']` を追加した。この `template save` の非対称（`@ctx` は使えるが `#tag` は使えない）を tags 側の実装を直して解消するかはスコープ拡大の判断になるため実装せず、`contexts` のみを `supportedFields` に追加し `#tag` は引き続きエラーとする現状を維持した（`template save tmpl next #tag` は「黙って消える」から「使えませんエラー」に変わるだけで、実害が増える方向ではない）。
+
+**後方互換:** 呼び出し元リポジトリ全体の grep 全数調査で `done`/`move`/`edit`/`label add`/`bulk done`/`template save` に `@ctx`/`#tag` を渡す実呼び出しは1件も見つからなかった。
+
+**テスト:** `tests/run-tests.sh` §52 に4アサーション追加、`tests/run-tests-write.sh` §W29 パート1.5 に12ケース・37アサーションを新設した（異常系7: done/move/edit/label add/bulk done への `@ctx`・`#tag`、`template save` の `#tag` 非対称／境界値1: label add への `#tag`／i18n1: 英語モード／正常系3: add・list・template save の既存サポートが壊れていないことの回帰確認。合計12ケース。レビュー指摘によりパート1と同型の内訳計算不一致を修正: 2026-09-05）。追加したガード拡張（`FLAG_FIELD_MAP` の `contexts`/`tags` 追加）を一時的に無効化して実行し、異常系ケース全件（12ケース中の異常系・境界値部分）が確実に FAIL することを実測で確認した（正常系3件と `assert_no_japanese` 1件のみ、成功時の出力にも日本語やフラグ字面が現れないため無効化後もPASSしたまま残る。パート1の§W29-16と同型の既知の限界）。全1863件PASS（書き込み系916/916）。GitHub への実書き込みは行わず、スタブ経由のみで検証した。
+
+**対象ファイル:** `todo-engine.js`（`FLAG_FIELD_MAP`/`FLAG_SUPPORTED_BY` に `contexts`/`tags` 追加、診断サブコマンド `find-unsupported-flag` のダミー初期化を配列フィールド対応に拡張、`runAdd`/`runList`/`runTemplate`の`save`インライン分岐の `supportedFields` 更新、`help.unknown_flag_note` ja/en 更新）、`todo.md`（共通注記更新）、`CHANGELOG.md`
+
+### 2026-09-05: `runList` の `extra` ループにあった `@` 分岐を削除（`#` 分岐は削除せず）（Issue #1934 パート3）
+
+**背景（Issueの記述と実測の差分）:** Issue #1934 の当初の記述は「`runList` の `extra` 走査ループにある `@` 始まり / `#` 始まり両方の分岐が到達不能なデッドコード」としていたが、実測の結果これは**半分だけ正しい**ことが判明した。
+
+- **`@` 分岐: 到達不能（真のデッドコード）**。`parseArgs()` の `@` トークン消費条件（`tok.startsWith('@')`）には追加条件が一切なく、`@` で始まるトークンは無条件に `parsed.contexts` へ吸収されるため、`extra` ループへ到達すること自体が構造的に不可能。
+- **`#` 分岐: 到達可能（デッドコードではない）**。`parseArgs()` の `#tag` 消費条件は `tok.startsWith('#') && !tok.includes(' ') && !/^#\d+$/.test(tok)` の3条件（`#1660` で追加された「空白を含まない」制約を含む）。一方 `runList` の `#` 分岐の条件は `tok.startsWith('#') && !/^#\d+$/.test(tok)` の2条件のみで「空白を含まない」制約がない。したがって**空白を含む `#` トークン**（例: `list "#1299 depends-on強化について"`）は `parseArgs()` に消費されず `extra` に残り、`runList` の `#` 分岐へ到達する。実測（`node todo-engine.js run list "#1299 depends-on強化について"`）で `エラー: タグ名に不正文字が含まれています`（`validateTag()` が空白を検出して exit 1）を確認した。Issueの「分岐側の条件でも除外されるため何もしない」という記述は、`#42` のような**純粋な数字トークン**（`#` 分岐自身の `!/^#\d+$/` 条件で除外され、実測でも exit 0・フィルタなし全件表示を確認）にのみ正しく、**空白入りトークンを見落としていた**。
+
+**対応:** `@` 分岐のみを削除し、`#` 分岐は削除せず維持した（削除すると「空白入り `#` トークンでエラー終了する」という現在の挙動が「黙って無視される」に変わってしまうため。挙動変更はスコープ拡大の判断になるため今回は削除しない）。削除前後で `list @--`（parsed.contexts経由でのエラー）・`list @office`（正常フィルタ）・`list "#1299 ..."`（空白入りタグのエラー）・`list "#42"`（数字のみタグ、無視）の4パターンすべてが同一の挙動であることを実測で確認した。
+
+**テスト:** `tests/run-tests-write.sh` に §W30（4ケース・5アサーション）を新設し、上記4パターンを回帰・固定した。全1869件PASS（書き込み系922/922）。
+
+**対象ファイル:** `todo-engine.js`（`runList()` の `extra` ループから `@` 分岐を削除、削除理由と `#` 分岐を残す理由を説明するコメントを追加）
+
+### 2026-09-05: 固定インデックス型ハンドラの位置引数の余剰・`search`/`archive search` のフラグ字面混入（Issue #1934 パート2・パート4、完了）
+
+**症状（パート2）:** `due` / `recur` / `link` / `priority` は `tokens[0]=番号 / tokens[1]=値` の固定インデックスで読むため、値の直後に残った非フラグの位置引数（クォート漏れ・値の指定過多）は `guardUnknownFlag()`（フラグ字面のみを検査）の対象外で、従来黙って捨てられていた。
+
+| 入力 | 修正前の挙動 |
+|---|---|
+| `due 42 2026-09-10 余剰トークン` | exit 0。「余剰トークン」は黙って捨てられ、期日は `2026-09-10` になる |
+| `recur 42 weekly 予備` | exit 0。「予備」は無視される |
+| `link 42 100 101` | exit 0。project番号は `100` のみ登録され「101」は無視される |
+| `priority 42 p1 p2` | exit 0。優先度は `p1` のみ設定され「p2」は無視される |
+
+**前提条件（Issue記載の着手条件）:** 上記を塞ぐには、日本語日付を未クォートで渡す運用（`due <#> 今週 金曜` のような複数トークン）が手順書に実在しないことが前提だった。2026-09-05 に確認したところ、呼び出し側の手順書にある `due <#> 今日` 等は単一トークンのため無関係、`due <新番号> <実施日 + 周期>` はコミット `3973ff99` で `"<実施日 + 周期>"` へクォート化済みであることが判明し、着手条件が満たされた。
+
+**修正:** `guardUnknownFlag()` / `guardUnsupportedFlag()` に続く3つ目の guard として `guardExtraPositional(extraTokens, usage, hintKey, example)` を新設した。`guardUnknownFlag()` で既にフラグ字面が弾かれた後の残余トークンが1つでもあればエラーにする。
+
+```js
+function guardExtraPositional(extraTokens, usage, hintKey, example) {
+  if (!extraTokens.length) return;
+  const extra = extraTokens.join(' ');
+  if (usage) process.stderr.write(`${usage}\n`);
+  process.stderr.write(tpl('error.extra_positional', { extra }) + '\n');
+  process.stderr.write(tpl(hintKey, { example }) + '\n');
+  process.exit(1);
+}
+```
+
+**設計上の判断（3点）:**
+
+1. **ヒントメッセージを2種類に分ける**。`due`/`recur` は値が自然文（日付・パターン）で空白を含みうるため `error.extra_positional_hint_quote`（「クォートしてください」＋クォート済みの実行例）、`link`/`priority` は値が単一トークンでクォートの余地がないため `error.extra_positional_hint_single`（「値は1つだけ」＋余剰を単純に落とした実行例）を使う。いずれも `example` は静的文言ではなく、呼び出し側が実際のユーザー入力（`tokens[0]`・値・余剰トークン）から動的に組み立てる（パート1の `error.flag_not_supported_hint` の `{commands}` と同じ考え方）
+2. **`recur` も対象に含めた**。Issue本文は `due`/`priority`/`link` の3つのみ挙げていたが、実装コードを確認すると `recur` も完全に同型（`tokens[0]=番号 / tokens[1]=パターン`）だったため一貫性のため含めた
+3. **`runUnlink`（`tokens[0]=番号 / tokens.includes('--force')`）は対象外とした**。`due`/`recur`/`link`/`priority` と違い「第2の位置引数スロット」を持たず、`--force` は任意のフラグとして走査されるだけの構造のため、`guardExtraPositional` の対象（クォート漏れ・値の指定過多）に当てはまらない。`runUnlink` には `guardUnknownFlag` 自体も配線されておらず（`--forse` のようなtypoが静かに無視される）、これは本パートとは別の独立した既存ギャップである。今回は対象外とし、完了報告で別Issue化を検討するよう申し送った
+
+**症状（パート4）:** `search` / `archive search` は `tokens.slice(1).join(' ')`（または `--json` 除去後の `join(' ')`）でキーワードを組み立てるが、`add`/`rename`/`template use` 等の同型ハンドラと異なり `guardUnknownFlag()` が配線されておらず、フラグ字面のtypo（例: `search --keywrd foo`）が黙って検索クエリの一部に混入していた（`is:issue is:open` 等と結合され、ほぼ確実にゼロ件かつエラーなしで返る「静かな期待値乖離」）。読み取り専用で副作用がないため実害は小さいが、Issueの一貫性のため他のjoin(' ')型ハンドラと同じ `guardUnknownFlag()` を配線した。
+
+**テスト:** `tests/run-tests-write.sh` に §W31（パート2、13ケース）・§W32（パート4、5ケース）を新設した。既存 §W28-19b（「位置引数の余剰は従来どおり通る」という後方互換の仕様固定）は本パートで挙動が反転するため `exit 0 → exit 非0` へ更新した。追加した `guardExtraPositional` 呼び出し4箇所、`guardUnknownFlag` 呼び出し2箇所（search/archive search）をそれぞれ一時的に無効化して実行し、異常系ケース（W28-19b・W31の異常系・境界値・i18n、W32の異常系・i18n）が全件確実に FAIL することを実測で確認した（`assert_no_japanese` のみ、成功時の英語出力にも日本語が含まれないため無効化後もPASSしたまま残る。パート1の§W29-16と同型の既知の限界）。W32の実装時、ガード無効化状態でスタブ応答（`search.issuesAndPullRequests`）を用意していなかったため「別の理由（スタブの未対応呼び出しエラー）」で exit 非0 になり `assert_exit_fail` が誤ってPASSする罠を踏んだ（#1921第2弾の罠2と同型）。対になる正常系と同じ応答を追加して修正し、無効化後に正しく `exit 0` へ戻ることを確認してから再固定した。全1,914件PASS（書き込み系967/967）。GitHub への実書き込みは行わず、スタブ経由のみで検証した。
+
+**対象ファイル:** `todo-engine.js`（新設 `guardExtraPositional()`、`MESSAGES` ja/en 3キー追加、`runDue`/`runRecur`/`runLink`/`runPriority` への配線、`runSearch`/`runArchive`の`search`分岐への `guardUnknownFlag()` 配線）、`todo.md`（共通注記・`due`/`recur`/`link`/`priority`/`search`/`archive search`行の更新）、`CHANGELOG.md`
+
+**Issue #1934 は本パートで全パート完了。**
 
 ## 翻訳方針（i18n）
 
