@@ -51,7 +51,7 @@ cp todo.sh ~/.claude/todo.sh
 ## テスト
 
 - テストランナー: `bash tests/run-tests.sh`（+ 書き込み系は `bash tests/run-tests-write.sh` として個別実行も可能。通常は `run-tests.sh` から自動的に呼び出される）
-- 自動テスト総件数: **1,914件**（read-only系 947 + 書き込み系 967。`bash tests/run-tests.sh` の最終行が出す実測値。2026-09-05 時点。全件PASSが目安）
+- 自動テスト総件数: **2,042件**（read-only系 947 + 書き込み系 1,095。`bash tests/run-tests.sh` の最終行が出す実測値。2026-09-06 時点。全件PASSが目安）
 - シナリオ一覧: `tests/scenarios.md`
 - 全件 PASS が Pull Request マージの必須条件
 - 件数を更新する際は README.md の記載も合わせて更新する
@@ -529,6 +529,111 @@ function guardExtraPositional(extraTokens, usage, hintKey, example) {
 **対象ファイル:** `todo-engine.js`（新設 `guardExtraPositional()`、`MESSAGES` ja/en 3キー追加、`runDue`/`runRecur`/`runLink`/`runPriority` への配線、`runSearch`/`runArchive`の`search`分岐への `guardUnknownFlag()` 配線）、`todo.md`（共通注記・`due`/`recur`/`link`/`priority`/`search`/`archive search`行の更新）、`CHANGELOG.md`
 
 **Issue #1934 は本パートで全パート完了。**
+
+### 2026-09-06: `activate` ショートカット・`runUnlink` に残っていた同型ギャップ（Issue #1937）
+
+**症状:** #1921/#1934 の網から構造的に漏れた残り2件。パート2完了報告（上記③）で「別Issue化を検討」と申し送った `runUnlink` の件と、パート2の設計レビュー中に新規発見された `activate` ショートカットの件をまとめて修正した。
+
+| 対象 | 入力 | 修正前の挙動 |
+|---|---|---|
+| `activate` ショートカット | `activate 42 2026-09-10 余剰トークン` | exit 0。「余剰トークン」は黙って捨てられる |
+| `activate` ショートカット | `activate 42 2026-09-10 --note "x"` | exit 0。**フラグ字面すら**出力に痕跡なく消える |
+| `runUnlink` | `unlink 42 --forse`（タイポ） | exit 0（ただし `force=false` のため多くの場合フェイルセーフに働く。既存の「未登録」エラーで止まるだけでtypo自体は指摘されない） |
+
+**原因（activate）:** dispatcher の `case 'activate'` が `const [num, date] = rest;` で `rest` の先頭2要素だけを取り出し、`runEdit(octokit, owner, repo, [num, '--activate', date])` という**新しい配列を合成して**呼び出す構造になっていた。`due`/`recur`/`link`/`priority`（#1934パート2）や `runEdit` 本体（#1934パート1）は「自分自身のハンドラ内で `guardUnknownFlag`/`guardExtraPositional`/`guardUnsupportedFlag` を呼ぶ」という設計だったため、`runXxx` ハンドラの一覧を横断した2つのパートのどちらの配線対象からも漏れていた（`activate` には独立したハンドラ関数が存在せず、dispatcher 内の合成呼び出しでしかないため）。`rest.slice(2)` 以降は合成された配列 `[num, '--activate', date]` のどこにも含まれず、`runEdit` 側のどのガードにも到達しなかった。
+
+**原因（runUnlink）:** `const force = tokens.includes('--force');` という走査型判定のみで、`due`/`recur`/`link`/`priority` 等と違い `guardUnknownFlag()` 自体が一度も配線されていなかった。#1934パート2では「`runUnlink` は `tokens[1]=値` という第2の位置引数スロットを持たないため `guardExtraPositional` の対象外」と判定したが、それとは別に `guardUnknownFlag` 自体の欠如という独立したギャップが残っていた。
+
+**修正:**
+
+1. `case 'activate'`: `runEdit` へ委譲する前に、dispatcher 自身で `guardUnknownFlag(rest.slice(2), [], ACTIVATE_USAGE, 'error.unknown_flag_hint_options')` → `guardExtraPositional(rest.slice(2), ACTIVATE_USAGE, 'error.extra_positional_hint_quote', ...)` の順に呼ぶ。`activate` の値（日付）は `runEdit` 内部で `normalizeDue()` を通るため `due`/`recur` と同じ「自然文の日付が空白を含みうる」性質を持ち、ヒントは `hint_quote`（クォート例）を使う（`link`/`priority` の `hint_single` ではない）。
+2. `runUnlink`: 冒頭の `validateNumber()` の直後、`force` 判定より前に `guardUnknownFlag(tokens.slice(1), ['--force'], UNLINK_USAGE, 'error.unknown_flag_hint_options')` を配線した。`--force` を許可リストに入れることで、既知の唯一の任意フラグはそのまま通し、それ以外の `--` で始まるトークン（タイポを含む）だけをエラーにする。`guardExtraPositional` は配線しない（#1934パート2の判定を踏襲。第2の位置引数スロットが存在しない）。
+
+**設計判断の確認:** 両修正とも、既存の `guardUnknownFlag()`/`guardExtraPositional()`（#1921/#1934で確立済みの判定器）をそのまま呼び出すのみで、判定器自体への変更はない。呼び出し順序（`guardUnknownFlag()` → `guardExtraPositional()`）も既存の規約（`todo-engine.js` 3354-3367行のコメント）をそのまま踏襲した。
+
+**テスト:** `tests/run-tests-write.sh` に §W33（23ケース、うちi18n4ケース）を新設した。追加したガード呼び出し3箇所（`activate` に2箇所・`runUnlink` に1箇所）を一時的に無効化して実行し、22アサーションが FAIL することを実測で確認した。ただし一部のアサーション（`assert_exit_fail`単体・`assert_no_japanese`単体）は、ガード無効化後も「別の理由」（`runUnlink` の場合はスタブが未設定応答で別エラーを投げる、`activate` の場合は成功時の英語出力にも日本語が含まれない）で偶然 PASS したまま残った。これは #1921第2弾・#1934パート2/4で既に確認済みの既知の限界と同型で、各ケースには判定力を持つ別のアサーション（エラーメッセージの内容一致・API呼び出し回数）を必ず併設しているため、判定力そのものは失われていない。全1,947件PASS（書き込み系1000/1000）。GitHub への実書き込みは行わず、スタブ経由のみで検証した。
+
+**Part 3（全数調査、修正はスコープ外）:** `runMain` の dispatcher 全 case と、ガード呼び出しを持たない `run*` ハンドラ全件について「余剰トークン・未知フラグが静かに捨てられる」経路の横断調査を行った。見つかった残存候補（優先度順）:
+
+- **`runMigrateSubIssue` の `--dry-run` タイポ（優先度: 高）**: `tokens.includes('--dry-run')` の走査型判定のみ。`--dryrun`（ハイフン抜け）等のタイポは `dryRun=false` として扱われ、**ドライランのつもりが実際に `addSubIssue()` を一括実行してしまう**。デフォルト値が安全側でないため `runUnlink`/`runPromoteProject` より深刻
+- **`runPromoteProject` の `--outcome` タイポ（優先度: 中）**: `tokens.indexOf('--outcome')` の走査型判定のみ。タイポ時は `newTitle` が変更されず静かにスキップされる（データ破壊はしないが、ユーザーの意図が反映されない）
+- **`runView` の `save` サブコマンド（優先度: 低）**: `rest` のうち `@ctx`/GTDラベル/優先度のいずれにもマッチしないトークンは黙って無視される（ローカルの `views.json` への書き込みのみ、GitHub API への影響なし）
+- **`runShow` の余剰トークン（優先度: 低）**: `filteredTokens[0]` のみを使い、以降のトークン（`--json` 以外）は無視される。読み取り専用コマンドのため実害は小さい
+- **`runReviewSomeday` の余剰トークン（優先度: 低）**: `tokens[0]` のみを使う。書き込みは `reviewedAt` の更新のみで実害は小さい
+- **`runReport` の不正な `sub` 引数（優先度: 低）**: `weekly`/`monthly`/`Nd` のいずれにもマッチしない文字列は黙って `days=7`（weekly相当）にフォールバックする。読み取り専用
+
+上記はいずれも本Issue（#1937）のスコープ外として**修正していない**。優先度が高い `runMigrateSubIssue` を含め、対応要否・別Issue化の判断はユーザーに委ねる。
+
+**対象ファイル:** `todo-engine.js`（`case 'activate'` への `guardUnknownFlag`/`guardExtraPositional` 配線、`runUnlink` への `guardUnknownFlag` 配線）、`tests/run-tests-write.sh`（§W33新設）、`todo.md`（共通注記・`activate`/`unlink` 行の更新）、`CHANGELOG.md`
+
+### 2026-09-06: #1937 パート3で発見された残り5件（Issue #1938）
+
+**症状:** #1937 のパート3（横断調査）で見つかった残存候補5件。1件ずつ独立に判定器を選定して修正した。
+
+| 対象 | 入力 | 修正前の挙動 |
+|---|---|---|
+| `runMigrateSubIssue` | `migrate sub-issue --dryrun`（タイポ） | `dryRun=false` のまま処理が進み、**ドライランのつもりで `addSubIssue()` の一括登録が実際に走る**（デフォルトが危険側） |
+| `runPromoteProject` | `promote-project 42 --outcom "..."`（タイポ） | タイトル変更が黙ってスキップされる |
+| `runPromoteProject` | `promote-project 42 --outcome New Marketing Campaign`（クォート漏れ） | 先頭語「New」だけが使われ「Marketing Campaign」が黙って消える |
+| `runView`（`save`） | `view save vw waitng`（GTD/優先度/@ctxのいずれにも非一致） | 黙って無視される（ローカル `views.json` のみでAPI影響なし） |
+| `runShow` | `show 42 --jsn`（タイポ） | `jsonMode=false` のまま通常表示になり、JSON出力を期待したユーザーが気づけない |
+| `runReviewSomeday` | `review-someday 42 --nte "x"` | `tokens[0]` 以外は無条件に無視される |
+| `runReport` | `report monthy`（`monthly`のタイポ） | `weekly`/`monthly`/`Nd` いずれにも一致せず `days=7` へ黙ってフォールバック（**30日のつもりが7日になる**） |
+
+**判定器の選定（1件ずつ独立に判断）:**
+
+1. **`runMigrateSubIssue`**: `guardUnknownFlag(tokens, ['--dry-run'], ...)` のみ。位置引数を取らないコマンドのため `guardExtraPositional` は対象外。
+2. **`runPromoteProject`**: `guardUnknownFlag(tokens.slice(1), ['--outcome'], ...)` と `guardExtraPositional()` の両方。`--outcome` の値は自由記述のタイトルで空白を含みうるため `hint_quote` を使う（`due`/`activate` と同型）。
+3. **`runView save`**: ループで収集した「GTD/優先度/@ctx いずれにも一致しないトークン（`unmatched`）」に対し `guardUnknownFlag(unmatched, [], ...)` → `guardExtraPositional(unmatched, ..., 'error.extra_positional_hint_single', ...)` の順で適用。値はいずれも単一トークン（GTDラベル語・p1〜p3・`@ctx`）でクォート漏れの余地がないため `hint_single` を使う（`priority`/`link` と同型）。
+4. **`runShow`**: `guardUnknownFlag(tokens, ['--json'], ...)` のみ。`unlink`/`review-someday` と同じく「第2の位置引数スロット」を持たないため `guardExtraPositional` は対象外。
+5. **`runReviewSomeday`**: `guardUnknownFlag(tokens.slice(1), [], ...)` のみ。`--force` のような許可フラグ自体を持たないため `allowedFlags=[]`。#1937 の `runUnlink` と同型判断。
+6. **`runReport`**: **判定器（`guardUnknownFlag`/`guardExtraPositional`）を使わなかった**。他5件はフラグの綴りミスだが、これは「位置引数の値そのものが不正なときの暗黙フォールバック」という別種の問題のため、`sub` が `weekly`/`monthly`/`Nd` のいずれにも一致しない場合に Usage・エラー本文（新設 `error.report_invalid_sub`）を出す専用の `else` 分岐を追加した。
+
+**既存呼び出し側の全数調査:** リポジトリ全体を `migrate sub-issue` / `promote-project` / `view save` / `todo show` / `review-someday` / `todo report` で grep し、スクリプト・ドキュメント中のコマンド例・スケジューラ登録を確認した。すべて本変更後も通る形式だった（後方互換が壊れる実呼び出しは0件）。
+
+- 同梱ドキュメント・スケジューラ設定中のコマンド例（`promote-project <番号> --outcome "タイトル"`（クォート済み）、`migrate sub-issue --dry-run`（正しい綴り）、`review-someday <番号>`（フラグなし）、`report 1d`）はいずれも本変更後も通る形式だった
+- `todo-manual.md` / `README.md` / `README.ja.md` の `report weekly` / `report monthly` / `report 14d` / `view save work next @office p1` 等のサンプルもすべて対応形式
+
+**テスト:** `tests/run-tests-write.sh` に §W34（63アサーション、うちi18n6ケース）を新設した。追加した6箇所（`runMigrateSubIssue`・`runPromoteProject`×2・`runView save`×2・`runShow`・`runReviewSomeday`・`runReport`）を一時的に無効化し、それぞれ以下の実害が実際に発生することを実測で確認した（コメントアウトではなく元の SSoT とは別に一時コピーを作って検証し、SSoT 自体は変更していない）。
+
+- `runMigrateSubIssue`: ガードなしで `migrate sub-issue --dryrun` を実行すると `fetchAllOpen()`（`issues.listForRepo`）まで到達する
+- `runPromoteProject`: タイポ（`--outcom`）・クォート漏れのいずれも `issues.get` まで到達し、後者は「New」のみをタイトルとして使う経路に入る
+- `runView save`: `view save vw1 waitng` が exit 0 でビューを保存する（`--nxt` も同様）
+- `runShow`: `show 42 --jsn` が exit 0 で通常表示（JSONでない）を返す
+- `runReviewSomeday`: `review-someday 42 --nte "x"` が exit 0 で `issues.update` まで到達し `reviewedAt` を更新する
+- `runReport`: `report weeky` が exit 0 で `days=7` の週次レポートを実際に出力する（`issues.listForRepo` 2回到達）
+
+全2010件PASS（書き込み系1063/1063、前回1947→+63）。GitHub への実書き込みは行わず、スタブ経由のみで検証した。
+
+**対象ファイル:** `todo-engine.js`（6箇所への配線・`error.report_invalid_sub` の新設 ja/en）、`tests/run-tests-write.sh`（§W34新設）、`todo.md`（共通注記に6件を追記）、`CHANGELOG.md`
+
+### 2026-09-06: `template save` が `#tag` を保存しない（`@ctx` は保存するのに非対称）（Issue #1936）
+
+**症状:** `#1934` パート1.5で「使えませんエラー」に変わっただけで機能ギャップとして残っていた非対称（`template save` インライン形式が `@ctx` は保存するが `#tag` は保存できない）を解消した。`template save <名前> from <#>`（既存Issueからのコピー）・`template use`（テンプレートからのIssue作成）についても、`#tag` を対称に扱うよう合わせて実装した。
+
+| コマンド | 修正前の挙動 |
+|---|---|
+| `template save tmpl next #urgent` | exit 1。「エラー: #tag はこのコマンドでは使えません」で保存できない |
+| `template save tmpl from <#>`（対象Issueに `#deploy` 等のタグラベルあり） | タグが一切コピーされない（`contexts` のみ抽出していた） |
+| `template use tmpl`（テンプレートに`tags`があっても） | ラベル付与されない（スキーマ自体に`tags`フィールドがなかった） |
+
+**修正:**
+
+1. **テンプレートDBのスキーマ**: `todo-templates.json` の各エントリに `tags`（配列、`context` と同形式）を追加。既存の `tags` キーを持たないエントリは全読み出し箇所で `|| []` フォールバックし後方互換を保つ。
+2. **`runTemplate` save インライン分岐**: `parsed.tags` を読み、`validateTag(tag.slice(1))`（`runAdd` と同じ検証）を通してから `TAGS_ENV` にシリアライズして渡す。`guardUnsupportedFlag()` の `supportedFields` に `'tags'` を追加。
+3. **`runTemplate` save-from 分岐**: `issueToJsonObj()`/`renderIssueList()` と同じ「GTD・project・context・`@claude`・priority 以外のラベル」という `systemLabels` の線引きをそのまま踏襲し、`lnames.filter(l => !systemLabels.has(l))` でタグを抽出する（`lnames` はここでは生ラベル名なので `GTD_DISPLAY` 表記で除外する点が既存2箇所（正規化後の`lnames`を使う版）と異なる）。
+4. **`templateSave()`/`templateSaveFrom()`**: `t.tags = JSON.parse(process.env.TAGS_ENV || '[]')` を追加。
+5. **`templateShow()`/`templateList()`**: `context` と同じ書式で `tags` 行・表示欄を追加。
+6. **`templateUse()`（stdout KEY=VALUE版）・`runTemplate` use インライン分岐**: `TAGS=` 行を出力に追加し、Issue作成時に `tags` の各タグを `ensureLabel(octokit, owner, repo, tag, '0075CA', t('label.desc_tag'))`（`runAdd` と同じ色・説明）でラベル化して付与する。
+7. **`FLAG_SUPPORTED_BY.tags`**: `['add', 'list']` → `['add', 'list', 'template save']` に更新し、`done`/`move`等でのエラーヒントにも「template save」が含まれるようにした。
+
+**設計上の判断:** save-from のタグ抽出は「既存の2箇所の前例（`issueToJsonObj()` line 5096 / `renderIssueList()` line 5217）のどちらに揃えるか」を先に確認した。`runTemplate` save-from の `lnames` は `fetchAndParseIssue()` が返す**生のラベル名**（GTD ラベルは絵文字プレフィックス付き）であり、`issueToJsonObj()` の `lnames`（`normLabel()` 済み・プレーン文字列）とは形式が異なる。したがって `renderIssueList()`（`issue.labels` という生ラベル名を対象にした版）の `systemLabels` 構築方法（`GTD_LABELS.map(l => GTD_DISPLAY[l])` で絵文字表記へ変換してから除外）に揃えた。
+
+**後方互換:** `tags` キーを持たない既存テンプレートエントリ（例: `daily`）は `template show`/`template list`/`template use` のいずれでも `undefined` を出さず、タグなし（空配列）として扱われることをテストで固定した（§W35-8）。
+
+**テスト:** `tests/run-tests-write.sh` に §W35（9ケース・32アサーション: 正常系2・入力文字パターン1・境界値2・セキュリティ1・save-from正常系2・use正常系1・後方互換3・回帰1）を新設した。旧 §W29-32（`#tag` がエラーになることを固定していたテスト）は本修正で挙動が反転するため、`#tag` が正しく保存されることを確認する内容へ更新した。追加した実装（`templateSave()`/`templateSaveFrom()` の `t.tags = ...` 代入、`runTemplate` save インライン分岐の `validateTag` ループ）を一時的に無効化して実行し、W35-1/2/4/5/6 が確実に FAIL することを実測で確認した。全2,042件PASS（書き込み系1,095/1,095、前回2,010→+32）。GitHub への実書き込みは行わず、スタブ経由のみで検証した。
+
+**対象ファイル:** `todo-engine.js`（`FLAG_SUPPORTED_BY.tags` 更新、`runTemplate` save/save-from/use の3分岐、`templateSave()`/`templateSaveFrom()`/`templateShow()`/`templateList()`/`templateUse()`、`help.unknown_flag_note` ja/en）、`tests/run-tests-write.sh`（§W29-32更新・§W35新設）、`tests/run-tests.sh`（§52-19コメント更新）、`todo.md`（共通注記・`template save` 行の更新）
 
 ## 翻訳方針（i18n）
 

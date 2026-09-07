@@ -4612,7 +4612,7 @@ assert_eq "§52-17 異常系(パート1.5): tags を許可なしに渡す → ta
   "tags" "$(node "$ENGINE" find-unsupported-flag '["tags"]' '[]')"
 assert_eq "§52-18 正常系(パート1.5): contexts/tags を両方許可（add/list相当） → 検出なし" \
   "" "$(node "$ENGINE" find-unsupported-flag '["contexts","tags"]' '["contexts","tags"]')"
-assert_eq "§52-19 境界値(パート1.5): contexts は許可・tags は許可なし（template save相当の非対称） → tags を検出" \
+assert_eq "§52-19 境界値(パート1.5): contexts は許可・tags は許可なし（片方のみ許可のケース） → tags を検出" \
   "tags" "$(node "$ENGINE" find-unsupported-flag '["contexts","tags"]' '["contexts"]')"
 
 # ──────────────────────────────────────────

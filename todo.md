@@ -90,16 +90,22 @@ GTD ラベルは `next` / `routine` / `inbox` / `waiting` / `someday` / `referen
 > 判定対象は「`--` + 英字始まり + 英数字/ハイフンのみで構成される1語」に限る。Markdown の水平線（`---`）や空白・日本語を含む文字列（`"--body を説明する"`）は自由記述として通る。
 >
 > **対象外（未知フラグとしてはエラーにならないもの）**:
-> - 上の対象コマンド以外（`show` / `stats` / `view` / `unlink` / `promote-project` など）に渡した `--` で始まる引数は、現時点では**黙って無視される**
+> - 上の対象コマンド・下記の個別ガード対象以外（`stats` / `dashboard` / `today` / `eisenhower` / `help` / `schema` / `promote` / `weekly-project-audit` など、そもそも引数を受け取らない設計のコマンド）は該当なし
 > - `tag` / `untag` / `bulk tag` / `bulk untag` の `-` 始まりトークンは、専用の「オプション指定に見えます」エラーで従来どおり止まる（エラーにはなるが文言が異なる）
+> - `unlink <#> [--force]` の `--force` はタイプミス（`--forse` 等）であれば未知フラグとしてエラー終了する（17種の値付きフラグとは別の単発フラグのため上の対象コマンド一覧には含めていないが、`--force` 以外の未知の `--` 引数は個別にガードしている）
+> - `show <#> [--json]` の `--json` はタイプミス（`--jsn` 等）であれば未知フラグとしてエラー終了する（`unlink` と同型。第2の位置引数スロットを持たないため位置引数の余剰チェックはない）
+> - `migrate sub-issue [--dry-run]` の `--dry-run` はタイプミス（`--dryrun` 等）であれば未知フラグとしてエラー終了する（デフォルトが本実行側のため、タイプミス放置は #1937 の `unlink --force` より実害が大きい）
+> - `review-someday <#>` は位置引数以外の `--` 始まり引数を未知フラグとしてエラー終了する（`unlink` と同型。位置引数の余剰チェックはない）
+> - `promote-project <#> [--outcome "タイトル"]` の `--outcome` はタイプミス（`--outcom` 等）であれば未知フラグとしてエラー終了する。値のクォート漏れ（`--outcome New Marketing Campaign` のような複数トークン）も位置引数の余剰としてエラー終了する
+> - `view save <名前> [GTD] [@ctx] [p1|p2|p3]` は GTD ラベル・優先度・`@ctx` のいずれにも一致しないトークンを、フラグ字面（`--` 始まり）なら未知フラグ、それ以外なら位置引数の余剰としてエラー終了する（書き込み先はローカル `views.json` のみ）。`view use` / `view delete` / `view list` は対象外（現状維持）
 >
 > **17種の値付きフラグ（`--due` / `--desc` / `--recur` / `--project` / `--priority` / `--estimate` / `--actual` / `--due-offset` / `--color` / `--activate` / `--before` / `--depends-on` / `--resume-condition` / `--note` / `--body` / `--body-file` / `--label`）と `@ctx` / `#tag`（`parseArgs()` が消費する位置トークン）に共通の注記**:
 > - 対象コマンドであっても、**別のコマンドでは有効だがそのコマンドが読まないフラグ・トークン**（例: `add` の `--note` / `--actual` / `--color`、`edit` の `--note`、`list` の `--due`、`done` / `move` / `edit` / `label add` / `bulk done` の `@ctx` / `#tag`）を渡すと、**「このコマンドでは使えません」というエラーで終了する**（`--` の綴りミスと区別されるが、いずれもエラー終了する点は同じ）
-> - `template save`（インライン形式）は `@ctx` は使えるが `#tag` は使えない（非対称。`#tag` を渡すとエラー終了する）
+> - `template save`（インライン形式・`from <#>` 形式の両方）は `@ctx` と `#tag` のいずれも使える（#1936 で対称化済み）
 >
-> **位置引数の余剰（`due` / `recur` / `link` / `priority` に共通の注記）**:
-> - これら4コマンドは `<#>` の次に来る値を1つだけ受け取る。値の**直後に余分な引数**を渡すとエラー終了する（例: `due 42 今週 金曜` は「今週」の後の「金曜」が余剰、`link 42 100 101` は「100」の後の「101」が余剰）
-> - `due` / `recur` は値が空白を含む自然文（日付・パターン）になりうるため、エラーのヒントは**値全体を1つの引数としてクォートする**修正例を示す（例: `/todo due 42 "今週 金曜"`）。`link` / `priority` は値が単一トークン（番号・`p1`〜`p3`）なのでクォートではなく余剰を外す修正例を示す
+> **位置引数の余剰（`due` / `recur` / `link` / `priority` / `activate`（ショートカット）に共通の注記）**:
+> - これら5コマンドは `<#>` の次に来る値を1つだけ受け取る。値の**直後に余分な引数**を渡すとエラー終了する（例: `due 42 今週 金曜` は「今週」の後の「金曜」が余剰、`link 42 100 101` は「100」の後の「101」が余剰、`activate 42 2026-09-10 メモ` は「2026-09-10」の後の「メモ」が余剰）
+> - `due` / `recur` / `activate`（ショートカット）は値が空白を含む自然文（日付・パターン）になりうるため、エラーのヒントは**値全体を1つの引数としてクォートする**修正例を示す（例: `/todo due 42 "今週 金曜"`）。`link` / `priority` は値が単一トークン（番号・`p1`〜`p3`）なのでクォートではなく余剰を外す修正例を示す
 
 | コマンド | 引数 | 説明 |
 |---------|------|------|
@@ -147,7 +153,7 @@ GTD ラベルは `next` / `routine` / `inbox` / `waiting` / `someday` / `referen
 | `show <#> [--json]` | 個別タスク詳細表示 |
 | `schema` | `--json` 出力のフィールド定義を表示 |
 | `edit <#> --activate <日付>` | フォローアップ日（自動昇格日）を設定。waiting タスクに活用（例: `bash ~/.claude/todo.sh edit 42 --activate 4/22`） |
-| `activate <#> <日付>` | `edit <#> --activate <日付>` の簡略記法 |
+| `activate <#> <日付>` | `edit <#> --activate <日付>` の簡略記法。`<日付>` の直後に余分な引数・未知フラグを渡すとエラー終了する（上の「位置引数の余剰」注記を参照。`edit --activate` に委譲する前にこのコマンド自身がガードする） |
 | `edit <#> --before <期間>` | due の N 日前を自動計算して activate に設定（`--due` が必須。例: `14d`、`2w`） |
 | `edit <#> --depends-on <#N>` | 指定タスクが完了したタイミングで自動的に next へ昇格 |
 | `edit <#> --resume-condition <テキスト>` | 再開条件（フリーテキスト）を設定。`promote` は activate 到来かつ resume_condition 設定済みの Issue を機械的に自動昇格せず、確認待ちとして通知のみ行う（`clear` でクリア。週次レビュー時に resume_condition が設定済みかつ activate 到来のタスクを一覧し、条件が満たされたか自分で確認してから `promote` または `edit --activate` で再設定して昇格させる運用） |
@@ -167,7 +173,7 @@ GTD ラベルは `next` / `routine` / `inbox` / `waiting` / `someday` / `referen
 |---------|------|
 | `project <Outcome>` | プロジェクト Issue を作成（タイトルは完了状態を記述） |
 | `promote-project <#> [--outcome "タイトル"]` | 既存 Issue をプロジェクトに昇格（GTD ラベルを外し 📁 project を付与） |
-| `unlink <#> [--force]` | 子 Issue のプロジェクト紐付けを解除（sub-issue 解除 + body `project: #N` 行削除）。body の親と GitHub 上の親が食い違う場合は解除せずエラー終了する。`--force` で body 側のみ解除する |
+| `unlink <#> [--force]` | 子 Issue のプロジェクト紐付けを解除（sub-issue 解除 + body `project: #N` 行削除）。body の親と GitHub 上の親が食い違う場合は解除せずエラー終了する。`--force` で body 側のみ解除する。`--force` のタイプミス（例: `--forse`）は未知フラグとしてエラー終了する（黙って無視されない） |
 | `migrate sub-issue [--dry-run]` | body `project: #N` を持つ Issue を GitHub sub-issue に一括登録。`--dry-run` で対象一覧のみ表示 |
 | `weekly-project-audit` | 全プロジェクトを走査して棚卸し。next 欠落・停滞を検出し `reviewed_at` を自動記録 |
 
@@ -177,7 +183,7 @@ GTD ラベルは `next` / `routine` / `inbox` / `waiting` / `someday` / `referen
 |---------|------|
 | `template list` | テンプレート一覧 |
 | `template show <名前>` | テンプレート詳細 |
-| `template save <名前> [GTD] [@ctx...] [--due 日付] [--due-offset N] [--recur パターン] [--project 番号] [--priority p1\|p2\|p3\|--p1\|--p2\|--p3] [--desc テキスト]` | テンプレート保存（インライン）。`--due-offset <N>` はテンプレート専用フラグで、使用日から N日後を自動的に期日に設定する（`--due` と同時指定時は `--due-offset` が優先） |
+| `template save <名前> [GTD] [@ctx...] [#tag...] [--due 日付] [--due-offset N] [--recur パターン] [--project 番号] [--priority p1\|p2\|p3\|--p1\|--p2\|--p3] [--desc テキスト]` | テンプレート保存（インライン）。`--due-offset <N>` はテンプレート専用フラグで、使用日から N日後を自動的に期日に設定する（`--due` と同時指定時は `--due-offset` が優先） |
 | `template save <名前> from <#>` | 既存IssueからTemplate作成 |
 | `template use <名前> [タイトル上書き]` | テンプレートからIssue作成 |
 | `template delete <名前>` | テンプレート削除 |
