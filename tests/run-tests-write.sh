@@ -1423,7 +1423,7 @@ rm -f "$W1879_3_LOG"
 # ──────────────────────────────────────────
 # §W21  状態整合性の順序統一 — validate-before-mutate / create-before-close（Issue #1652）
 # ──────────────────────────────────────────
-# 起票元: content/reviews/2026-08-03_todo-engine_reviewer.md の2件。
+# 起票元: コードレビュー指摘の2件（Issue #1652）。
 #   課題A: runPriority/runEdit が「旧priorityラベル削除 → validate」の順で、
 #          typo時に既存ラベルだけ破壊してエラー終了していた（validate-before-mutateへ統一）。
 #          → runEdit/runPriority 側は W5-3 / W6-2 を修正後の挙動に更新済み（本節では重複しない）。
@@ -3821,7 +3821,7 @@ rm -f "$W30_LOG"
 # tokens[0]=番号 / tokens[1]=値 で読むハンドラは、guardUnknownFlag() でフラグ字面のtypoは
 # 既に弾かれているが、非フラグの余剰トークン（クォート漏れ・値の指定過多）はguardUnknownFlagの
 # 対象外のため従来黙って捨てられていた（W28-19bが「従来どおり通る」と仕様固定していた挙動）。
-# #1930（コミット3973ff99）でweekly-review.md/daily-review.mdのクォート漏れ運用が解消され
+# Issue #1930 で日付引数のクォート漏れ運用が解消され
 # 前提条件が満たされたため、guardExtraPositional() を新設してエラー化した。
 # ──────────────────────────────────────────
 echo ""
