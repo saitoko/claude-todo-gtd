@@ -1735,20 +1735,20 @@ assert_not_contains "en: help に旧 review コマンド行が残っていない
 assert_not_contains "en: help に旧 daily-review コマンド行が残っていない"  "daily-review \[morning|evening\] Daily review"            "$HELP_EN"
 assert_not_contains "en: help に旧 weekly-review コマンド行が残っていない" "weekly-review              Weekly review"                 "$HELP_EN"
 
-# 1-3: 誘導文言としては残っているが、環境依存の具体スキル名(/gtd-collect 等)は書かず、
+# 1-3: 誘導文言としては残っているが、環境依存の具体スキル名(/gtd-collect 等)は書かず、  # internal-term-check:allow=cmd-gtd-collect
 #      環境非依存に todo.md の「対話コマンド」節へ誘導する（方針決定済み・公開リポには
-#      /gtd-collect 等のスキルが存在しないため。ユーザー承認済み、2026-08-23）
+#      /gtd-collect 等のスキルが存在しないため。ユーザー承認済み、2026-08-23）  # internal-term-check:allow=cmd-gtd-collect
 assert_contains "ja: help の誘導文言が todo.md を参照させている"         "todo.md"           "$HELP_JA"
 assert_contains "ja: help の誘導文言が「対話コマンド」節を指している"     "対話コマンド"       "$HELP_JA"
 assert_contains "en: help の誘導文言が todo.md を参照させている"         "todo.md"           "$HELP_EN"
 assert_contains "en: help の誘導文言が Interactive Commands 節を指している" "Interactive Commands" "$HELP_EN"
 
-assert_not_contains "ja: help の誘導文言に環境依存スキル名 /gtd-collect が含まれない"   "/gtd-collect"   "$HELP_JA"
-assert_not_contains "ja: help の誘導文言に環境依存スキル名 /daily-review が含まれない"  "/daily-review"  "$HELP_JA"
-assert_not_contains "ja: help の誘導文言に環境依存スキル名 /weekly-review が含まれない" "/weekly-review" "$HELP_JA"
-assert_not_contains "en: help の誘導文言に環境依存スキル名 /gtd-collect が含まれない"   "/gtd-collect"   "$HELP_EN"
-assert_not_contains "en: help の誘導文言に環境依存スキル名 /daily-review が含まれない"  "/daily-review"  "$HELP_EN"
-assert_not_contains "en: help の誘導文言に環境依存スキル名 /weekly-review が含まれない" "/weekly-review" "$HELP_EN"
+assert_not_contains "ja: help の誘導文言に環境依存スキル名 /gtd-collect が含まれない"   "/gtd-collect"   "$HELP_JA"  # internal-term-check:allow=cmd-gtd-collect
+assert_not_contains "ja: help の誘導文言に環境依存スキル名 /daily-review が含まれない"  "/daily-review"  "$HELP_JA"  # internal-term-check:allow=cmd-daily-review
+assert_not_contains "ja: help の誘導文言に環境依存スキル名 /weekly-review が含まれない" "/weekly-review" "$HELP_JA"  # internal-term-check:allow=cmd-weekly-review
+assert_not_contains "en: help の誘導文言に環境依存スキル名 /gtd-collect が含まれない"   "/gtd-collect"   "$HELP_EN"  # internal-term-check:allow=cmd-gtd-collect
+assert_not_contains "en: help の誘導文言に環境依存スキル名 /daily-review が含まれない"  "/daily-review"  "$HELP_EN"  # internal-term-check:allow=cmd-daily-review
+assert_not_contains "en: help の誘導文言に環境依存スキル名 /weekly-review が含まれない" "/weekly-review" "$HELP_EN"  # internal-term-check:allow=cmd-weekly-review
 
 # ──────────────────────────────────────────
 # today コマンドテスト
@@ -4136,7 +4136,7 @@ assert_contains "§43 list routine: マーカー対象外の行は従来通り2�
   "  #9201  overdue-1cycle" "$LIST_ROUTINE_OUT"
 
 # --- renderIssueList(): routine かつ recur 欠落 → updated_at staleness フォールバック ---
-# renderToday() の routineStale フォールバックとの非対称を解消（reviewer 🟡推奨修正）。
+# renderToday() の routineStale フォールバックとの非対称を解消（コードレビューの🟡推奨修正）。
 # 実データでの該当有無に関わらず、recur 欠落時の挙動保証として必要なテスト。
 LIST_ROUTINE_NO_RECUR_MOCK='[
   {"number":9211,"title":"stale-no-recur-old","body":"due: 2026-07-01","labels":[{"name":"🔁 routine"}],"updated_at":"2026-06-01T00:00:00Z"},
