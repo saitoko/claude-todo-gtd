@@ -3697,7 +3697,7 @@ assert_contains "W29-31: エラー本文" "エラー: @ctx はこのコマンド
 assert_eq "W29-31【核心】1件目のissues.getすら呼ばれない" "0" "$(log_count "$W29_LOG" issues.get)"
 rm -f "$W29_LOG"
 
-# ── template save 系（#tag の非対称・@ctx の正常系）は隔離 HOME で実行する ──
+# ── template save 系（#tag / @ctx の正常系）は隔離 HOME で実行する ──
 W29B_FAKE_HOME=$(mktemp -d /tmp/todo-test-w29b-home-XXXXXX)
 mkdir -p "$W29B_FAKE_HOME/.claude"
 export HOME="$W29B_FAKE_HOME"
@@ -3705,20 +3705,21 @@ if [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* ]]; then
   export USERPROFILE="$W29B_FAKE_HOME"
 fi
 
-# W29-32【核心・非対称】template save #tag（このインライン分岐は parsed.tags をどこからも
-# 読まない非対称が実装コードに存在する。従来は黙って#tagが消えていたが、本パートの実装で
-# 「使えません」エラーとして気づけるようになる。tags 側の実装を直すかはスコープ外の判断
-# として完了報告で申し送る。詳細は runTemplate save インライン分岐のコメント参照）。
+# W29-32【誤検知なし・#1936で解消】template save #tag（このインライン分岐はかつて
+# parsed.tags をどこからも読まない非対称があり #tag を渡すとエラー終了していた
+# （旧テスト: exit非0を期待）。#1936 で parsed.tags を読むよう修正し、正常に保存される
+# ようになったため exit 0 / 保存内容ありへ更新した。詳細は runTemplate save インライン
+# 分岐のコメント参照）。
 W29_LOG=$(mktemp /tmp/todo-test-w29-32-XXXXXX); : > "$W29_LOG"; W29_RESP_CUR='{}'
 W29_32_OUT=$(w29_run template save tmpl32 next '#urgent'); W29_32_EC=$?
-assert_exit_fail "W29-32【核心・非対称】template save tmpl32 next #urgent: exit非0" "$W29_32_EC"
-assert_contains "W29-32: エラー本文" "エラー: #tag はこのコマンドでは使えません" "$W29_32_OUT"
+assert_exit_ok "W29-32【誤検知なし・#1936で解消】template save tmpl32 next #urgent: exit 0" "$W29_32_EC"
+assert_not_contains "W29-32: 「このコマンドでは使えません」エラーが出ない" "エラー: #tag はこのコマンドでは使えません" "$W29_32_OUT"
 if [ -f "$W29B_FAKE_HOME/.claude/todo-templates.json" ]; then
   W29_32_FILECONTENT=$(cat "$W29B_FAKE_HOME/.claude/todo-templates.json")
 else
   W29_32_FILECONTENT="__NOT_CREATED__"
 fi
-assert_not_contains "W29-32: テンプレートファイルに tmpl32 エントリが書き込まれていない" '"tmpl32"' "$W29_32_FILECONTENT"
+assert_contains "W29-32: テンプレートファイルに #urgent が保存される" '"#urgent"' "$W29_32_FILECONTENT"
 rm -f "$W29_LOG"
 
 # W29-33 label add <name> #tag（tags も contexts と同様に label add では未サポート）
@@ -3755,9 +3756,8 @@ W29_36_OUT=$(w29_run list next @office '#urgent'); W29_36_EC=$?
 assert_exit_ok "W29-36【誤検知なし・回帰】list next @office #urgent: exit 0" "$W29_36_EC"
 rm -f "$W29_LOG"
 
-# W29-37【誤検知なし】template save @ctx（contexts はこの分岐で読まれるため通る。#tagの
-# 非対称とは対になる正常系。§W29-32 が exit1 になるのがガードのせいではなく tags 固有の
-# 非対称であることの反証を兼ねる）
+# W29-37【誤検知なし】template save @ctx（contexts はこの分岐で読まれるため通る。
+# #1936 で tags も同様に読まれるようになったため、§W29-32 と対になる正常系）
 W29_LOG=$(mktemp /tmp/todo-test-w29-37-XXXXXX); W29_RESP_CUR='{}'
 W29_37_OUT=$(w29_run template save tmpl37 next @office); W29_37_EC=$?
 assert_exit_ok "W29-37【誤検知なし】template save tmpl37 next @office: exit 0" "$W29_37_EC"
@@ -3986,6 +3986,549 @@ assert_no_japanese "W32-5(en): 出力に日本語が含まれない" "$W32_5_OUT
 # ガード除去による回帰検出: guardUnknownFlag 呼び出し2箇所（runSearch/runArchive search）を
 # 一時的にコメントアウトして実行し、W32-1/3/5 が全件 FAIL する（--keywrd foo がキーワードの
 # 一部として黙って検索されてしまう。exit 0 に戻る）ことを実装時に手動で確認済み。
+
+# ──────────────────────────────────────────
+# §W33  activate ショートカット・runUnlink の同型ギャップ修正（Issue #1937）
+# #1921/#1934 の網から構造的に漏れた残り2件。
+#   1. dispatcher の case 'activate' が rest[0]/rest[1] のみを取り出して
+#      ['num','--activate',date] を合成し runEdit へ渡すため、rest.slice(2) 以降
+#      （フラグ字面・非フラグ余剰とも）が runEdit に渡らず消滅していた
+#      （exit 0・出力に痕跡なし）。
+#   2. runUnlink の --force は tokens.includes() の走査型判定のみで、
+#      guardUnknownFlag が未配線だった（`unlink 42 --forse` のtypoを検出しない）。
+# ──────────────────────────────────────────
+echo ""
+echo "§W33  activate ショートカット・runUnlink の同型ギャップ修正（Issue #1937）"
+
+# ── activate ショートカット ──
+
+# W33-1【核心・直接再現】単一の余剰トークン（Issueの実測例1）
+W28_LOG=$(mktemp /tmp/todo-test-w33-1-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_SIMPLE_RESP"
+W33_1_OUT=$(w28_run activate 42 2026-09-10 余剰トークン); W33_1_EC=$?
+assert_exit_fail "W33-1【核心】activate 42 2026-09-10 余剰トークン: exit非0" "$W33_1_EC"
+assert_contains "W33-1: エラー本文（余分な引数）" "エラー: 余分な引数があります: 余剰トークン" "$W33_1_OUT"
+assert_contains "W33-1: ヒントにクォート済み実行例" 'ヒント: 値に空白が含まれる場合はクォートしてください: /todo activate 42 "2026-09-10 余剰トークン"' "$W33_1_OUT"
+assert_eq "W33-1【副作用ゼロ】API 呼び出しログが0行" "0" "$(wc -l < "$W28_LOG" | tr -d ' ')"
+rm -f "$W28_LOG"
+
+# W33-2【核心・直接再現】フラグ字面すら黙って消えていた（Issueの実測例2、最も深刻な症状）
+W28_LOG=$(mktemp /tmp/todo-test-w33-2-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_SIMPLE_RESP"
+W33_2_OUT=$(w28_run activate 42 2026-09-10 --note "x"); W33_2_EC=$?
+assert_exit_fail "W33-2【核心】activate 42 2026-09-10 --note \"x\": exit非0" "$W33_2_EC"
+assert_contains "W33-2: エラー本文（不明なフラグ）" "エラー: 不明なフラグです: --note" "$W33_2_OUT"
+assert_eq "W33-2【副作用ゼロ】API 呼び出しログが0行" "0" "$(wc -l < "$W28_LOG" | tr -d ' ')"
+rm -f "$W28_LOG"
+
+# W33-3【境界値】複数トークンの余剰（空白を含む自然文日付のクォート漏れを再現。dueと同型）
+W28_LOG=$(mktemp /tmp/todo-test-w33-3-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_SIMPLE_RESP"
+W33_3_OUT=$(w28_run activate 42 2026-09-10 今週 金曜); W33_3_EC=$?
+assert_exit_fail "W33-3【境界値】activate 42 2026-09-10 今週 金曜: exit非0" "$W33_3_EC"
+assert_contains "W33-3: エラー本文（複数トークンが空白結合される）" "エラー: 余分な引数があります: 今週 金曜" "$W33_3_OUT"
+assert_contains "W33-3: ヒント例（tokens[1]から余剰まで全体をクォート）" 'ヒント: 値に空白が含まれる場合はクォートしてください: /todo activate 42 "2026-09-10 今週 金曜"' "$W33_3_OUT"
+rm -f "$W28_LOG"
+
+# W33-4【境界値】clear でも余剰があればガードが効く（dueのW31-1cと同型）
+W28_LOG=$(mktemp /tmp/todo-test-w33-4-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_SIMPLE_RESP"
+W33_4_OUT=$(w28_run activate 42 clear 余剰); W33_4_EC=$?
+assert_exit_fail "W33-4【境界値】activate 42 clear 余剰: exit非0（clearでも同様にガードされる）" "$W33_4_EC"
+assert_eq "W33-4【副作用ゼロ】API 呼び出しログが0行" "0" "$(wc -l < "$W28_LOG" | tr -d ' ')"
+rm -f "$W28_LOG"
+
+# W33-5【呼び出し順序の固定】フラグ字面と非フラグ余剰の混在では guardUnknownFlag が先に発火する
+W28_LOG=$(mktemp /tmp/todo-test-w33-5-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_SIMPLE_RESP"
+W33_5_OUT=$(w28_run activate 42 2026-09-10 --note "理由" 余剰); W33_5_EC=$?
+assert_exit_fail "W33-5【呼び出し順序】フラグ+非フラグ余剰混在: exit非0" "$W33_5_EC"
+assert_contains "W33-5: guardUnknownFlagが先に発火（未知フラグのエラー）" "エラー: 不明なフラグです: --note" "$W33_5_OUT"
+assert_not_contains "W33-5: guardExtraPositionalのエラーは出ない" "余分な引数があります" "$W33_5_OUT"
+rm -f "$W28_LOG"
+
+# W33-6【正常系・リグレッション】余剰なし（既存 W28-29 と同一入力。本Issueのガード追加後も
+# 引き続き exit 0 であることを明示的に再確認する）
+W28_LOG=$(mktemp /tmp/todo-test-w33-6-XXXXXX); W28_RESP_CUR="$W28_SIMPLE_RESP"
+W33_6_OUT=$(w28_run activate 42 2026-09-10); W33_6_EC=$?
+assert_exit_ok "W33-6【正常系・リグレッション】activate 42 2026-09-10（余剰なし）: exit 0" "$W33_6_EC"
+assert_contains "W33-6: activate が更新される" "activate → 2026-09-10" "$W33_6_OUT"
+rm -f "$W28_LOG"
+
+# i18n
+# W33-7【en】未知フラグ
+W33_7_OUT=$(LANG_ENV=en OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W28_SIMPLE_RESP" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-09-02 \
+  node "$ENGINE" run activate 42 2026-09-10 --note x 2>&1); W33_7_EC=$?
+assert_exit_fail "W33-7【en】activate 42 2026-09-10 --note x: exit非0" "$W33_7_EC"
+assert_contains "W33-7(en): エラー本文" "Error: unknown flag: --note" "$W33_7_OUT"
+assert_no_japanese "W33-7(en): 出力に日本語が含まれない" "$W33_7_OUT"
+
+# W33-8【en】余剰位置引数
+W33_8_OUT=$(LANG_ENV=en OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W28_SIMPLE_RESP" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-09-02 \
+  node "$ENGINE" run activate 42 2026-09-10 extra 2>&1); W33_8_EC=$?
+assert_exit_fail "W33-8【en】activate 42 2026-09-10 extra: exit非0" "$W33_8_EC"
+assert_contains "W33-8(en): エラー本文" "Error: extra arguments: extra" "$W33_8_OUT"
+assert_contains "W33-8(en): ヒント" 'Hint: if the value contains spaces, quote it: /todo activate 42 "2026-09-10 extra"' "$W33_8_OUT"
+assert_no_japanese "W33-8(en): 出力に日本語が含まれない" "$W33_8_OUT"
+
+# ── runUnlink --force の未知フラグ検出 ──
+
+# W33-10【核心・直接再現】--force のtypo（--forse）を未知フラグとして検出する
+W1937_UNLINK_LOG=$(mktemp /tmp/todo-test-w33-10-XXXXXX); : > "$W1937_UNLINK_LOG"
+W33_10_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV='{}' OCTOKIT_STUB_LOG_ENV="$W1937_UNLINK_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run unlink 42 --forse 2>&1); W33_10_EC=$?
+assert_exit_fail "W33-10【核心】unlink 42 --forse（typo）: exit非0" "$W33_10_EC"
+assert_contains "W33-10: エラー本文（不明なフラグ）" "エラー: 不明なフラグです: --forse" "$W33_10_OUT"
+assert_eq "W33-10【副作用ゼロ】API 呼び出しログが0行（issues.getにも到達しない）" "0" "$(wc -l < "$W1937_UNLINK_LOG" | tr -d ' ')"
+rm -f "$W1937_UNLINK_LOG"
+
+# W33-11【正常系・リグレッション】--force（許可されたフラグ）は引き続き通る（W1880-4と同一入力）
+W1937_UNLINK_LOG=$(mktemp /tmp/todo-test-w33-11-XXXXXX)
+W33_11_ISSUE='{"number":8710,"id":988710,"body":"project: #8700\n","labels":[]}'
+W33_11_RESP="{\"issues.get\":[{\"data\":$W33_11_ISSUE}],\"GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"data\":[]}],\"issues.update\":[{}]}"
+W33_11_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W33_11_RESP" OCTOKIT_STUB_LOG_ENV="$W1937_UNLINK_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run unlink 8710 --force 2>&1); W33_11_EC=$?
+assert_exit_ok "W33-11【正常系・リグレッション】unlink 8710 --force: exit 0" "$W33_11_EC"
+assert_not_contains "W33-11: 未知フラグ扱いされていない" "不明なフラグ" "$W33_11_OUT"
+rm -f "$W1937_UNLINK_LOG"
+
+# W33-12【正常系・リグレッション】フラグなし（既存動作、guardが誤検知しないこと）
+W1937_UNLINK_LOG=$(mktemp /tmp/todo-test-w33-12-XXXXXX)
+W33_12_ISSUE='{"number":8711,"id":988711,"body":"project: #8700\n","labels":[]}'
+W33_12_RESP="{\"issues.get\":[{\"data\":$W33_12_ISSUE}],\"GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"data\":[{\"id\":988711}]}],\"DELETE /repos/{owner}/{repo}/issues/{issue_number}/sub_issue\":[{}],\"issues.update\":[{}]}"
+W33_12_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W33_12_RESP" OCTOKIT_STUB_LOG_ENV="$W1937_UNLINK_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run unlink 8711 2>&1); W33_12_EC=$?
+assert_exit_ok "W33-12【正常系・リグレッション】unlink 8711（フラグなし）: exit 0" "$W33_12_EC"
+rm -f "$W1937_UNLINK_LOG"
+
+# i18n
+# W33-13【en】unlink の未知フラグ
+W33_13_OUT=$(LANG_ENV=en OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV='{}' \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run unlink 42 --forse 2>&1); W33_13_EC=$?
+assert_exit_fail "W33-13【en】unlink 42 --forse: exit非0" "$W33_13_EC"
+assert_contains "W33-13(en): エラー本文" "Error: unknown flag: --forse" "$W33_13_OUT"
+assert_no_japanese "W33-13(en): 出力に日本語が含まれない" "$W33_13_OUT"
+
+# ガード除去による回帰検出は #1921/#1934 各弾と同型のため、テストコード内には実装しない
+# （case 'activate' に追加した guardUnknownFlag/guardExtraPositional 呼び出し、
+# および runUnlink に追加した guardUnknownFlag 呼び出しを一時的にコメントアウトして
+# 実行し、W33-1/2/3/4/5/7/8/10/13 が全件 FAIL することを実装時に手動で確認済み。
+# 詳細は完了報告を参照）。
+
+# ──────────────────────────────────────────
+# §W34  引数ガード未配線・余剰トークン黙殺の残り5件（Issue #1938）
+# #1937 パート3（横断調査）で発見された残存候補5件。1件ずつ独立に判定器を選定した。
+#   1. runMigrateSubIssue の --dry-run タイポ黙殺（デフォルトが本実行側＝危険側に化ける）
+#   2. runPromoteProject の --outcome タイポ黙殺・クォート漏れの位置引数余剰
+#   3. runView save の GTD/優先度/@ctx いずれにも一致しないトークンの黙殺
+#   4. runShow / runReviewSomeday の余剰トークン黙殺（いずれも第2の位置引数スロットを
+#      持たないため guardExtraPositional は対象外。#1937 の runUnlink と同型）
+#   5. runReport の不正な sub の暗黙フォールバック（フラグのtypoではなく位置引数の値
+#      そのものが不正なパターンのため、guard関数は使わず専用の loud エラーを追加）
+# ──────────────────────────────────────────
+echo ""
+echo "§W34  引数ガード未配線・余剰トークン黙殺の残り5件（Issue #1938）"
+
+# ── 1. runMigrateSubIssue の --dry-run タイポ ──
+
+# W34-1【核心・直接再現】--dryrun（ハイフン抜けタイポ）を未知フラグとして検出する。
+# これが本Issueの最重要ケース: --dry-run のタイポはデフォルト(dryRun=false)に落ち、
+# ドライランのつもりで実行したユーザーに対しaddSubIssue()の一括登録が実際に走っていた。
+W34_1_LOG=$(mktemp /tmp/todo-test-w34-1-XXXXXX); : > "$W34_1_LOG"
+W34_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV='{}' OCTOKIT_STUB_LOG_ENV="$W34_1_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run migrate sub-issue --dryrun 2>&1); W34_1_EC=$?
+assert_exit_fail "W34-1【核心】migrate sub-issue --dryrun（タイポ）: exit非0" "$W34_1_EC"
+assert_contains "W34-1: エラー本文（不明なフラグ）" "エラー: 不明なフラグです: --dryrun" "$W34_1_OUT"
+assert_eq "W34-1【副作用ゼロ】API呼び出しログが0行（fetchAllOpen/addSubIssueにも到達しない）" \
+  "0" "$(wc -l < "$W34_1_LOG" | tr -d ' ')"
+rm -f "$W34_1_LOG"
+
+# W34-2【境界値】--dry-run と typo フラグが混在する場合も未知フラグが先に発火する
+W34_2_LOG=$(mktemp /tmp/todo-test-w34-2-XXXXXX); : > "$W34_2_LOG"
+W34_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV='{}' OCTOKIT_STUB_LOG_ENV="$W34_2_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run migrate sub-issue --dry-run --extra 2>&1); W34_2_EC=$?
+assert_exit_fail "W34-2【境界値】migrate sub-issue --dry-run --extra: exit非0" "$W34_2_EC"
+assert_contains "W34-2: エラー本文（不明なフラグ）" "エラー: 不明なフラグです: --extra" "$W34_2_OUT"
+assert_eq "W34-2【副作用ゼロ】API呼び出しログが0行" "0" "$(wc -l < "$W34_2_LOG" | tr -d ' ')"
+rm -f "$W34_2_LOG"
+
+# i18n
+# W34-3【en】未知フラグ
+W34_3_OUT=$(LANG_ENV=en OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV='{}' \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run migrate sub-issue --dryrun 2>&1); W34_3_EC=$?
+assert_exit_fail "W34-3【en】migrate sub-issue --dryrun: exit非0" "$W34_3_EC"
+assert_contains "W34-3(en): エラー本文" "Error: unknown flag: --dryrun" "$W34_3_OUT"
+assert_no_japanese "W34-3(en): 出力に日本語が含まれない" "$W34_3_OUT"
+
+# 正常系（--dry-run 正しい表記 / フラグなし本実行）のリグレッションは既存の
+# W16-20a/b・#1879-1/2/3・W23-1/2 が本関数を経由して既に検証済み（本パートのガード追加後も
+# 全件PASSすることをテスト実行時に確認する）。
+
+# ── 2. runPromoteProject の --outcome タイポ・クォート漏れ ──
+
+# W34-10【核心・直接再現】--outcom（タイポ）を未知フラグとして検出する
+W34_10_LOG=$(mktemp /tmp/todo-test-w34-10-XXXXXX); : > "$W34_10_LOG"
+W34_10_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV='{}' OCTOKIT_STUB_LOG_ENV="$W34_10_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run promote-project 42 --outcom "New Title" 2>&1); W34_10_EC=$?
+assert_exit_fail "W34-10【核心】promote-project 42 --outcom（タイポ）: exit非0" "$W34_10_EC"
+assert_contains "W34-10: エラー本文（不明なフラグ）" "エラー: 不明なフラグです: --outcom" "$W34_10_OUT"
+assert_eq "W34-10【副作用ゼロ】API呼び出しログが0行（addLabels等にも到達しない）" \
+  "0" "$(wc -l < "$W34_10_LOG" | tr -d ' ')"
+rm -f "$W34_10_LOG"
+
+# W34-11【核心・クォート漏れ】--outcome の値をクォートし忘れると従来は先頭語だけが
+# 使われ残りが黙って消えていた。位置引数の余剰としてエラー終了することを検証する
+W34_11_LOG=$(mktemp /tmp/todo-test-w34-11-XXXXXX); : > "$W34_11_LOG"
+W34_11_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV='{}' OCTOKIT_STUB_LOG_ENV="$W34_11_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run promote-project 42 --outcome New Marketing Campaign 2>&1); W34_11_EC=$?
+assert_exit_fail "W34-11【核心】promote-project 42 --outcome New Marketing Campaign（クォート漏れ）: exit非0" "$W34_11_EC"
+assert_contains "W34-11: エラー本文（余分な引数）" "エラー: 余分な引数があります: Marketing Campaign" "$W34_11_OUT"
+assert_contains "W34-11: ヒントにクォート済み実行例" \
+  'ヒント: 値に空白が含まれる場合はクォートしてください: /todo promote-project 42 --outcome "New Marketing Campaign"' "$W34_11_OUT"
+assert_eq "W34-11【副作用ゼロ】API呼び出しログが0行" "0" "$(wc -l < "$W34_11_LOG" | tr -d ' ')"
+rm -f "$W34_11_LOG"
+
+# W34-12【正常系・リグレッション】--outcome を正しくクォートした場合は引き続き通る
+# （#1938 以前は --outcome の end-to-end テストが1件も存在しなかった）
+W34_12_ISSUE='{"number":21700,"title":"some task","body":"","labels":[]}'
+W34_12_RESP="{\"issues.get\":[{\"data\":$W34_12_ISSUE}],\"GET /repos/{owner}/{repo}/labels/{name}\":[{}],\"issues.addLabels\":[{}],\"issues.update\":[{}]}"
+W34_12_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W34_12_RESP" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run promote-project 21700 --outcome "New Marketing Campaign" 2>&1); W34_12_EC=$?
+assert_exit_ok "W34-12【正常系・リグレッション】promote-project 21700 --outcome \"New Marketing Campaign\": exit 0" "$W34_12_EC"
+assert_contains "W34-12: タイトルが更新される" "「New Marketing Campaign」をプロジェクトに昇格しました" "$W34_12_OUT"
+
+# i18n
+# W34-13【en】未知フラグ
+W34_13_OUT=$(LANG_ENV=en OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV='{}' \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run promote-project 42 --outcom "New Title" 2>&1); W34_13_EC=$?
+assert_exit_fail "W34-13【en】promote-project 42 --outcom: exit非0" "$W34_13_EC"
+assert_contains "W34-13(en): エラー本文" "Error: unknown flag: --outcom" "$W34_13_OUT"
+assert_no_japanese "W34-13(en): 出力に日本語が含まれない" "$W34_13_OUT"
+
+# ── 3. runView save の余剰トークン ──
+# runView save はファイルI/O（~/.claude/todo-views.json）のため、実HOMEを汚さないよう
+# isolated HOME サンドボックスを使う（§W3 と同じ作法）。
+W34_REAL_HOME="$HOME"
+W34_FAKE_HOME=$(mktemp -d /tmp/todo-test-w34-home-XXXXXX)
+mkdir -p "$W34_FAKE_HOME/.claude"
+printf '{}' > "$W34_FAKE_HOME/.claude/todo-views.json"
+export HOME="$W34_FAKE_HOME"
+
+# W34-20【核心・非フラグ余剰】GTD/優先度/@ctxいずれにも一致しない語（waiting のタイポ）
+W34_20_OUT=$(OCTOKIT_STUB_ENV="$STUB" TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run view save vw1 waitng 2>&1); W34_20_EC=$?
+assert_exit_fail "W34-20【核心】view save vw1 waitng（非対応語）: exit非0" "$W34_20_EC"
+assert_contains "W34-20: エラー本文（余分な引数）" "エラー: 余分な引数があります: waitng" "$W34_20_OUT"
+assert_contains "W34-20: ヒント（1つだけ指定できます）" "ヒント: このコマンドは値を1つだけ指定できます" "$W34_20_OUT"
+
+W34_20_LIST_OUT=$(OCTOKIT_STUB_ENV="$STUB" TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run view list 2>&1)
+assert_not_contains "W34-20【副作用ゼロ】エラー時はビューが保存されない" "vw1" "$W34_20_LIST_OUT"
+
+# W34-21【核心・フラグ字面】--nxt（フラグらしきtypo）を未知フラグとして検出する
+W34_21_OUT=$(OCTOKIT_STUB_ENV="$STUB" TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run view save vw2 --nxt 2>&1); W34_21_EC=$?
+assert_exit_fail "W34-21【核心】view save vw2 --nxt（フラグ字面typo）: exit非0" "$W34_21_EC"
+assert_contains "W34-21: エラー本文（不明なフラグ）" "エラー: 不明なフラグです: --nxt" "$W34_21_OUT"
+
+# W34-22【呼び出し順序の固定】非対応語とフラグ字面が混在した場合guardUnknownFlagが先に発火する
+W34_22_OUT=$(OCTOKIT_STUB_ENV="$STUB" TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run view save vw3 next waitng --nxt 2>&1); W34_22_EC=$?
+assert_exit_fail "W34-22【呼び出し順序】非対応語+フラグ字面混在: exit非0" "$W34_22_EC"
+assert_contains "W34-22: guardUnknownFlagが先に発火" "エラー: 不明なフラグです: --nxt" "$W34_22_OUT"
+assert_not_contains "W34-22: guardExtraPositionalのエラーは出ない" "余分な引数があります" "$W34_22_OUT"
+
+# W34-23【正常系・リグレッション】GTD/@ctx/優先度の正しい組み合わせは引き続き通る
+W34_23_OUT=$(OCTOKIT_STUB_ENV="$STUB" TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run view save vw4 next @home p1 2>&1); W34_23_EC=$?
+assert_exit_ok "W34-23【正常系・リグレッション】view save vw4 next @home p1: exit 0" "$W34_23_EC"
+assert_contains "W34-23: 保存メッセージ" "ビュー「vw4」を保存しました。" "$W34_23_OUT"
+
+# i18n
+# W34-24【en】非対応語
+W34_24_OUT=$(LANG_ENV=en OCTOKIT_STUB_ENV="$STUB" TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run view save vw5 waitng 2>&1); W34_24_EC=$?
+assert_exit_fail "W34-24【en】view save vw5 waitng: exit非0" "$W34_24_EC"
+assert_contains "W34-24(en): エラー本文" "Error: extra arguments: waitng" "$W34_24_OUT"
+assert_no_japanese "W34-24(en): 出力に日本語が含まれない" "$W34_24_OUT"
+
+export HOME="$W34_REAL_HOME"
+
+# ── 4a. runShow の --json タイポ ──
+
+# W34-30【核心・直接再現】--jsn（タイポ）を未知フラグとして検出する
+W34_30_LOG=$(mktemp /tmp/todo-test-w34-30-XXXXXX); : > "$W34_30_LOG"
+W34_30_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV='{}' OCTOKIT_STUB_LOG_ENV="$W34_30_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run show 42 --jsn 2>&1); W34_30_EC=$?
+assert_exit_fail "W34-30【核心】show 42 --jsn（タイポ）: exit非0" "$W34_30_EC"
+assert_contains "W34-30: エラー本文（不明なフラグ）" "エラー: 不明なフラグです: --jsn" "$W34_30_OUT"
+assert_eq "W34-30【副作用ゼロ】API呼び出しログが0行" "0" "$(wc -l < "$W34_30_LOG" | tr -d ' ')"
+rm -f "$W34_30_LOG"
+
+# W34-31【正常系・リグレッション】--json（正しいフラグ）は引き続きJSON出力になる
+W34_31_ISSUE='{"number":9200,"id":992000,"title":"T","body":"","labels":[]}'
+W34_31_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="{\"issues.get\":[{\"data\":$W34_31_ISSUE}]}" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run show 9200 --json 2>&1); W34_31_EC=$?
+assert_exit_ok "W34-31【正常系・リグレッション】show 9200 --json: exit 0" "$W34_31_EC"
+assert_contains "W34-31: JSON出力（number）" "\"number\": 9200" "$W34_31_OUT"
+
+# i18n
+# W34-32【en】未知フラグ
+W34_32_OUT=$(LANG_ENV=en OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV='{}' \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run show 42 --jsn 2>&1); W34_32_EC=$?
+assert_exit_fail "W34-32【en】show 42 --jsn: exit非0" "$W34_32_EC"
+assert_contains "W34-32(en): エラー本文" "Error: unknown flag: --jsn" "$W34_32_OUT"
+assert_no_japanese "W34-32(en): 出力に日本語が含まれない" "$W34_32_OUT"
+
+# ── 4b. runReviewSomeday の余剰トークン ──
+
+# W34-40【核心・直接再現】未知フラグ字面を検出する
+W34_40_LOG=$(mktemp /tmp/todo-test-w34-40-XXXXXX); : > "$W34_40_LOG"
+W34_40_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV='{}' OCTOKIT_STUB_LOG_ENV="$W34_40_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run review-someday 42 --nte "x" 2>&1); W34_40_EC=$?
+assert_exit_fail "W34-40【核心】review-someday 42 --nte（タイポ）: exit非0" "$W34_40_EC"
+assert_contains "W34-40: エラー本文（不明なフラグ）" "エラー: 不明なフラグです: --nte" "$W34_40_OUT"
+assert_eq "W34-40【副作用ゼロ】API呼び出しログが0行" "0" "$(wc -l < "$W34_40_LOG" | tr -d ' ')"
+rm -f "$W34_40_LOG"
+
+# W34-41【正常系・リグレッション】フラグなしは引き続き通る
+W34_41_ISSUE='{"number":9300,"id":993000,"body":"","labels":[{"name":"🌈 someday"}]}'
+W34_41_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="{\"issues.get\":[{\"data\":$W34_41_ISSUE}],\"issues.update\":[{}]}" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run review-someday 9300 2>&1); W34_41_EC=$?
+assert_exit_ok "W34-41【正常系・リグレッション】review-someday 9300: exit 0" "$W34_41_EC"
+assert_contains "W34-41: reviewed_at 更新メッセージ" "の reviewed_at を" "$W34_41_OUT"
+
+# i18n
+# W34-42【en】未知フラグ
+W34_42_OUT=$(LANG_ENV=en OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV='{}' \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run review-someday 42 --nte x 2>&1); W34_42_EC=$?
+assert_exit_fail "W34-42【en】review-someday 42 --nte x: exit非0" "$W34_42_EC"
+assert_contains "W34-42(en): エラー本文" "Error: unknown flag: --nte" "$W34_42_OUT"
+assert_no_japanese "W34-42(en): 出力に日本語が含まれない" "$W34_42_OUT"
+
+# ── 5. runReport の不正な sub の暗黙フォールバック ──
+
+# W34-50【核心・直接再現】不正なsub（'weekly'のタイポ）を loud エラーにする。
+# 修正前は days=7（weekly相当）へ黙ってフォールバックしていた
+W34_50_LOG=$(mktemp /tmp/todo-test-w34-50-XXXXXX); : > "$W34_50_LOG"
+W34_50_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV='{}' OCTOKIT_STUB_LOG_ENV="$W34_50_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run report weeky 2>&1); W34_50_EC=$?
+assert_exit_fail "W34-50【核心】report weeky（タイポ）: exit非0" "$W34_50_EC"
+assert_contains "W34-50: エラー本文（不正な期間指定）" "エラー: 不正な期間指定です: weeky" "$W34_50_OUT"
+assert_eq "W34-50【副作用ゼロ】API呼び出しログが0行（fetchAllOpen等にも到達しない）" \
+  "0" "$(wc -l < "$W34_50_LOG" | tr -d ' ')"
+rm -f "$W34_50_LOG"
+
+# W34-51【核心・より深刻な例】'monthy'（monthlyのタイポ）は従来 days=7 に化けていた
+# （30日のつもりが黙って7日になり、出力を見ても気づけない）
+W34_51_LOG=$(mktemp /tmp/todo-test-w34-51-XXXXXX); : > "$W34_51_LOG"
+W34_51_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV='{}' OCTOKIT_STUB_LOG_ENV="$W34_51_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run report monthy 2>&1); W34_51_EC=$?
+assert_exit_fail "W34-51【核心】report monthy（タイポ）: exit非0" "$W34_51_EC"
+assert_contains "W34-51: エラー本文" "エラー: 不正な期間指定です: monthy" "$W34_51_OUT"
+assert_eq "W34-51【副作用ゼロ】API呼び出しログが0行" "0" "$(wc -l < "$W34_51_LOG" | tr -d ' ')"
+rm -f "$W34_51_LOG"
+
+# W34-52【正常系・リグレッション】引数なし（デフォルトweekly相当）は引き続き通る
+W34_52_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV='{"issues.listForRepo":[{"data":[]},{"data":[]}]}' \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run report 2>&1); W34_52_EC=$?
+assert_exit_ok "W34-52【正常系・リグレッション】report（引数なし）: exit 0" "$W34_52_EC"
+
+# W34-53【正常系・リグレッション】weekly/monthly/Nd はいずれも引き続き通る
+W34_53_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV='{"issues.listForRepo":[{"data":[]},{"data":[]}]}' \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run report monthly 2>&1); W34_53_EC=$?
+assert_exit_ok "W34-53【正常系・リグレッション】report monthly: exit 0" "$W34_53_EC"
+W34_54_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV='{"issues.listForRepo":[{"data":[]},{"data":[]}]}' \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run report 3d 2>&1); W34_54_EC=$?
+assert_exit_ok "W34-54【正常系・リグレッション】report 3d: exit 0" "$W34_54_EC"
+
+# i18n
+# W34-55【en】不正なsub
+W34_55_OUT=$(LANG_ENV=en OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV='{}' \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run report weeky 2>&1); W34_55_EC=$?
+assert_exit_fail "W34-55【en】report weeky: exit非0" "$W34_55_EC"
+assert_contains "W34-55(en): エラー本文" "Error: invalid period: weeky" "$W34_55_OUT"
+assert_no_japanese "W34-55(en): 出力に日本語が含まれない" "$W34_55_OUT"
+
+# ガード除去による回帰検出: 本パートで追加した5箇所（runMigrateSubIssue の
+# guardUnknownFlag / runPromoteProject の guardUnknownFlag+guardExtraPositional /
+# runView save の guardUnknownFlag+guardExtraPositional / runShow の guardUnknownFlag /
+# runReviewSomeday の guardUnknownFlag / runReport の loud エラー分岐）を一時的に
+# コメントアウト（runReport は else 節を no-op に置換）して実行し、
+# W34-1/2/3/10/11/13/20/21/22/24/30/32/40/42/50/51/55 が全件 FAIL することを
+# 実装時に手動で確認済み（詳細は完了報告を参照）。
+
+# ──────────────────────────────────────────
+# §W35  template save が #tag を保存しない（@ctx は保存するのに非対称）（Issue #1936）
+# runTemplate save インライン形式が parsed.tags を読まず #tag が黙って消えていた問題
+# （旧テストは §W29-32 参照）を修正し、@ctx と対称に #tag も
+# インライン形式・from <#>形式・use（Issue作成時のラベル付与）の全経路で通す。
+# ──────────────────────────────────────────
+echo ""
+echo "§W35  template save が #tag を保存しない（@ctx は保存するのに非対称）（Issue #1936）"
+
+# テンプレートDBの指定フィールドを厳密に読み出す（配列の順序・内容を正確に検証するため、
+# 文字列の部分一致ではなく JSON を構造的にパースする）
+extract_template_field() {
+  local file="$1" name="$2" field="$3"
+  FILE="$file" NAME="$name" FIELD="$field" node -e "
+    const fs = require('fs');
+    let data;
+    try { data = JSON.parse(fs.readFileSync(process.env.FILE, 'utf8')); }
+    catch(e) { process.stdout.write('__PARSE_ERROR__'); process.exit(0); }
+    const tmpl = data[process.env.NAME];
+    if (!tmpl) { process.stdout.write('__NOT_FOUND__'); process.exit(0); }
+    const v = tmpl[process.env.FIELD];
+    process.stdout.write(JSON.stringify(v === undefined ? null : v));
+  "
+}
+
+W35_REAL_HOME="$HOME"
+W35_FAKE_HOME=$(mktemp -d /tmp/todo-test-w35-home-XXXXXX)
+mkdir -p "$W35_FAKE_HOME/.claude"
+export HOME="$W35_FAKE_HOME"
+if [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* ]]; then
+  W35_REAL_USERPROFILE="${USERPROFILE:-}"
+  export USERPROFILE="$W35_FAKE_HOME"
+fi
+W35_TMPL_FILE="$W35_FAKE_HOME/.claude/todo-templates.json"
+
+w35_run() {
+  OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W35_RESP_CUR" OCTOKIT_STUB_LOG_ENV="$W35_LOG" \
+    TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-09-06 \
+    node "$ENGINE" run "$@" 2>&1
+}
+
+# W35-1【正常系・核心】template save インライン形式: @ctx と #tag を両方保存する
+W35_LOG=$(mktemp /tmp/todo-test-w35-1-XXXXXX); : > "$W35_LOG"; W35_RESP_CUR='{}'
+W35_1_OUT=$(w35_run template save tmpl35a next @office '#urgent'); W35_1_EC=$?
+assert_exit_ok "W35-1【正常系・核心】template save tmpl35a next @office #urgent: exit 0" "$W35_1_EC"
+assert_eq "W35-1: context が保存される" '["@office"]' "$(extract_template_field "$W35_TMPL_FILE" tmpl35a context)"
+assert_eq "W35-1: tags が保存される" '["#urgent"]' "$(extract_template_field "$W35_TMPL_FILE" tmpl35a tags)"
+rm -f "$W35_LOG"
+
+# W35-2【入力文字パターン】複数の #tag をすべて保存する
+W35_LOG=$(mktemp /tmp/todo-test-w35-2-XXXXXX); : > "$W35_LOG"; W35_RESP_CUR='{}'
+W35_2_OUT=$(w35_run template save tmpl35b next '#one' '#two'); W35_2_EC=$?
+assert_exit_ok "W35-2【入力文字パターン】template save tmpl35b next #one #two: exit 0" "$W35_2_EC"
+assert_eq "W35-2: 複数タグが順序どおり保存される" '["#one","#two"]' "$(extract_template_field "$W35_TMPL_FILE" tmpl35b tags)"
+rm -f "$W35_LOG"
+
+# W35-3【境界値】#tag を指定しない場合は空配列で保存される（後方互換のデフォルト値）
+W35_LOG=$(mktemp /tmp/todo-test-w35-3-XXXXXX); : > "$W35_LOG"; W35_RESP_CUR='{}'
+W35_3_OUT=$(w35_run template save tmpl35c next); W35_3_EC=$?
+assert_exit_ok "W35-3【境界値】template save tmpl35c next（タグなし）: exit 0" "$W35_3_EC"
+assert_eq "W35-3: tags は空配列" '[]' "$(extract_template_field "$W35_TMPL_FILE" tmpl35c tags)"
+rm -f "$W35_LOG"
+
+# W35-4【セキュリティ・異常系】不正文字を含む #tag は validateTag が拒否し書き込まれない
+# （@ctx と同じ FORBIDDEN_CHARS 判定を経由することの確認。add の validateTag 呼び出しと
+# 同型のガードが template save インライン形式にも効いていることを確認する）
+W35_LOG=$(mktemp /tmp/todo-test-w35-4-XXXXXX); : > "$W35_LOG"; W35_RESP_CUR='{}'
+W35_4_OUT=$(w35_run template save tmpl35d next '#rm;rf'); W35_4_EC=$?
+assert_exit_fail "W35-4【セキュリティ】template save tmpl35d next #rm;rf: exit非0" "$W35_4_EC"
+assert_contains "W35-4: エラー本文（タグ名の不正文字）" "エラー: タグ名に不正文字が含まれています" "$W35_4_OUT"
+assert_eq "W35-4【副作用ゼロ】テンプレートファイルに書き込まれない" "__NOT_FOUND__" "$(extract_template_field "$W35_TMPL_FILE" tmpl35d tags)"
+assert_eq "W35-4【核心】API呼び出しが発生していない" "0" "$(wc -l < "$W35_LOG" | tr -d ' ')"
+rm -f "$W35_LOG"
+
+# W35-5【正常系・save-from】既存 Issue のラベルから #tag を抽出して保存する
+# （GTD・project・context・@claude・priority 以外のラベルを tags とする線引き。
+# issueToJsonObj()/renderIssueList() の systemLabels と同じ判定を save-from にも適用したもの）
+W35_FROM1_RESP='{"issues.get":[{"data":{"number":142,"id":90142,"title":"元Issue","body":"","labels":[{"name":"🎯 next"},{"name":"@office"},{"name":"p2"},{"name":"#deploy"}]}}]}'
+W35_LOG=$(mktemp /tmp/todo-test-w35-5-XXXXXX); : > "$W35_LOG"; W35_RESP_CUR="$W35_FROM1_RESP"
+W35_5_OUT=$(w35_run template save tmplFrom1 from 142); W35_5_EC=$?
+assert_exit_ok "W35-5【正常系・save-from】template save tmplFrom1 from 142: exit 0" "$W35_5_EC"
+assert_eq "W35-5: gtd は next" '"next"' "$(extract_template_field "$W35_TMPL_FILE" tmplFrom1 gtd)"
+assert_eq "W35-5: context は @office のみ" '["@office"]' "$(extract_template_field "$W35_TMPL_FILE" tmplFrom1 context)"
+assert_eq "W35-5【核心】tags は #deploy のみ（GTD/context/priorityラベルを含まない）" '["#deploy"]' "$(extract_template_field "$W35_TMPL_FILE" tmplFrom1 tags)"
+rm -f "$W35_LOG"
+
+# W35-6【境界値・save-from】@claude ラベル・複数タグが混在するケース
+# （@claude はシステムラベルとして除外され、tags には現れないこと）
+W35_FROM2_RESP='{"issues.get":[{"data":{"number":143,"id":90143,"title":"元Issue2","body":"","labels":[{"name":"📥 inbox"},{"name":"@claude"},{"name":"#a"},{"name":"#b"}]}}]}'
+W35_LOG=$(mktemp /tmp/todo-test-w35-6-XXXXXX); : > "$W35_LOG"; W35_RESP_CUR="$W35_FROM2_RESP"
+W35_6_OUT=$(w35_run template save tmplFrom2 from 143); W35_6_EC=$?
+assert_exit_ok "W35-6【境界値・save-from】template save tmplFrom2 from 143: exit 0" "$W35_6_EC"
+assert_eq "W35-6【核心】@claude を除外し #a・#b のみ tags に入る" '["#a","#b"]' "$(extract_template_field "$W35_TMPL_FILE" tmplFrom2 tags)"
+rm -f "$W35_LOG"
+
+# W35-7【正常系・use】テンプレートの tags が Issue 作成時にラベルとして付与される
+printf '%s' '{"tmplUse1":{"gtd":"next","context":["@office"],"tags":["#urgent","#blog"],"priority":"p2"}}' > "$W35_TMPL_FILE"
+W35_USE1_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{},{},{},{}],"issues.create":[{"data":{"number":7010,"id":97010}}]}'
+W35_LOG=$(mktemp /tmp/todo-test-w35-7-XXXXXX); : > "$W35_LOG"; W35_RESP_CUR="$W35_USE1_RESP"
+W35_7_OUT=$(w35_run template use tmplUse1); W35_7_EC=$?
+assert_exit_ok "W35-7【正常系・use】template use tmplUse1: exit 0" "$W35_7_EC"
+assert_eq "W35-7【核心】タグ・コンテキスト・優先度の3種で GET label が4回呼ばれる" "4" "$(log_count "$W35_LOG" "GET /repos/{owner}/{repo}/labels/{name}")"
+W35_7_CREATE_ARGS=$(log_lines_for_method "$W35_LOG" issues.create)
+assert_contains "W35-7: issues.create の labels に #urgent が含まれる" '#urgent' "$W35_7_CREATE_ARGS"
+assert_contains "W35-7: issues.create の labels に #blog が含まれる" '#blog' "$W35_7_CREATE_ARGS"
+assert_contains "W35-7: issues.create の labels に @office が含まれる" '@office' "$W35_7_CREATE_ARGS"
+rm -f "$W35_LOG"
+
+# W35-8【後方互換・境界値】tags キーが存在しない旧形式テンプレートは
+# template show/list/use のいずれでも undefined を出さず空配列扱いになる
+printf '%s' '{"legacy1":{"gtd":"next","context":["@office"],"priority":"p3"}}' > "$W35_TMPL_FILE"
+W35_LOG=$(mktemp /tmp/todo-test-w35-8-show-XXXXXX); : > "$W35_LOG"; W35_RESP_CUR='{}'
+W35_8_SHOW_OUT=$(w35_run template show legacy1); W35_8_SHOW_EC=$?
+assert_exit_ok "W35-8【後方互換】template show legacy1（tagsキーなし）: exit 0" "$W35_8_SHOW_EC"
+assert_not_contains "W35-8: show 出力に undefined が出ない" "undefined" "$W35_8_SHOW_OUT"
+assert_contains "W35-8: show 出力に tags 行がある（空でも表示）" "  tags:" "$W35_8_SHOW_OUT"
+rm -f "$W35_LOG"
+
+W35_LOG=$(mktemp /tmp/todo-test-w35-8-list-XXXXXX); : > "$W35_LOG"; W35_RESP_CUR='{}'
+W35_8_LIST_OUT=$(w35_run template list); W35_8_LIST_EC=$?
+assert_exit_ok "W35-8【後方互換】template list（tagsキーなしを含む一覧）: exit 0" "$W35_8_LIST_EC"
+assert_not_contains "W35-8: list 出力に undefined が出ない" "undefined" "$W35_8_LIST_OUT"
+rm -f "$W35_LOG"
+
+W35_USE_LEGACY_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{},{}],"issues.create":[{"data":{"number":7011,"id":97011}}]}'
+W35_LOG=$(mktemp /tmp/todo-test-w35-8-use-XXXXXX); : > "$W35_LOG"; W35_RESP_CUR="$W35_USE_LEGACY_RESP"
+W35_8_USE_OUT=$(w35_run template use legacy1); W35_8_USE_EC=$?
+assert_exit_ok "W35-8【後方互換・核心】template use legacy1（tagsキーなし）: exit 0" "$W35_8_USE_EC"
+assert_eq "W35-8【核心】タグなしなので GET label は context+priority の2回のみ" "2" "$(log_count "$W35_LOG" "GET /repos/{owner}/{repo}/labels/{name}")"
+W35_8_USE_CREATE_ARGS=$(log_lines_for_method "$W35_LOG" issues.create)
+assert_not_contains "W35-8: issues.create の labels に undefined が混入しない" "undefined" "$W35_8_USE_CREATE_ARGS"
+rm -f "$W35_LOG"
+
+# W35-9【誤検知なし・回帰】guardUnsupportedFlag の対象コマンド一覧が更新され、
+# tags の「使えるコマンド」ヒントに template save が含まれること（FLAG_SUPPORTED_BY.tags の更新確認）
+W35_LOG=$(mktemp /tmp/todo-test-w35-9-XXXXXX); : > "$W35_LOG"; W35_RESP_CUR="$W28_DONE_RESP"
+W35_9_OUT=$(w35_run done 42 '#urgent'); W35_9_EC=$?
+assert_exit_fail "W35-9【誤検知なし・回帰】done 42 #urgent は引き続きエラー: exit非0" "$W35_9_EC"
+assert_contains "W35-9【核心】ヒントに template save が追加されている" "/todo add / /todo list / /todo template save" "$W35_9_OUT"
+rm -f "$W35_LOG"
+
+export HOME="$W35_REAL_HOME"
+if [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* ]]; then
+  export USERPROFILE="$W35_REAL_USERPROFILE"
+fi
+rm -rf "$W35_FAKE_HOME"
+
+# ガード除去による回帰検出: templateSave()/templateSaveFrom() の `t.tags = ...` 代入と
+# runTemplate save インライン分岐の `for (const tag of tags) validateTag(...)` を
+# 一時的にコメントアウトして実行し、W35-1/2/4/5/6 が確実に FAIL することを実装時に
+# 手動で確認済み（詳細は完了報告を参照）。
 
 # ──────────────────────────────────────────
 # 結果サマリー（run-tests.sh から集計加算するための機械可読な行）

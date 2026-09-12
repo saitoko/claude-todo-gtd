@@ -2195,14 +2195,14 @@ bash ~/.claude/todo.sh done <既存のIssue番号> @外出
 
 期待: exit 1 / `エラー: @ctx はこのコマンドでは使えません` / `ヒント: @ctx は /todo add / /todo list / /todo template save で使えます。` / API が呼ばれず対象Issueの状態が変わらないこと
 
-### 48-4. `template save`（インライン形式）は `@ctx` は使えるが `#tag` は使えないこと（パート1.5・非対称の確認）
+### 48-4. `template save`（インライン形式）は `@ctx` と `#tag` の両方を使えること（#1936 で対称化済み）
 
 ```
 bash ~/.claude/todo.sh template save 動作確認用 next @外出
 bash ~/.claude/todo.sh template save 動作確認用2 next "#tag例"
 ```
 
-期待: 1つ目は exit 0 でテンプレートが保存される（後片付けに `template delete 動作確認用` を実行）。2つ目は exit 1 / `エラー: #tag はこのコマンドでは使えません`（テンプレートは保存されない）
+期待: いずれも exit 0 でテンプレートが保存される（`template show 動作確認用2` で `tags:` 行に `#tag例` が表示される。後片付けに `template delete 動作確認用` / `template delete 動作確認用2` を実行）
 
 ### 48-5. `LANG_ENV=en` で英語メッセージが出ること
 

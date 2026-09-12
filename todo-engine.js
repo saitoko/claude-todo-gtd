@@ -76,12 +76,11 @@ const FLAG_SUPPORTED_BY = {
   body: ['add'],
   bodyFile: ['add'],
   labels: ['add'],
-  // #1934 パート1.5: @ctx は add / list / template save（インライン形式）で読まれる。
-  // #tag は add / list のみ（template save インラインは parsed.tags を読まない非対称が
-  // 実装コード上に存在する。これは仕様上望ましいか未確定のため tags には含めない。
-  // 詳細は todo-engine.js の runTemplate save インライン分岐のコメント参照）。
+  // #1934 パート1.5 / #1936: @ctx・#tag はいずれも add / list / template save
+  // （インライン形式・save-from 形式の両方）で読まれる。旧実装は #tag だけ
+  // template save から読んでいなかった非対称があったが #1936 で解消済み。
   contexts: ['add', 'list', 'template save'],
-  tags: ['add', 'list'],
+  tags: ['add', 'list', 'template save'],
 };
 
 // ─── i18n ───
@@ -192,6 +191,8 @@ const MESSAGES = {
     'report.ratio': '予実比',
     'report.est_act_count': '見積+実績あり',
     'report.recent_list': '## 完了タスク一覧（直近{n}）',
+    // #1938: sub（weekly/monthly/Nd）が不正なとき従来 days=7 へ黙ってフォールバックしていた。
+    'error.report_invalid_sub': 'エラー: 不正な期間指定です: {sub}',
     // テンプレート
     'template.none': '（テンプレートなし）',
     'template.not_found': 'エラー: テンプレート「{name}」は存在しません',
@@ -270,7 +271,7 @@ const MESSAGES = {
     // help
     'help.routine_hint': '🔁 routine ラベルは繰り返しタスク専用です。--recur オプションと組み合わせて使用してください。',
     'help.desc_note': '※ desc/edit のテキストに due:/activate: 等を含めると body で重複表示されます',
-    'help.unknown_flag_note': '※ 未知フラグをエラーにするコマンド: add / list / done / move / edit / comment / rename / due / desc / recur / priority / link / label / template / bulk / search / archive（search サブコマンドのみ）。フラグ名のタイプミスと、値を書き忘れた既知フラグが対象です（-- で始まる語をタイトルや本文に含めたい場合は全体をクォートしてください）\n※ 対象外: 上記以外のコマンド（show / stats など）は -- で始まる引数を従来どおり黙って無視します。\n※ 対象コマンドであっても、そのコマンドが読まないフラグ（例: add の --note）を渡すとエラーになります（不明なフラグとは別のメッセージです）。@ctx / #tag も同様で、そのコマンドが読まないものを渡すとエラーになります（例: done / move / edit / label add / bulk done の @ctx・#tag）。template save は @ctx は使えますが #tag は使えません\n※ due / recur / link / priority は値の直後に余分な引数を渡すとエラーになります（例: due 42 今週 金曜 は「金曜」が余剰）。空白を含む日付・パターンを渡す場合は値全体をクォートしてください（例: due 42 "今週 金曜"）',
+    'help.unknown_flag_note': '※ 未知フラグをエラーにするコマンド: add / list / done / move / edit / comment / rename / due / desc / recur / priority / link / label / template / bulk / search / archive（search サブコマンドのみ）。フラグ名のタイプミスと、値を書き忘れた既知フラグが対象です（-- で始まる語をタイトルや本文に含めたい場合は全体をクォートしてください）\n※ 対象外: 上記以外のコマンド（show / stats など）は -- で始まる引数を従来どおり黙って無視します。\n※ 対象コマンドであっても、そのコマンドが読まないフラグ（例: add の --note）を渡すとエラーになります（不明なフラグとは別のメッセージです）。@ctx / #tag も同様で、そのコマンドが読まないものを渡すとエラーになります（例: done / move / edit / label add / bulk done の @ctx・#tag）。template save は @ctx・#tag のいずれも使えます\n※ due / recur / link / priority は値の直後に余分な引数を渡すとエラーになります（例: due 42 今週 金曜 は「金曜」が余剰）。空白を含む日付・パターンを渡す場合は値全体をクォートしてください（例: due 42 "今週 金曜"）',
     // promote / activate
     'error.before_needs_due': 'エラー: --before を使うには --due が必要です',
     'error.before_format': 'エラー: --before は 14d / 2w 形式で指定してください（例: 14d, 2w）',
@@ -569,6 +570,7 @@ const MESSAGES = {
     'report.ratio': 'Ratio',
     'report.est_act_count': 'Has est+actual',
     'report.recent_list': '## Completed Tasks (last {n})',
+    'error.report_invalid_sub': 'Error: invalid period: {sub}',
     'template.none': '(No templates)',
     'template.not_found': 'Error: Template "{name}" not found',
     'template.saved': '✅ Template "{name}" saved.',
@@ -645,7 +647,7 @@ const MESSAGES = {
     // help
     'help.routine_hint': '🔁 routine label is for recurring tasks. Recommended to use with --recur option.',
     'help.desc_note': 'Note: including due:/activate: in desc/edit text causes duplicate display in body',
-    'help.unknown_flag_note': 'Note: unknown flags are rejected by these commands: add / list / done / move / edit / comment / rename / due / desc / recur / priority / link / label / template / bulk / search / archive (search subcommand only). This covers misspelled flag names and known flags whose value is missing (to keep a word starting with -- inside a title or body, quote the whole text).\nNote: not covered - other commands (show / stats, etc.) ignore arguments starting with -- silently.\nNote: even within the commands above, a flag the command itself does not read (e.g. --note on add) is now rejected with an error (a different message from an unknown-flag error). The same applies to @ctx / #tag (e.g. @ctx/#tag on done / move / edit / label add / bulk done). template save accepts @ctx but not #tag.\nNote: due / recur / link / priority reject extra arguments after the value (e.g. due 42 this week friday has an extra token). Quote the whole value if it contains spaces (e.g. due 42 "this week friday").',
+    'help.unknown_flag_note': 'Note: unknown flags are rejected by these commands: add / list / done / move / edit / comment / rename / due / desc / recur / priority / link / label / template / bulk / search / archive (search subcommand only). This covers misspelled flag names and known flags whose value is missing (to keep a word starting with -- inside a title or body, quote the whole text).\nNote: not covered - other commands (show / stats, etc.) ignore arguments starting with -- silently.\nNote: even within the commands above, a flag the command itself does not read (e.g. --note on add) is now rejected with an error (a different message from an unknown-flag error). The same applies to @ctx / #tag (e.g. @ctx/#tag on done / move / edit / label add / bulk done). template save accepts both @ctx and #tag.\nNote: due / recur / link / priority reject extra arguments after the value (e.g. due 42 this week friday has an extra token). Quote the whole value if it contains spaces (e.g. due 42 "this week friday").',
     // promote / activate
     'error.before_needs_due': 'Error: --before requires --due',
     'error.before_format': 'Error: --before must be in 14d / 2w format (e.g. 14d, 2w)',
@@ -2462,6 +2464,8 @@ function templateList() {
     const parts = [tmpl.gtd||'inbox'];
     const ctx = (tmpl.context||[]).join(' ');
     if (ctx) parts.push(ctx);
+    const tagsStr = (tmpl.tags||[]).join(' ');
+    if (tagsStr) parts.push(tagsStr);
     parts.push(tmpl.priority||'p3');
     if (tmpl.recur) parts.push('recur:'+tmpl.recur);
     if (tmpl['due-offset']) parts.push('offset:+'+tmpl['due-offset']+t('template.offset_suffix'));
@@ -2479,6 +2483,7 @@ function templateShow() {
   w(tpl('template.show_name', {name: name})+'\n');
   w('  GTD:      '+(tmpl.gtd||'inbox')+'\n');
   w('  context:  '+(tmpl.context||[]).join(' ')+'\n');
+  w('  tags:     '+(tmpl.tags||[]).join(' ')+'\n');
   w('  priority: '+(tmpl.priority||'p3')+'\n');
   if (tmpl['due-offset']) w('  due-offset: +'+tmpl['due-offset']+t('template.offset_suffix')+'\n');
   if (tmpl.due) w('  due:      '+tmpl.due+'\n');
@@ -2493,6 +2498,7 @@ function templateSave() {
   const t = {};
   t.gtd = process.env.GTD_ENV || 'inbox';
   t.context = JSON.parse(process.env.CONTEXTS_ENV || '[]');
+  t.tags = JSON.parse(process.env.TAGS_ENV || '[]');
   const off = process.env.DUE_OFFSET_ENV || '';
   if (off) t['due-offset'] = parseInt(off);
   const due = process.env.DUE_ENV || '';
@@ -2516,6 +2522,7 @@ function templateSaveFrom() {
   const t = {};
   t.gtd = process.env.GTD_ENV || 'inbox';
   t.context = JSON.parse(process.env.CONTEXTS_ENV || '[]');
+  t.tags = JSON.parse(process.env.TAGS_ENV || '[]');
   const due = process.env.DUE_ENV || '';
   if (due) t.due = due;
   const recur = process.env.RECUR_ENV || '';
@@ -2537,6 +2544,7 @@ function templateUse() {
   const w = s => process.stdout.write(s);
   w('GTD='+(t.gtd||'inbox')+'\n');
   w('CONTEXT='+(t.context||[]).join(' ')+'\n');
+  w('TAGS='+(t.tags||[]).join(' ')+'\n');
   w('PRIORITY='+(t.priority||'p3')+'\n');
   w('DUE_OFFSET='+(t['due-offset']||'')+'\n');
   w('DUE='+(t.due||'')+'\n');
@@ -4875,6 +4883,7 @@ async function runStats(octokit, owner, repo) {
 
 async function runReport(octokit, owner, repo, tokens) {
   const todayStr = getToday();
+  const REPORT_USAGE = 'Usage: /todo report [weekly|monthly|Nd]';
   let days = 7;
   const sub = tokens[0] || 'weekly';
   if (sub === 'weekly') days = 7;
@@ -4882,6 +4891,15 @@ async function runReport(octokit, owner, repo, tokens) {
   else if (/^(\d+)d$/.test(sub)) {
     days = parseInt(sub);
     validateNumber(String(days));
+  } else {
+    // #1938: sub が weekly/monthly/Nd のいずれにも一致しない場合、従来は days=7 へ黙って
+    // フォールバックしていた（例: `report monthy` のタイポは「30日のつもりが7日」になり、
+    // ユーザーは出力を見ても気づけない）。これは他4件のフラグ typo とは性質が異なり、
+    // 位置引数の値そのものが不正なパターンのため guardUnknownFlag/guardExtraPositional
+    // ではなく専用の loud エラーを追加する。API呼び出し（fetchAllOpen等）より前に落とす。
+    process.stderr.write(`${REPORT_USAGE}\n`);
+    process.stderr.write(tpl('error.report_invalid_sub', { sub }) + '\n');
+    process.exit(1);
   }
   const [open, closed] = await Promise.all([
     fetchAllOpen(octokit, owner, repo),
@@ -4937,9 +4955,21 @@ async function runTemplate(octokit, owner, repo, tokens) {
       const gtd = GTD_LABELS.find(l => lnames.some(n => normLabel(n) === l)) || 'inbox';
       const contexts = lnames.filter(l => l.startsWith('@'));
       const priority = lnames.find(l => /^p[123]$/.test(l)) || 'p3';
+      // #1936: タグ抽出は issueToJsonObj()/renderIssueList() と同じ
+      // 「GTD・project・context・@claude・priority 以外のラベル」線引きに揃える
+      // （lnames はここでは正規化前の生ラベル名なので GTD_DISPLAY 表記で除外する）。
+      const systemLabels = new Set([
+        ...GTD_LABELS.map(l => GTD_DISPLAY[l]),
+        GTD_DISPLAY[PROJECT_LABEL],
+        ...contexts,
+        '@claude',
+        priority,
+      ]);
+      const tags = lnames.filter(l => !systemLabels.has(l));
       process.env.TNAME_ENV = name;
       process.env.GTD_ENV = gtd;
       process.env.CONTEXTS_ENV = JSON.stringify(contexts);
+      process.env.TAGS_ENV = JSON.stringify(tags);
       process.env.DUE_ENV = issue.due || '';
       process.env.RECUR_ENV = issue.recur || '';
       process.env.PROJECT_ENV = issue.project || '';
@@ -4955,17 +4985,16 @@ async function runTemplate(octokit, owner, repo, tokens) {
       guardUnknownFlag(parsed.extra, [], TEMPLATE_USAGE, 'error.unknown_flag_hint_options');
       // #1934 パート1: template save インライン形式が実際に読むのは due/recur/project/desc/
       // dueOffset/priority のみ（配線直前にコードを再確認済み）。
-      // #1934 パート1.5: parsed.contexts は次の行（const contexts = parsed.contexts;）で
-      // 読んでいるため supportedFields に含める。parsed.tags はこの分岐のどこからも読まれて
-      // いない非対称が実装コードに存在する（#tag を渡すと黙って消える旧来のバグが残る）。
-      // この非対称を tags 側の実装を直して解消するかはスコープ外の判断とし、完了報告で申し送る
-      // （tags を含めると `template save tmpl next #tag` が exit 1 になり、現状の「黙って
-      // 消える」が「エラーで気づける」に変わるだけで実害は増えないが、意図した挙動かは
-      // 未確定のため今回は contexts のみを追加する）。
-      guardUnsupportedFlag(parsed, ['due','recur','project','desc','dueOffset','priority','contexts'], TEMPLATE_USAGE);
+      // #1934 パート1.5 / #1936: parsed.contexts・parsed.tags はいずれも次の行
+      // （const contexts = parsed.contexts; / const tags = parsed.tags;）で読んでいるため
+      // supportedFields に含める。#tag をテンプレートへ保存できなかった旧来の非対称は
+      // #1936 で解消済み（詳細: DEVELOPMENT.md バグ修正履歴）。
+      guardUnsupportedFlag(parsed, ['due','recur','project','desc','dueOffset','priority','contexts','tags'], TEMPLATE_USAGE);
       const contexts = parsed.contexts;
+      const tags = parsed.tags;
       const priority = parsed.priority || 'p3';
       for (const ctx of contexts) validateCtx(ctx.slice(1));
+      for (const tag of tags) validateTag(tag.slice(1));
       validatePriority(priority);
       let dueOffset = '';
       if (parsed.dueOffset) {
@@ -4981,6 +5010,7 @@ async function runTemplate(octokit, owner, repo, tokens) {
       process.env.TNAME_ENV = name;
       process.env.GTD_ENV = gtd;
       process.env.CONTEXTS_ENV = JSON.stringify(contexts);
+      process.env.TAGS_ENV = JSON.stringify(tags);
       process.env.DUE_OFFSET_ENV = dueOffset;
       process.env.DUE_ENV = due;
       process.env.RECUR_ENV = parsed.recur || '';
@@ -5008,6 +5038,7 @@ async function runTemplate(octokit, owner, repo, tokens) {
 
     const gtd = tmpl.gtd || 'inbox';
     const contexts = tmpl.context || [];
+    const tags = tmpl.tags || [];
     const priority = tmpl.priority || 'p3';
     let due = '';
     if (tmpl['due-offset']) due = addDays(today, parseInt(tmpl['due-offset']));
@@ -5021,6 +5052,11 @@ async function runTemplate(octokit, owner, repo, tokens) {
     for (const ctx of contexts) {
       await ensureLabel(octokit, owner, repo, ctx, 'FBCA04', t('label.desc_context'));
       labels.push(ctx);
+    }
+    // #1936: タグラベル作成（runAdd と同じ色 0075CA でコンテキストと区別）
+    for (const tag of tags) {
+      await ensureLabel(octokit, owner, repo, tag, '0075CA', t('label.desc_tag'));
+      labels.push(tag);
     }
     const pcolor = priorityColor(priority);
     await ensureLabel(octokit, owner, repo, priority, pcolor, t('label.desc_priority'));
@@ -5146,12 +5182,20 @@ function runSchema() {
 }
 
 async function runShow(octokit, owner, repo, tokens) {
+  const SHOW_USAGE = 'Usage: /todo show <issue-number> [--json]';
+  // #1938: --json は tokens.includes() の走査型判定のみで、未知フラグ（typo）を検出して
+  // いなかった。`show 42 --jsn` は jsonMode=false のまま処理が進み、ユーザーはJSON出力を
+  // 期待したのに通常表示になる（読み取り専用のため実害は誤表示のみ）。show は「第2の
+  // 位置引数スロット」を持たないため guardExtraPositional の対象ではなく（#1937の
+  // runUnlinkと同型）、guardUnknownFlag のみを配線する。issue番号トークンは
+  // UNKNOWN_FLAG_RE（`--`始まり）にマッチしないため誤検知しない。
+  guardUnknownFlag(tokens, ['--json'], SHOW_USAGE, 'error.unknown_flag_hint_options');
   // --json フラグを検出し、残りのトークンから除外
   const jsonMode = tokens.includes('--json');
   const filteredTokens = tokens.filter(t => t !== '--json');
   const numStr = (filteredTokens[0] || '').replace(/^#/, '');
   if (!numStr || !/^\d+$/.test(numStr)) {
-    process.stderr.write('Usage: /todo show <issue-number> [--json]\n');
+    process.stderr.write(`${SHOW_USAGE}\n`);
     process.exit(1);
   }
   const num = parseInt(numStr, 10);
@@ -5275,6 +5319,7 @@ async function runView(octokit, owner, repo, tokens) {
     const name = tokens[1];
     if (!name) { process.stderr.write('Usage: run view save <name> [filters...]\n'); process.exit(1); }
     validateName(name);
+    const VIEW_SAVE_USAGE = 'Usage: /todo view save <name> [GTD] [@ctx] [p1|p2|p3]';
     const rest = tokens.slice(2);
     let gtd = '', ctx = '', pri = '';
     const ctxTokens = rest.filter(tok => tok.startsWith('@'));
@@ -5282,11 +5327,22 @@ async function runView(octokit, owner, repo, tokens) {
       process.stderr.write(t('error.view_ctx_multiple')+'\n');
       process.exit(1);
     }
+    const unmatched = [];
     for (const tok of rest) {
       if (GTD_LABELS.includes(tok) || tok === PROJECT_LABEL) gtd = tok;
       else if (/^p[123]$/.test(tok)) pri = tok;
       else if (tok.startsWith('@')) { validateCtx(tok.slice(1)); ctx = tok; }
+      else unmatched.push(tok);
     }
+    // #1938: GTD/優先度/@ctx のいずれにもマッチしないトークンは従来黙って無視していた
+    // （書き込み先はローカル views.json のみでGitHub API影響なし）。フラグ字面のtypo
+    // （例: `--nxt`）は guardUnknownFlag で、それ以外の非対応語（例: `waitng`）は
+    // guardExtraPositional で塞ぐ（呼び出し順序は既存規約どおり UnknownFlag → ExtraPositional）。
+    guardUnknownFlag(unmatched, [], VIEW_SAVE_USAGE, 'error.unknown_flag_hint_options');
+    guardExtraPositional(
+      unmatched, VIEW_SAVE_USAGE, 'error.extra_positional_hint_single',
+      `/todo view save ${name} ${[gtd, ctx, pri].filter(Boolean).join(' ')}`.trim()
+    );
     process.env.VNAME_ENV = name;
     process.env.GTD_ENV = gtd;
     process.env.CTX_ENV = ctx;
@@ -5471,8 +5527,15 @@ async function runBulk(octokit, owner, repo, tokens) {
 async function runReviewSomeday(octokit, owner, repo, tokens) {
   const today = getToday();
   const num = parseInt(tokens[0]);
-  if (!num) { process.stderr.write('Usage: run review-someday <number>\n'); process.exit(1); }
+  const REVIEW_SOMEDAY_USAGE = 'Usage: /todo review-someday <number>';
+  if (!num) { process.stderr.write(`${REVIEW_SOMEDAY_USAGE}\n`); process.exit(1); }
   validateNumber(String(num));
+  // #1938: tokens[0] しか使わないため tokens.slice(1) 以降は従来黙って捨てられていた
+  // （書き込みは reviewedAt 更新のみでデータ破壊はしない）。review-someday は「第2の
+  // 位置引数スロット」を持たないため guardExtraPositional の対象ではなく（#1937の
+  // runUnlinkと同型）、guardUnknownFlag のみを配線する。API呼び出し（fetchAndParseIssue
+  // 以降）より前に落とす。
+  guardUnknownFlag(tokens.slice(1), [], REVIEW_SOMEDAY_USAGE, 'error.unknown_flag_hint_options');
 
   const issue = await fetchAndParseIssue(octokit, owner, repo, num);
 
@@ -5535,8 +5598,26 @@ async function runPromote(octokit, owner, repo) {
 // /todo promote-project <N> [--outcome "〜"] — 既存 Issue をプロジェクトに昇格
 async function runPromoteProject(octokit, owner, repo, tokens) {
   const num = parseInt(tokens[0]);
-  if (!num) { process.stderr.write('Usage: /todo promote-project <N> [--outcome "title"]\n'); process.exit(1); }
+  const PROMOTE_PROJECT_USAGE = 'Usage: /todo promote-project <N> [--outcome "title"]';
+  if (!num) { process.stderr.write(`${PROMOTE_PROJECT_USAGE}\n`); process.exit(1); }
   validateNumber(String(num));
+
+  // #1938: --outcome は tokens.indexOf() の走査型判定のみで、未知フラグ（typo）を検出して
+  // いなかった。`--outcom "title"` のタイポではタイトル変更が黙ってスキップされ、ユーザーは
+  // 「outcomeを指定したのに反映されない」と誤解する（データ破壊はしない）。ラベル変更
+  // （addLabels等）より前に落とす。
+  guardUnknownFlag(tokens.slice(1), ['--outcome'], PROMOTE_PROJECT_USAGE, 'error.unknown_flag_hint_options');
+  const outcomeIdx = tokens.indexOf('--outcome');
+  // outcome値のクォート漏れ（`--outcome New Marketing Campaign` のような複数トークン）は
+  // 2トークン目以降を黙って切り捨てていた（due/activateと同型。値は自由記述のタイトルで
+  // 空白を含みうるためhint_quoteを使う）。
+  if (outcomeIdx !== -1) {
+    const afterOutcomeValue = tokens.slice(outcomeIdx + 2);
+    guardExtraPositional(
+      afterOutcomeValue, PROMOTE_PROJECT_USAGE, 'error.extra_positional_hint_quote',
+      `/todo promote-project ${num} --outcome "${tokens.slice(outcomeIdx + 1).join(' ')}"`
+    );
+  }
 
   const issue = await fetchAndParseIssue(octokit, owner, repo, num);
 
@@ -5556,9 +5637,8 @@ async function runPromoteProject(octokit, owner, repo, tokens) {
   await ensureLabel(octokit, owner, repo, GTD_DISPLAY[PROJECT_LABEL], '0052CC', 'GTD: project');
   await octokit.issues.addLabels({ owner, repo, issue_number: num, labels: [GTD_DISPLAY[PROJECT_LABEL]] });
 
-  // --outcome 指定時はタイトルを書き換え
+  // --outcome 指定時はタイトルを書き換え（outcomeIdx は関数冒頭のガードで算出済み）
   let newTitle = issue.title;
-  const outcomeIdx = tokens.indexOf('--outcome');
   if (outcomeIdx !== -1 && tokens[outcomeIdx+1]) {
     newTitle = tokens[outcomeIdx+1];
     validateTitle(newTitle);
@@ -5579,8 +5659,17 @@ async function runPromoteProject(octokit, owner, repo, tokens) {
 //      「GitHub 側に解除すべき関係が元々ない」ことを確認した上で body のみ解除する
 async function runUnlink(octokit, owner, repo, tokens) {
   const num = parseInt(tokens[0]);
-  if (!num) { process.stderr.write('Usage: /todo unlink <N> [--force]\n'); process.exit(1); }
+  const UNLINK_USAGE = 'Usage: /todo unlink <N> [--force]';
+  if (!num) { process.stderr.write(`${UNLINK_USAGE}\n`); process.exit(1); }
   validateNumber(String(num));
+  // #1937: force は tokens.includes('--force') という走査型判定のみで、未知フラグ
+  // （typo）を検出していなかった。`unlink 42 --forse` は force=false のまま処理が進み、
+  // たまたま「未登録」エラー（error.unlink_mismatch）で止まっていた
+  // （デフォルト値がfalseでフェイルセーフに働くため実害は限定的だが、ユーザーは
+  // typoに気づけない）。unlink は「第2の位置引数スロット」を持たないため
+  // guardExtraPositional の対象ではなく、guardUnknownFlag のみを配線する。
+  // API 呼び出し（fetchAndParseIssue 以降）より前に落とす。
+  guardUnknownFlag(tokens.slice(1), ['--force'], UNLINK_USAGE, 'error.unknown_flag_hint_options');
   const force = tokens.includes('--force');
 
   const issue = await fetchAndParseIssue(octokit, owner, repo, num);
@@ -5744,6 +5833,14 @@ async function runWeeklyProjectAudit(octokit, owner, repo) {
 
 // /todo migrate sub-issue [--dry-run] — body project: #N メタを持つ Issue を sub-issue に一括登録
 async function runMigrateSubIssue(octokit, owner, repo, tokens) {
+  const MIGRATE_USAGE = 'Usage: /todo migrate sub-issue [--dry-run]';
+  // #1938: --dry-run は tokens.includes() の走査型判定のみで、未知フラグ（typo）を検出して
+  // いなかった。`--dryrun`/`--dry_run` のタイポでは dryRun=false のまま処理が進み、
+  // ドライランのつもりで実行したユーザーに対して addSubIssue() の一括登録が実際に走る
+  // （デフォルト値が危険側＝#1937のrunUnlinkの--forceとは逆パターン）。API呼び出し
+  // （fetchAllOpen 以降）より前に落とす。migrate sub-issue は位置引数を取らないため
+  // guardExtraPositional の対象ではなく guardUnknownFlag のみを配線する。
+  guardUnknownFlag(tokens, ['--dry-run'], MIGRATE_USAGE, 'error.unknown_flag_hint_options');
   const dryRun = tokens.includes('--dry-run');
   const allIssues = await fetchAllOpen(octokit, owner, repo);
 
@@ -5908,10 +6005,24 @@ async function runMain(args) {
     }
     case 'activate': {
       const [num, date] = rest;
+      const ACTIVATE_USAGE = 'Usage: /todo activate <#> <date>';
       if (!num || !date) {
-        process.stderr.write('Usage: /todo activate <#> <date>\n');
+        process.stderr.write(`${ACTIVATE_USAGE}\n`);
         process.exit(1);
       }
+      // #1937: このショートカットは rest[0]/rest[1] だけを取り出して
+      // ['num','--activate',date] という新しい配列を合成し runEdit へ渡す。従来は
+      // rest.slice(2) 以降（フラグ字面・非フラグの余剰トークンとも）がここで
+      // 消滅し、runEdit 側の guardUnknownFlag/guardUnsupportedFlag のどちらにも
+      // 到達しなかった（`activate 42 2026-09-10 --note "x"` が exit 0 で黙って
+      // 消える）。runEdit へ委譲する前に、ここで直接ガードする。
+      // due/recur と同型（activateの値もnormalizeDue経由で自然文の日付を許すため
+      // 空白を含みうる＝hint_quote を使う。link/priorityのhint_singleとは異なる）。
+      guardUnknownFlag(rest.slice(2), [], ACTIVATE_USAGE, 'error.unknown_flag_hint_options');
+      guardExtraPositional(
+        rest.slice(2), ACTIVATE_USAGE, 'error.extra_positional_hint_quote',
+        `/todo activate ${num} "${[date, ...rest.slice(2)].join(' ')}"`
+      );
       return await runEdit(octokit, owner, repo, [num, '--activate', date]);
     }
     case 'comment':   return await runComment(octokit, owner, repo, rest);
