@@ -35,6 +35,19 @@ const RECUR_WEEKDAY_TO_DOW = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, s
 // 落ちる。実装時に実測（2026-09-01）。
 const UNKNOWN_FLAG_RE = /^--[A-Za-z][A-Za-z0-9-]*$/;
 
+// 装飾GTDラベル誤爆ガード（Issue #1928）。タイトルの先頭語が角括弧・鉤括弧・隅付き括弧などで
+// 装飾された GTD ラベル（`[inbox]` / `「next」` / `【project】` 等）と完全一致する場合、
+// カテゴリ指定の書き損じ（角括弧付きのままカテゴリ欄代わりに書いた等）として検出する。
+// GTD_LABELS（11行）/ PROJECT_LABEL（12行）から動的に組み立てる（設計書 2026-09-01 時点は
+// リテラル列挙だったが、ラベル種別が増えたときの追従漏れを避けるため定数から生成する形へ変更）。
+// 両側の括弧を必須にしている（設計書の元の正規表現は `?` で括弧を省略可にしていたが、それだと
+// 素の "inbox" 等の単語1語だけのタイトルまで誤検知してしまうため、実装時に必須へ変更した）。
+// 【この定数をここ（ファイル冒頭の定数ブロック）から動かさないこと】理由は UNKNOWN_FLAG_RE の
+// コメント（24-35行）と同じ（トップレベル switch がモジュール評価の途中で走るため）。
+const BRACKETED_GTD_RE = new RegExp(
+  '^[\\[［「【](' + GTD_LABELS.concat([PROJECT_LABEL]).join('|') + ')[\\]］」】]$', 'i'
+);
+
 // フィールド名（parseArgs() の戻り値のキー） → 代表フラグ表記（エラーメッセージ用）。
 // #1934 パート1: 「parseArgs は消費するがハンドラが読まないフラグ」を検出するための対応表。
 // priority には --p1/--p2/--p3 のショートハンドもあるが、代表表記は --priority とする
@@ -330,6 +343,9 @@ const MESSAGES = {
     'error.unknown_flag_hint': 'ヒント: この語をタイトルに含めたい場合は、タイトル全体を1つの引数としてクォートしてください（例: /todo add next "--dry-run を追加する"）。タイトルがこの語1語だけの場合は、前後に語を足してください（例: 「--dry-run」の扱いを決める）。',
     'error.unknown_flag_hint_body': 'ヒント: この語を本文に含めたい場合は、本文全体を1つの引数としてクォートしてください（例: /todo comment 42 "--dry-run を追加した"）。',
     'error.unknown_flag_hint_options': 'ヒント: このコマンドで使えるオプションは /todo help で確認してください。',
+    'error.bracketed_gtd_label': 'エラー: タイトルの先頭語「{word}」はカテゴリ指定の書き損じに見えます。',
+    'error.bracketed_gtd_label_hint_category': 'ヒント: カテゴリとして指定したい場合は、角括弧を外してください（例: /todo add inbox "タイトル"）。',
+    'error.bracketed_gtd_label_hint_title': 'ヒント: タイトルの一部として使いたい場合は、タイトル全体を1つの引数としてクォートしてください（例: /todo add next "{word} の仕様を調べる"）。語を足して回避する場合はこのラベルより前に足してください（判定は先頭語のみを見るため、後ろに足しても解消しません）。',
     'error.flag_not_supported': 'エラー: {flag} はこのコマンドでは使えません',
     'error.flag_not_supported_hint': 'ヒント: {flag} は {commands} で使えます。',
     'error.extra_positional': 'エラー: 余分な引数があります: {extra}',
@@ -706,6 +722,9 @@ const MESSAGES = {
     'error.unknown_flag_hint': 'Hint: to keep this word in the title, quote the whole title as a single argument (e.g. /todo add next "add --dry-run"). If the title is only this word, add words around it (e.g. "decide how to handle --dry-run").',
     'error.unknown_flag_hint_body': 'Hint: to keep this word in the body text, quote the whole body as a single argument (e.g. /todo comment 42 "added --dry-run").',
     'error.unknown_flag_hint_options': 'Hint: run /todo help to see the options this command accepts.',
+    'error.bracketed_gtd_label': 'Error: the first word of the title "{word}" looks like a mistyped category.',
+    'error.bracketed_gtd_label_hint_category': 'Hint: to use it as a category, remove the brackets (e.g. /todo add inbox "title").',
+    'error.bracketed_gtd_label_hint_title': 'Hint: to use it as part of the title, quote the whole title as a single argument (e.g. /todo add next "investigate {word}"). If you add words instead, add them before this label — only the first word is checked, so adding words after it will not fix this error.',
     'error.flag_not_supported': 'Error: {flag} is not supported by this command',
     'error.flag_not_supported_hint': 'Hint: {flag} is supported by: {commands}.',
     'error.extra_positional': 'Error: extra arguments: {extra}',
@@ -3321,6 +3340,39 @@ function guardUnknownFlag(tokens, allowedFlags, usage, hintKey) {
   process.exit(1);
 }
 
+// タイトル構成トークン列（parseArgs 後の extra を空トークン除去したもの）の先頭語だけを見て、
+// 装飾GTDラベル（BRACKETED_GTD_RE、ファイル冒頭で定義）と完全一致するか判定する（Issue #1928）。
+// 見つかればそのトークン文字列、なければ null を返す（副作用なしの純粋関数）。
+// 【先頭語のみを見る理由】2026-08-09 の実事故（Issue #1757 が汚染タイトルで作成された）は
+// `add "[inbox]" "本来のタイトル"` という2トークンの入力で、「[inbox]」が単独トークンとして
+// タイトルの先頭語に連結される形だった。先頭語のみを検査することで、この実際の事故形（先頭語
+// だけが装飾GTDラベルで残りは自由なタイトル）を検出できる。
+// 【クォート済み1トークンは対象外にする理由】`add next "[inbox] の仕様を調べる"` のように、
+// タイトル全体を1つの引数としてクォートした場合は空白を含む1トークンになり、
+// BRACKETED_GTD_RE の完全一致（先頭〜末尾）に該当しないため通る。これは意図した誤検知回避。
+// 【判定前にトリムする理由（レビュー指摘 🔴-1、2026-09-12）】titleTokens[0] の生の値を
+// アンカー付き正規表現でそのまま検査すると、先頭・末尾に空白1文字（半角スペース・タブ・
+// 全角スペース。JS の String.prototype.trim() はいずれも除去する）があるだけで不一致になり
+// ガードが沈黙して通過する（`add ' [inbox] ' 'タイトル'` が exit 0 で通ってしまう。本Issueが
+// 塞ごうとした2026-08-09の事故と同型）。判定にのみ trim() を使い、返り値・実際のタイトル
+// 文字列（parsed.extra の要素）は書き換えない（前後空白が残ること自体は既存挙動でスコープ外）。
+function findBracketedGtdLabel(titleTokens) {
+  if (!titleTokens.length) return null;
+  return BRACKETED_GTD_RE.test(titleTokens[0].trim()) ? titleTokens[0] : null;
+}
+
+// 装飾GTDラベルを検出したら Usage・エラー本文・2つの脱出口（カテゴリとして使いたい場合／
+// タイトルとして使いたい場合）を stderr へ出して終了する（Issue #1928）。
+function guardBracketedGtdLabel(titleTokens, usage) {
+  const word = findBracketedGtdLabel(titleTokens);
+  if (!word) return;
+  if (usage) process.stderr.write(`${usage}\n`);
+  process.stderr.write(tpl('error.bracketed_gtd_label', { word })+'\n');
+  process.stderr.write(t('error.bracketed_gtd_label_hint_category')+'\n');
+  process.stderr.write(tpl('error.bracketed_gtd_label_hint_title', { word })+'\n');
+  process.exit(1);
+}
+
 // parsed（parseArgs() の戻り値）のうち、supportedFields に載っていない FLAG_FIELD_MAP の
 // キーで値が設定されているものを、FLAG_FIELD_MAP の定義順に探す（#1934 パート1）。
 // 見つかればそのフィールド名（FLAG_FIELD_MAP のキー）、なければ null を返す（副作用なしの純粋関数）。
@@ -3673,6 +3725,11 @@ async function runAdd(octokit, owner, repo, tokens) {
 
   // タイトル: 残りトークンを連結
   const titleTokens = parsed.extra.filter(s => s.trim());
+  // Issue #1928: タイトル先頭語が装飾GTDラベル（[inbox] 等）と完全一致する場合、
+  // カテゴリ指定の書き損じとして検出する。title_empty より前段（titleTokens が
+  // 非空であることが前提の判定）だが、ensureLabel 等の GitHub API 副作用より前という
+  // #1921 の検査位置制約は変わらず満たす。
+  guardBracketedGtdLabel(titleTokens, ADD_USAGE);
   if (!titleTokens.length) {
     process.stderr.write(t('error.title_empty')+'\n'); process.exit(1);
   }

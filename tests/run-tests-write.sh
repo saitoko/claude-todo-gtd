@@ -4531,8 +4531,242 @@ rm -rf "$W35_FAKE_HOME"
 # 手動で確認済み（詳細は完了報告を参照）。
 
 # ──────────────────────────────────────────
-# 結果サマリー（run-tests.sh から集計加算するための機械可読な行）
+# §W36  runAdd — 装飾GTDラベルはカテゴリ指定の書き損じとしてエラーにする（Issue #1928）
+# 事故: 2026-08-09、ある呼び出し元で「zshのグロブ展開エラー回避」のため
+# `add [inbox]`（裸トークン）を `add "[inbox]"`（クォート済み）へ変更した結果、
+# `add "[inbox]" "本来のタイトル"` という2トークン入力になり、`[inbox]` が
+# GTD_LABELS.includes() の完全一致に該当しない（角括弧付きのため）ためカテゴリ抽出されず、
+# タイトルの先頭語として連結され「[inbox] 本来のタイトル」という汚染タイトルの
+# Issue が exit 0 で作成された（Issue #1757）。
 # ──────────────────────────────────────────
+echo ""
+echo "§W36  runAdd — 装飾GTDラベルはカテゴリ指定の書き損じとしてエラーにする（Issue #1928）"
+
+W36_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{},{},{},{}],"issues.create":[{"data":{"number":8001,"html_url":"https://github.com/test-owner/test-repo/issues/8001"}}]}'
+
+# W36-1【核心・直接再現】`[inbox]` 単独 → エラー（設計書の3ケースの1つ目）
+W36_1_LOG=$(mktemp /tmp/todo-test-w36-1-XXXXXX); : > "$W36_1_LOG"
+W36_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W36_RESP" OCTOKIT_STUB_LOG_ENV="$W36_1_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add '[inbox]' 2>&1); W36_1_EC=$?
+assert_exit_fail "W36-1【核心・直接再現】add [inbox] 単独: exit非0" "$W36_1_EC"
+assert_contains "W36-1: エラー本文に [inbox] を含む" 'タイトルの先頭語「[inbox]」はカテゴリ指定の書き損じに見えます' "$W36_1_OUT"
+assert_contains "W36-1: 脱出口1（カテゴリとして使う）のヒント" 'カテゴリとして指定したい場合は、角括弧を外してください' "$W36_1_OUT"
+assert_contains "W36-1: 脱出口2（タイトルとして使う）のヒント" 'タイトルの一部として使いたい場合は' "$W36_1_OUT"
+assert_eq "W36-1【核心】API ログ0行（issues.create どころか GET label すら呼ばれない）" "0" "$(wc -l < "$W36_1_LOG" | tr -d ' ')"
+rm -f "$W36_1_LOG"
+
+# W36-2【誤検知なし】クォート済み1トークンの中に埋め込まれた場合は通る（設計書の3ケースの2つ目）
+W36_2_LOG=$(mktemp /tmp/todo-test-w36-2-XXXXXX); : > "$W36_2_LOG"
+W36_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W36_RESP" OCTOKIT_STUB_LOG_ENV="$W36_2_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add next "[inbox] の仕様を調べる" 2>&1); W36_2_EC=$?
+assert_exit_ok "W36-2【誤検知なし】add next \"[inbox] の仕様を調べる\"（1トークン）: exit 0" "$W36_2_EC"
+assert_contains "W36-2: title がそのまま（[inbox] を含めて1つの文字列）" '"title":"[inbox] の仕様を調べる"' "$(log_lines_for_method "$W36_2_LOG" issues.create)"
+rm -f "$W36_2_LOG"
+
+# W36-3【誤検知なし・回帰】裸トークン `inbox` は従来どおりカテゴリ判定される（設計書の3ケースの3つ目）
+W36_3_LOG=$(mktemp /tmp/todo-test-w36-3-XXXXXX); : > "$W36_3_LOG"
+W36_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W36_RESP" OCTOKIT_STUB_LOG_ENV="$W36_3_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add inbox "本来のタイトル" 2>&1); W36_3_EC=$?
+assert_exit_ok "W36-3【誤検知なし・回帰】add inbox \"本来のタイトル\"（裸トークン）: exit 0" "$W36_3_EC"
+assert_contains "W36-3: ラベルが 📥 inbox（カテゴリとして抽出されている）" '"📥 inbox"' "$(log_lines_for_method "$W36_3_LOG" issues.create)"
+assert_contains "W36-3: title に [inbox] が混入しない" '"title":"本来のタイトル"' "$(log_lines_for_method "$W36_3_LOG" issues.create)"
+rm -f "$W36_3_LOG"
+
+# W36-4【核心・実事故再現】2トークン: `add "[inbox]" "残りのタイトル"` 形（2026-08-09 の実事故そのもの）
+W36_4_LOG=$(mktemp /tmp/todo-test-w36-4-XXXXXX); : > "$W36_4_LOG"
+W36_4_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W36_RESP" OCTOKIT_STUB_LOG_ENV="$W36_4_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add '[inbox]' 'メモ: 本来のタイトル' 2>&1); W36_4_EC=$?
+assert_exit_fail "W36-4【核心・実事故再現】add [inbox] '残りのタイトル'（2トークン）: exit非0" "$W36_4_EC"
+assert_contains "W36-4: エラー本文に [inbox] を含む（先頭語のみ判定）" 'タイトルの先頭語「[inbox]」はカテゴリ指定の書き損じに見えます' "$W36_4_OUT"
+assert_not_contains "W36-4【副作用ゼロ】汚染タイトルでの issues.create が発生していない" \
+  '"title":"[inbox] メモ: 本来のタイトル"' "$(log_lines_for_method "$W36_4_LOG" issues.create)"
+assert_eq "W36-4【核心・副作用ゼロ】API ログ0行" "0" "$(wc -l < "$W36_4_LOG" | tr -d ' ')"
+rm -f "$W36_4_LOG"
+
+# W36-5 全角鉤括弧「」
+W36_5_LOG=$(mktemp /tmp/todo-test-w36-5-XXXXXX); : > "$W36_5_LOG"
+W36_5_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W36_RESP" OCTOKIT_STUB_LOG_ENV="$W36_5_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add '「next」' 2>&1); W36_5_EC=$?
+assert_exit_fail "W36-5 add 「next」（全角鉤括弧）: exit非0" "$W36_5_EC"
+assert_eq "W36-5: API ログ0行" "0" "$(wc -l < "$W36_5_LOG" | tr -d ' ')"
+rm -f "$W36_5_LOG"
+
+# W36-6 隅付き括弧【】+ project（PROJECT_LABEL は別分岐だが装飾されると同様に弾かれること）
+W36_6_LOG=$(mktemp /tmp/todo-test-w36-6-XXXXXX); : > "$W36_6_LOG"
+W36_6_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W36_RESP" OCTOKIT_STUB_LOG_ENV="$W36_6_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add '【project】' 2>&1); W36_6_EC=$?
+assert_exit_fail "W36-6【project別分岐との相互作用】add 【project】: exit非0" "$W36_6_EC"
+assert_eq "W36-6: API ログ0行" "0" "$(wc -l < "$W36_6_LOG" | tr -d ' ')"
+rm -f "$W36_6_LOG"
+
+# W36-7 大文字小文字を区別しない
+W36_7_LOG=$(mktemp /tmp/todo-test-w36-7-XXXXXX); : > "$W36_7_LOG"
+W36_7_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W36_RESP" OCTOKIT_STUB_LOG_ENV="$W36_7_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add '[INBOX]' 2>&1); W36_7_EC=$?
+assert_exit_fail "W36-7【大文字小文字を区別しない】add [INBOX]: exit非0" "$W36_7_EC"
+rm -f "$W36_7_LOG"
+
+# W36-8【誤検知なし】片側だけの括弧は通る（両側必須。設計書の元の正規表現は片側省略可だったが
+# 実装時に「素の inbox 等の単語1語だけのタイトル」を誤検知しないよう両側必須へ変更した）
+W36_8_LOG=$(mktemp /tmp/todo-test-w36-8-XXXXXX); : > "$W36_8_LOG"
+W36_8_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W36_RESP" OCTOKIT_STUB_LOG_ENV="$W36_8_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add next '[inbox' 2>&1); W36_8_EC=$?
+assert_exit_ok "W36-8【誤検知なし・境界】add next [inbox（開き括弧のみ）: exit 0" "$W36_8_EC"
+rm -f "$W36_8_LOG"
+
+W36_9_LOG=$(mktemp /tmp/todo-test-w36-9-XXXXXX); : > "$W36_9_LOG"
+W36_9_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W36_RESP" OCTOKIT_STUB_LOG_ENV="$W36_9_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add next 'inbox]' 2>&1); W36_9_EC=$?
+assert_exit_ok "W36-9【誤検知なし・境界】add next inbox]（閉じ括弧のみ）: exit 0" "$W36_9_EC"
+rm -f "$W36_9_LOG"
+
+# W36-10【誤検知なし】GTDラベルではない語を角括弧で囲んでも対象外
+W36_10_LOG=$(mktemp /tmp/todo-test-w36-10-XXXXXX); : > "$W36_10_LOG"
+W36_10_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W36_RESP" OCTOKIT_STUB_LOG_ENV="$W36_10_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add '[hoge]' 2>&1); W36_10_EC=$?
+assert_exit_ok "W36-10【誤検知なし】add [hoge]（GTDラベルではない語）: exit 0" "$W36_10_EC"
+rm -f "$W36_10_LOG"
+
+# W36-11【誤検知なし】丸括弧は対象外（Issue本文の「丸括弧なし」指定どおり。#1825 でタイトルの
+# 丸括弧使用は既に許可されている既存挙動を壊さないことの確認）
+W36_11_LOG=$(mktemp /tmp/todo-test-w36-11-XXXXXX); : > "$W36_11_LOG"
+W36_11_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W36_RESP" OCTOKIT_STUB_LOG_ENV="$W36_11_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add '(inbox)' 2>&1); W36_11_EC=$?
+assert_exit_ok "W36-11【誤検知なし】add (inbox)（丸括弧は対象外）: exit 0" "$W36_11_EC"
+rm -f "$W36_11_LOG"
+
+# W36-12【境界】タイトルトークンが空（従来どおり title_empty が優先して出ること）
+W36_12_LOG=$(mktemp /tmp/todo-test-w36-12-XXXXXX); : > "$W36_12_LOG"
+W36_12_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W36_RESP" OCTOKIT_STUB_LOG_ENV="$W36_12_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add next 2>&1); W36_12_EC=$?
+assert_exit_fail "W36-12【境界・回帰】add next（タイトルなし）: exit非0" "$W36_12_EC"
+assert_contains "W36-12: title_empty のエラーが出る（bracket guard と競合しない）" "タイトルが空です" "$W36_12_OUT"
+rm -f "$W36_12_LOG"
+
+# W36-13【検査順序】既存の未知フラグ検査（#1921）と組み合わせた場合、先行する
+# guardUnknownFlag が先に発火する（本ガードは guardUnsupportedFlag の後・titleTokens
+# 算出後に置いているため）。優先順位の固定として明示的にテストする。
+W36_13_LOG=$(mktemp /tmp/todo-test-w36-13-XXXXXX); : > "$W36_13_LOG"
+W36_13_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W36_RESP" OCTOKIT_STUB_LOG_ENV="$W36_13_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add '[inbox]' --boddy-file /tmp/x 2>&1); W36_13_EC=$?
+assert_exit_fail "W36-13【検査順序の固定】add [inbox] --boddy-file /tmp/x: exit非0" "$W36_13_EC"
+assert_contains "W36-13: 未知フラグのエラーが先に出る" "不明なフラグです: --boddy-file" "$W36_13_OUT"
+assert_not_contains "W36-13: 装飾GTDラベルのエラーは出ない（検査順序の固定）" "カテゴリ指定の書き損じ" "$W36_13_OUT"
+rm -f "$W36_13_LOG"
+
+# W36-14 i18n(en): 英語モードで日本語が1文字も出ないこと
+W36_14_LOG=$(mktemp /tmp/todo-test-w36-14-XXXXXX); : > "$W36_14_LOG"
+W36_14_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W36_RESP" OCTOKIT_STUB_LOG_ENV="$W36_14_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo LANG_ENV=en \
+  node "$ENGINE" run add '[inbox]' 2>&1); W36_14_EC=$?
+assert_exit_fail "W36-14 i18n(en) add [inbox]: exit非0" "$W36_14_EC"
+assert_contains "W36-14: 英語のエラー本文" 'the first word of the title "[inbox]" looks like a mistyped category' "$W36_14_OUT"
+assert_contains "W36-14: 英語の脱出口1" 'to use it as a category, remove the brackets' "$W36_14_OUT"
+assert_contains "W36-14: 英語の脱出口2" 'to use it as part of the title' "$W36_14_OUT"
+assert_no_japanese "W36-14: 出力に日本語が1文字も含まれない" "$W36_14_OUT"
+rm -f "$W36_14_LOG"
+
+# ── レビュー指摘 🔴-1（2026-09-12）: 前後に空白1文字を含めるだけでガードを回避できた ──
+# BRACKETED_GTD_RE はアンカー付き完全一致で titleTokens[0] の生の値を検査していたため、
+# 半角スペース・タブ・全角スペースが1文字でも前後に入るだけで不一致になり、ガードが
+# 沈黙して通過していた（実バイナリで再現・確認済み）。findBracketedGtdLabel() に
+# trim() を追加して修正した（実際のタイトル文字列は書き換えない。判定にのみ使う）。
+
+# W36-15【核心・回帰】半角スペースでパディングした [inbox] → エラー
+W36_15_LOG=$(mktemp /tmp/todo-test-w36-15-XXXXXX); : > "$W36_15_LOG"
+W36_15_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W36_RESP" OCTOKIT_STUB_LOG_ENV="$W36_15_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add ' [inbox] ' 2>&1); W36_15_EC=$?
+assert_exit_fail "W36-15【核心・回帰】add ' [inbox] '（前後に半角スペース）: exit非0" "$W36_15_EC"
+assert_contains "W36-15: エラー本文が出る" 'はカテゴリ指定の書き損じに見えます' "$W36_15_OUT"
+assert_eq "W36-15【核心】API ログ0行" "0" "$(wc -l < "$W36_15_LOG" | tr -d ' ')"
+rm -f "$W36_15_LOG"
+
+# W36-16【核心・回帰】タブでパディングした [inbox] → エラー
+W36_16_PADDED=$(printf '\t[inbox]\t')
+W36_16_LOG=$(mktemp /tmp/todo-test-w36-16-XXXXXX); : > "$W36_16_LOG"
+W36_16_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W36_RESP" OCTOKIT_STUB_LOG_ENV="$W36_16_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add "$W36_16_PADDED" 2>&1); W36_16_EC=$?
+assert_exit_fail "W36-16【核心・回帰】add '<TAB>[inbox]<TAB>'（前後にタブ）: exit非0" "$W36_16_EC"
+# 【判定力の担保】タブは validateTitle の制御文字禁止（\p{Cc}）にも該当するため、
+# trim() が無効でも「別の理由」で exit 非0・API 0行になり得る（#1934パート4/#1937で
+# 既出の「別経路のエラーで assert_exit_fail が誤ってPASSする」罠と同型）。
+# エラー本文が「装飾GTDラベル」のものであることまで確認して判定力を持たせる。
+assert_contains "W36-16【核心】エラー本文が装飾GTDラベルのもの（制御文字エラーではない）" \
+  'はカテゴリ指定の書き損じに見えます' "$W36_16_OUT"
+assert_eq "W36-16【核心】API ログ0行" "0" "$(wc -l < "$W36_16_LOG" | tr -d ' ')"
+rm -f "$W36_16_LOG"
+
+# W36-17【核心・回帰】全角スペースでパディングした [inbox] → エラー
+W36_17_LOG=$(mktemp /tmp/todo-test-w36-17-XXXXXX); : > "$W36_17_LOG"
+W36_17_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W36_RESP" OCTOKIT_STUB_LOG_ENV="$W36_17_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add '　[inbox]　' 2>&1); W36_17_EC=$?
+assert_exit_fail "W36-17【核心・回帰】add '　[inbox]　'（前後に全角スペース）: exit非0" "$W36_17_EC"
+assert_contains "W36-17【核心】エラー本文が装飾GTDラベルのもの" \
+  'はカテゴリ指定の書き損じに見えます' "$W36_17_OUT"
+assert_eq "W36-17【核心】API ログ0行" "0" "$(wc -l < "$W36_17_LOG" | tr -d ' ')"
+rm -f "$W36_17_LOG"
+
+# W36-18【誤検知なし・回帰】前後に空白のあるクォート済み多語タイトルは trim 後も
+# 完全一致に該当しないため通る（trim は判定にのみ使い、内部の空白・実際のタイトル
+# 文字列には影響しないことの確認）
+W36_18_LOG=$(mktemp /tmp/todo-test-w36-18-XXXXXX); : > "$W36_18_LOG"
+W36_18_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W36_RESP" OCTOKIT_STUB_LOG_ENV="$W36_18_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add next "  [inbox] の仕様を調べる  " 2>&1); W36_18_EC=$?
+assert_exit_ok "W36-18【誤検知なし・回帰】前後空白付きクォート済み多語タイトル: exit 0" "$W36_18_EC"
+rm -f "$W36_18_LOG"
+
+# ── レビュー指摘 🔴-2（2026-09-12）: 「前後に語を足すか」ヒントが、後ろに足す場合は
+# 機能しなかった（判定は先頭語のみを見るため）。ja/en とも「クォートする」を主案内にし、
+# 語を足す場合は「このラベルより前」に限定する文言へ修正した。
+W36_19_LOG=$(mktemp /tmp/todo-test-w36-19-XXXXXX); : > "$W36_19_LOG"
+W36_19_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W36_RESP" OCTOKIT_STUB_LOG_ENV="$W36_19_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run add '[inbox]' 2>&1); W36_19_EC=$?
+assert_not_contains "W36-19【核心・文言修正】ja ヒントに誤解を招く「前後に」が残っていない" \
+  '前後に語を足すか' "$W36_19_OUT"
+assert_contains "W36-19: ja ヒントが「前に足す」ことを明示している" \
+  'このラベルより前に足してください' "$W36_19_OUT"
+assert_contains "W36-19: ja ヒントに「後ろに足しても解消しない」旨がある" \
+  '後ろに足しても解消しません' "$W36_19_OUT"
+assert_not_contains "W36-19: プレースホルダ {word} が生のまま出力に残っていない（tpl置換漏れの回帰）" \
+  '{word}' "$W36_19_OUT"
+rm -f "$W36_19_LOG"
+
+W36_20_LOG=$(mktemp /tmp/todo-test-w36-20-XXXXXX); : > "$W36_20_LOG"
+W36_20_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W36_RESP" OCTOKIT_STUB_LOG_ENV="$W36_20_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo LANG_ENV=en \
+  node "$ENGINE" run add '[inbox]' 2>&1); W36_20_EC=$?
+assert_not_contains "W36-20【核心・文言修正】en ヒントに誤解を招く表現が残っていない" \
+  'add more words around it' "$W36_20_OUT"
+assert_contains "W36-20: en ヒントが「前に足す」ことを明示している" \
+  'add them before this label' "$W36_20_OUT"
+assert_contains "W36-20: en ヒントに「後ろに足しても解消しない」旨がある" \
+  'adding words after it will not fix this error' "$W36_20_OUT"
+assert_not_contains "W36-20: プレースホルダ {word} が生のまま出力に残っていない（tpl置換漏れの回帰）" \
+  '{word}' "$W36_20_OUT"
+assert_no_japanese "W36-20: 出力に日本語が1文字も含まれない" "$W36_20_OUT"
+rm -f "$W36_20_LOG"
+
+# ガード除去による回帰検出: runAdd 内の `guardBracketedGtdLabel(titleTokens, ADD_USAGE);` 行を
+# 一時的にコメントアウトして実行し、W36-1/4/5/6/7/15/16/17 が確実に FAIL することを実装時に
+# 手動で確認済み（詳細は完了報告を参照）。
 echo ""
 echo "=========================================="
 W_TOTAL=$((PASS+FAIL))

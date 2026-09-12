@@ -51,7 +51,7 @@ cp todo.sh ~/.claude/todo.sh
 ## テスト
 
 - テストランナー: `bash tests/run-tests.sh`（+ 書き込み系は `bash tests/run-tests-write.sh` として個別実行も可能。通常は `run-tests.sh` から自動的に呼び出される）
-- 自動テスト総件数: **2,042件**（read-only系 947 + 書き込み系 1,095。`bash tests/run-tests.sh` の最終行が出す実測値。2026-09-06 時点。全件PASSが目安）
+- 自動テスト総件数: **2,094件**（read-only系 947 + 書き込み系 1,147。`bash tests/run-tests.sh` の最終行が出す実測値。2026-09-12 時点。全件PASSが目安）
 - シナリオ一覧: `tests/scenarios.md`
 - 全件 PASS が Pull Request マージの必須条件
 - 件数を更新する際は README.md の記載も合わせて更新する
@@ -634,6 +634,31 @@ function guardExtraPositional(extraTokens, usage, hintKey, example) {
 **テスト:** `tests/run-tests-write.sh` に §W35（9ケース・32アサーション: 正常系2・入力文字パターン1・境界値2・セキュリティ1・save-from正常系2・use正常系1・後方互換3・回帰1）を新設した。旧 §W29-32（`#tag` がエラーになることを固定していたテスト）は本修正で挙動が反転するため、`#tag` が正しく保存されることを確認する内容へ更新した。追加した実装（`templateSave()`/`templateSaveFrom()` の `t.tags = ...` 代入、`runTemplate` save インライン分岐の `validateTag` ループ）を一時的に無効化して実行し、W35-1/2/4/5/6 が確実に FAIL することを実測で確認した。全2,042件PASS（書き込み系1,095/1,095、前回2,010→+32）。GitHub への実書き込みは行わず、スタブ経由のみで検証した。
 
 **対象ファイル:** `todo-engine.js`（`FLAG_SUPPORTED_BY.tags` 更新、`runTemplate` save/save-from/use の3分岐、`templateSave()`/`templateSaveFrom()`/`templateShow()`/`templateList()`/`templateUse()`、`help.unknown_flag_note` ja/en）、`tests/run-tests-write.sh`（§W29-32更新・§W35新設）、`tests/run-tests.sh`（§52-19コメント更新）、`todo.md`（共通注記・`template save` 行の更新）
+
+### 2026-09-12: `add` のタイトル先頭語が装飾GTDラベルなら書き損じとして検出する（Issue #1928）
+
+**症状:** `runAdd` のカテゴリ判定 `GTD_LABELS.includes(tokens[0])` は完全一致のため、`[inbox]` のように角括弧・鉤括弧・隅付き括弧で装飾されたトークンはカテゴリとして抽出されず、`parsed.extra` に落ちてタイトルの先頭語として連結される。2026-08-09、ある呼び出し元で「zshのグロブ展開エラー回避」のため `add [inbox]`（裸トークン）を `add "[inbox]"`（クォート済み）へ変更した結果、`add "[inbox]" "本来のタイトル"` という2トークン入力になり、`[inbox] 本来のタイトル` という汚染タイトルの Issue が exit 0 で作成された（Issue #1757）。`validateTitle`（#1825 でシェル注入対策以外の文字制限を解除済み）は角括弧を禁止していないため、この経路にはエラー検出が一切なかった。
+
+**修正:** `GTD_LABELS`/`PROJECT_LABEL` から動的に組み立てる正規表現 `BRACKETED_GTD_RE`（ファイル冒頭の定数ブロック。`UNKNOWN_FLAG_RE` と同じ TDZ 制約のためここに置く）と、純粋関数 `findBracketedGtdLabel(titleTokens)`（先頭語のみを判定。副作用なし）・ラッパ `guardBracketedGtdLabel(titleTokens, usage)` を新設した。`runAdd` の `titleTokens` 算出直後・`title_empty` チェック直前（#1921/#1934 の `guardUnknownFlag`/`guardUnsupportedFlag` より後、`ensureLabel`/`issues.create` などの GitHub API 副作用より前）に配線し、先頭語が装飾GTDラベルと完全一致する場合は Usage・エラー本文・2つの脱出口（カテゴリとして使いたい場合は角括弧を外す／タイトルとして使いたい場合は前後に語を足すかクォートする）を出して `exit 1` する。
+
+**設計との差分（実装時の判断）:**
+
+1. **正規表現を両側括弧必須に変更**: 設計時点の元の正規表現 `/^[\[［「【]?(next|...)[\]］」】]?$/i` は開き・閉じ括弧をともに `?` で省略可にしており、そのまま実装すると素の `inbox`（裸の単語1語だけの正当なタイトル、例: `add next inbox`）まで誤検知してしまう。両側必須（`?` を外す）へ変更し、`tests/run-tests-write.sh` §W36-8/9（片側括弧のみは通る）で固定した。
+2. **判定対象を「タイトル先頭語のみ」に決定**: 設計書の「誤検知の範囲」記述（「実際に潰れるのはタイトルが `[inbox]` の1語だけのときのみ」）は、`reservedTitleGuardWord`（`extra.length === 1` で判定）と同型に読める書き方だったが、その読み方だと動機となった実事故（`add "[inbox]" "本来のタイトル"` という2トークン、`extra.length === 2`）そのものを検出できない。実装時に「先頭語のみ判定・後続トークンの有無は問わない」形へ判断し、`tests/run-tests-write.sh` §W36-4 で実事故のパターンを直接再現して固定した。
+3. **リテラル列挙から定数組み立てへ変更**: 設計書は7ラベルをリテラルで列挙していたが、`GTD_LABELS.concat([PROJECT_LABEL]).join('|')` から動的に組み立てる形にし、将来 `GTD_LABELS` が増えたときの追従漏れを避けた。
+
+**テスト:** `tests/run-tests-write.sh` に §W36（14ケース・33アサーション: 核心・直接再現2〔単独/2トークン実事故再現〕・誤検知なし8・境界1・検査順序1・i18n1・全角括弧2）を新設した。設計書が最低ラインとして挙げた3ケース（`[inbox]` 単独→エラー／クォート済み1トークン→通る／裸トークン→従来どおり）はいずれも含む。追加したガード呼び出し1箇所（`guardBracketedGtdLabel(titleTokens, ADD_USAGE)`）を一時的に無効化して実行し、核心アサーション（W36-1・W36-4・W36-5・W36-6・W36-7・W36-14の該当分、計18アサーション）が確実に FAIL することを実測で確認した（残り15アサーションは誤検知なし系・境界値・検査順序・title_empty優先の回帰確認で、ガードの有無に関わらずPASSする設計のため無効化後もPASSのままが正しい）。全2,075件PASS（書き込み系1,128/1,128、前回2,042→+33）。GitHub への実書き込みは行わず、スタブ経由のみで検証した。
+
+**対象ファイル:** `todo-engine.js`（`BRACKETED_GTD_RE`・`findBracketedGtdLabel()`・`guardBracketedGtdLabel()` の新設、`runAdd` への配線1箇所、`error.bracketed_gtd_label`/`error.bracketed_gtd_label_hint_category`/`error.bracketed_gtd_label_hint_title` の ja/en 新設）、`tests/run-tests-write.sh`（§W36新設）、`todo.md`（`add` 行への追記）、`CHANGELOG.md`、`DEVELOPMENT.md`（本セクション・テスト総件数の更新）
+
+**レビュー指摘による追加修正（2026-09-12、コードレビューでの指摘）:**
+
+コードレビューで2件の 🔴 修正必須が見つかり、条件付き合格とされた。
+
+1. **🔴-1 前後に空白1文字を含めるだけでガードを回避できた**: `findBracketedGtdLabel()` は `titleTokens[0]` の生の値をアンカー付き正規表現でそのまま検査していたため、半角スペース・タブ・全角スペースが前後に1文字でもあると不一致になり、`add ' [inbox] ' '本来のタイトル'` が exit 0 で通ってしまっていた（本Issueが塞ごうとした事故と同型）。判定にのみ `titleTokens[0].trim()` を使うよう修正した（実際のタイトル文字列・`parsed.extra` は書き換えない。前後空白が残ること自体は既存挙動でスコープ外のまま）。JS の `String.prototype.trim()` は半角スペース・タブ・全角スペース（U+3000）をいずれも除去することを実測で確認した。
+2. **🔴-2 エラーヒント「前後に語を足すか」が、後ろに足す場合は機能しなかった**: 判定が先頭語のみを見る仕様（本Issueの設計判断）のため、`[inbox]` の**前**に語を足すと回避できるが**後ろ**に足しても直らない。クォートを主案内にし語を足す場合は前に限定する案を採用し、ja/en 両方のヒント文言を修正した。`todo.md` の `add` 行の追記文にも同じ曖昧さが伝播していたため合わせて修正した。修正作業中に自分で発見した副次バグとして、修正後の文言に `{word}` プレースホルダを2回使ったところ `tpl()`（`String.prototype.replace()` を非グローバルで使用）が最初の1回しか置換せず、出力に生の `"{word}"` が残る不具合を実装直後の手動検証で発見・修正した（プレースホルダを1メッセージにつき1回のみ使う形に書き換えた。`tpl()` 自体の仕様変更は影響範囲が広いため見送った）。
+
+回帰テストとして `tests/run-tests-write.sh` に §W36-15〜20（6ケース・19アサーション）を追加した。🔴-1 用に半角スペース・タブ・全角スペースでパディングした3ケース（W36-15〜17）と、パディング付きクォート済み多語タイトルが引き続き通ることの誤検知なし確認（W36-18）、🔴-2 用にヒント文言のピンポイント検証（W36-19 ja／W36-20 en。旧文言「前後に」/`add more words around it` が残っていないこと、新文言が存在すること、`{word}` 置換漏れがないことを検証）を追加した。**W36-16（タブケース）の実装時、`assert_exit_fail` 単体では判定力がないことを実測で発見した**: タブ文字は `validateTitle()` の制御文字禁止（`\p{Cc}`）にも該当するため、`trim()` を無効化した状態でもタブケースは「制御文字エラー」という**別の理由**で exit 非0・API 0行になり、当初の `assert_exit_fail`+`assert_eq API0行` の組み合わせでは偽陽性（本来 FAIL すべきなのに PASS）が発生した（#1934パート4/#1937で既出の「別経路のエラーで判定が誤ってPASSする」罠と同型）。エラー本文が「装飾GTDラベル」由来であることを確認するアサーションを追加して判定力を持たせ、無効化実験で正しく FAIL することを再確認した（W36-17も同様に強化）。全2,094件PASS（書き込み系1,147/1,147、前回2,075→+19。新規6ケース19アサーションの純増であり、既存W36-16/17の強化分〔各+1〕もこの19に含まれる）。`guardBracketedGtdLabel(titleTokens, ADD_USAGE)` の呼び出しを一時的に無効化（trim() のみ除去）して実行し、W36-1/4/5/6/7/15/16/17 が確実に FAIL することを実測で確認した。ヒント文言についても、旧文言へ一時的に戻して W36-19/20 の該当アサーションが確実に FAIL することを実測で確認し、直後に元に戻した。
 
 ## 翻訳方針（i18n）
 
