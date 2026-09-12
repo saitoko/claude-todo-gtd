@@ -78,7 +78,7 @@ MCP_MODEでは `bash ~/.claude/todo.sh` は呼び出さない。GitHub MCP ツ�
 
 ### GTD カテゴリ
 
-GTD ラベルは `next` / `routine` / `inbox` / `waiting` / `someday` / `reference` の6種類（`project` は独立した親カテゴリ）。`routine` は繰り返しタスク専用のカテゴリで、単体では機能せず `--recur` とセットで使う（例: `add routine "日報を書く" --recur daily`）。`today`/`dashboard` には routine 専用の表示区分があり、実施漏れが期日超過とは別枠で通知される。詳細は `todo-manual.md` の「引き出しの種類」を参照。
+GTD ラベルは `next` / `routine` / `inbox` / `waiting` / `someday` / `reference` の6種類（`project` は独立した親カテゴリ）。`routine` は繰り返しタスク専用のカテゴリで、`--recur` とのセット使用が必須（例: `add routine "日報を書く" --recur daily`）。`--recur` を指定しない `add routine`、および `recur` を持たない Issue を `routine` へ `move`/`bulk move` する操作はエラーになる（先に `edit --recur` で設定してから移動する）。`--recur` 指定時に `--due` を省略すると、`today` を含む `today` 以降で最初の該当日を初回 `due` として自動算出する（`--due` を明示指定した場合は上書きしない）。`today`/`dashboard` には routine 専用の表示区分があり、実施漏れが期日超過とは別枠で通知される。詳細は `todo-manual.md` の「引き出しの種類」を参照。
 
 ### タスク管理
 
@@ -109,10 +109,10 @@ GTD ラベルは `next` / `routine` / `inbox` / `waiting` / `someday` / `referen
 
 | コマンド | 引数 | 説明 |
 |---------|------|------|
-| `add` / GTDキーワード | `[GTD] <タイトル> [@ctx...] [#tag...] [--due 日付] [--desc テキスト] [--body "本文"] [--body-file <path>] [--recur パターン] [--project 番号] [--priority p1\|p2\|p3\|--p1\|--p2\|--p3] [--estimate 時間] [--label 名前] [--activate 日付] [--before 期間] [--depends-on 番号] [--resume-condition テキスト]` | タスク追加（GTD省略時: inbox）。`--body`/`--body-file` で本文を直接指定可能（`--body-file` が優先）。`--label` は `@ctx`/`#tag` とは別枠の汎用ラベルを付与（未存在なら自動作成）。英字で始まるタイトルは `add` を明示必須（例: `/todo add My Task`）。英字で始まる引数を `add` なしで渡すとコマンド名と混同されエラーになる。タイトルが `list`/`help`/`project`/`counts` 等の単一トークンかつ既知コマンド名と完全一致する場合（例: `/todo project list`）もゴミIssue化を防ぐため誤爆ガードが発火する（`add` を明示すれば通る）。引数欄にないフラグ名（タイプミス・値を書き忘れた既知フラグを含む）は未知フラグとしてエラー終了する（黙ってタイトルへ連結しない）。`--dry-run` のような語をタイトルに含めたい場合は、タイトル全体を1つの引数としてクォートする（例: `/todo add next "--dry-run を追加する"`）。`--note` / `--actual` / `--color` / `--due-offset` など**他コマンドでは有効なフラグ**を `add` に渡すと、「このコマンドでは使えません」というエラーで終了する。タイトルの先頭語が `[inbox]` / `「next」` / `【project】` のように角括弧・鉤括弧・隅付き括弧で装飾された GTD ラベルと完全一致する場合、カテゴリ指定の書き損じとしてエラー終了する（カテゴリのつもりなら角括弧を外す、タイトルの一部にしたいならタイトル全体を1つの引数としてクォートする。判定は先頭語のみを見るため、語を足して回避する場合はラベルより前に足すこと。後ろに足しても解消しない） |
+| `add` / GTDキーワード | `[GTD] <タイトル> [@ctx...] [#tag...] [--due 日付] [--desc テキスト] [--body "本文"] [--body-file <path>] [--recur パターン] [--project 番号] [--priority p1\|p2\|p3\|--p1\|--p2\|--p3] [--estimate 時間] [--label 名前] [--activate 日付] [--before 期間] [--depends-on 番号] [--resume-condition テキスト]` | タスク追加（GTD省略時: inbox）。`--body`/`--body-file` で本文を直接指定可能（`--body-file` が優先）。`--label` は `@ctx`/`#tag` とは別枠の汎用ラベルを付与（未存在なら自動作成）。英字で始まるタイトルは `add` を明示必須（例: `/todo add My Task`）。英字で始まる引数を `add` なしで渡すとコマンド名と混同されエラーになる。タイトルが `list`/`help`/`project`/`counts` 等の単一トークンかつ既知コマンド名と完全一致する場合（例: `/todo project list`）もゴミIssue化を防ぐため誤爆ガードが発火する（`add` を明示すれば通る）。引数欄にないフラグ名（タイプミス・値を書き忘れた既知フラグを含む）は未知フラグとしてエラー終了する（黙ってタイトルへ連結しない）。`--dry-run` のような語をタイトルに含めたい場合は、タイトル全体を1つの引数としてクォートする（例: `/todo add next "--dry-run を追加する"`）。`--note` / `--actual` / `--color` / `--due-offset` など**他コマンドでは有効なフラグ**を `add` に渡すと、「このコマンドでは使えません」というエラーで終了する。タイトルの先頭語が `[inbox]` / `「next」` / `【project】` のように角括弧・鉤括弧・隅付き括弧で装飾された GTD ラベルと完全一致する場合、カテゴリ指定の書き損じとしてエラー終了する（カテゴリのつもりなら角括弧を外す、タイトルの一部にしたいならタイトル全体を1つの引数としてクォートする。判定は先頭語のみを見るため、語を足して回避する場合はラベルより前に足すこと。後ろに足しても解消しない）。`routine` カテゴリは `--recur` が必須で、省略するとエラー終了する（`add routine "タイトル" --recur weekly` のように指定する）。`--recur` を指定し `--due` を省略した場合は初回 `due` を自動算出する |
 | `list` | `[GTD] [@ctx] [#tag] [p1\|p2\|p3] [project <番号>] [--group] [--no-due] [--no-estimate] [--json]` | タスク一覧（フィルタ組み合わせ可）。`--group` で期限別グルーピング表示。`--no-due` で期限未設定のタスクのみ表示（`--group` より優先）。`--no-estimate` で見積もり未設定のタスクのみ表示。`--json` で JSON 出力（他フラグと併用可） |
 | `done` | `<#> [--actual 時間] [--note "テキスト"]` | タスク完了（recurあれば次のIssue自動作成）。`--note` を指定すると close 後にコメントを追加（振り返りメモ等） |
-| `move` | `<#> <GTD> [--note "テキスト"]` | GTDカテゴリ変更。`--note` を指定するとラベル変更後にコメントを追加（降格理由等） |
+| `move` | `<#> <GTD> [--note "テキスト"]` | GTDカテゴリ変更。`--note` を指定するとラベル変更後にコメントを追加（降格理由等）。`routine` への移動は移動先Issueが既に `recur` を持つことが必須（未設定ならエラー。先に `edit --recur` で設定する） |
 | `edit` | `<#> [--due 日付] [--desc テキスト] [--recur パターン\|clear] [--priority p1\|p2\|p3\|clear\|--p1\|--p2\|--p3] [--project 番号] [--estimate 時間] [--activate 日付] [--before 期間] [--depends-on 番号] [--resume-condition テキスト]` | 複数フィールド一括編集（後半4つの使い方は「チクラーファイル」節を参照） |
 | `rename` | `<#> <新タイトル>` | タイトル変更 |
 | `due` | `<#> <日付>` | 期日設定。日付に空白を含む場合はクォートする（例: `due 42 "今週 金曜"`）。クォートせず値の後に余分な引数を渡すとエラー終了する |
@@ -148,7 +148,7 @@ GTD ラベルは `next` / `routine` / `inbox` / `waiting` / `someday` / `referen
 
 | コマンド | 説明 |
 |---------|------|
-| `bulk <done\|move\|tag\|untag\|priority> <#>...` | 複数Issue一括操作（`bulk done` はリカレンス再作成・依存タスク昇格も個別 `done` と同様に実行） |
+| `bulk <done\|move\|tag\|untag\|priority> <#>...` | 複数Issue一括操作（`bulk done` はリカレンス再作成・依存タスク昇格も個別 `done` と同様に実行）。`bulk move ... routine` は対象Issueごとに `recur` の有無を確認し、`recur` を持たない項目のみエラー表示（全体は継続。単体 `move` と同じ条件） |
 | `search <キーワード> [--json]` | オープンIssueをタイトル・本文から検索。`--json` 以外の `--` で始まる引数（タイプミス）はエラー終了する（キーワードへ黙って混入しない） |
 | `show <#> [--json]` | 個別タスク詳細表示 |
 | `schema` | `--json` 出力のフィールド定義を表示 |

@@ -4616,6 +4616,66 @@ assert_eq "§52-19 境界値(パート1.5): contexts は許可・tags は許可�
   "tags" "$(node "$ENGINE" find-unsupported-flag '["contexts","tags"]' '["contexts"]')"
 
 # ──────────────────────────────────────────
+# §53  初回due自動導出 firstDueFromToday()（Issue #1950）
+# due未設定のrecur付きIssueが/todo todayのどのセクションにも表示されない問題への対処。
+# 「today を含む、today以降で最初の該当日」を返す純粋関数を、CLI経由（`first-due`）で
+# Octokitスタブなしに検証する。runAdd 経由の結合テスト（メッセージ・issues.create body
+# への反映）は run-tests-write.sh §W37 参照。
+# TEST_TODAY=2026-04-05 は日曜日（このファイル冒頭で定義済み）。
+# ──────────────────────────────────────────
+echo ""
+echo "§53  初回due自動導出 firstDueFromToday()（Issue #1950）"
+
+# --- daily/weekly/monthly（サフィックスなし）は常に today ---
+assert_eq "§53-1 daily: 常にtoday" \
+  "2026-04-05" "$(node "$ENGINE" first-due daily 2026-04-05)"
+assert_eq "§53-2 weekly(サフィックスなし): 常にtoday" \
+  "2026-04-05" "$(node "$ENGINE" first-due weekly 2026-04-05)"
+assert_eq "§53-3 monthly(サフィックスなし): 常にtoday" \
+  "2026-04-05" "$(node "$ENGINE" first-due monthly 2026-04-05)"
+
+# --- weekdays: 境界値（土曜/日曜/平日） ---
+assert_eq "§53-4 weekdays 境界値: 平日(月, 2026-04-06)に登録 → today" \
+  "2026-04-06" "$(node "$ENGINE" first-due weekdays 2026-04-06)"
+assert_eq "§53-5 weekdays 境界値: 土曜(2026-04-04)に登録 → 翌月曜(2026-04-06)" \
+  "2026-04-06" "$(node "$ENGINE" first-due weekdays 2026-04-04)"
+assert_eq "§53-6 weekdays 境界値: 日曜(2026-04-05)に登録 → 翌月曜(2026-04-06)" \
+  "2026-04-06" "$(node "$ENGINE" first-due weekdays 2026-04-05)"
+
+# --- weekly:<dow>: 境界値（当日一致/不一致） ---
+assert_eq "§53-7 weekly:sat 境界値: 土曜当日(2026-04-04)に登録 → today" \
+  "2026-04-04" "$(node "$ENGINE" first-due weekly:sat 2026-04-04)"
+assert_eq "§53-8 weekly:sat: 日曜(2026-04-05)に登録 → 次の土曜(2026-04-11、+6日)" \
+  "2026-04-11" "$(node "$ENGINE" first-due weekly:sat 2026-04-05)"
+assert_eq "§53-9 weekly:mon: 日曜(2026-04-05)に登録 → 翌日の月曜(2026-04-06、+1日)" \
+  "2026-04-06" "$(node "$ENGINE" first-due weekly:mon 2026-04-05)"
+assert_eq "§53-10 weekly:mon 境界値: 月曜当日(2026-04-06)に登録 → today" \
+  "2026-04-06" "$(node "$ENGINE" first-due weekly:mon 2026-04-06)"
+
+# --- monthly:<日>: 境界値（当日一致/前/後、月またぎ） ---
+assert_eq "§53-11 monthly:15 境界値: 15日当日に登録 → today" \
+  "2026-04-15" "$(node "$ENGINE" first-due monthly:15 2026-04-15)"
+assert_eq "§53-12 monthly:15: 15日より前(10日)に登録 → 同月15日" \
+  "2026-04-15" "$(node "$ENGINE" first-due monthly:15 2026-04-10)"
+assert_eq "§53-13 monthly:15: 15日より後(20日)に登録 → 翌月15日" \
+  "2026-05-15" "$(node "$ENGINE" first-due monthly:15 2026-04-20)"
+
+# --- monthly:31 境界値: 31日のない月（4月=30日、2月=28日）にクランプ ---
+assert_eq "§53-14 monthly:31 境界値: 31日のない月末当日(2026-04-30)に登録 → today(クランプ)" \
+  "2026-04-30" "$(node "$ENGINE" first-due monthly:31 2026-04-30 2>/dev/null)"
+assert_eq "§53-15 monthly:31: 31日のない月の月中(2026-04-15)に登録 → 同月末(2026-04-30、クランプ)" \
+  "2026-04-30" "$(node "$ENGINE" first-due monthly:31 2026-04-15 2>/dev/null)"
+assert_eq "§53-16 monthly:31 境界値: 2月末(2026-02-28)に登録 → today(クランプ)" \
+  "2026-02-28" "$(node "$ENGINE" first-due monthly:31 2026-02-28 2>/dev/null)"
+assert_contains "§53-17 monthly:31 クランプ時は既存の warn.month_day_clamped がstderrに出る" \
+  "クランプ" "$(node "$ENGINE" first-due monthly:31 2026-04-30 2>&1 1>/dev/null)"
+
+# --- ガード除去実験: firstDueFromToday() 本体を「常にtodayを返すだけ」に差し替えて
+# 実行した結果、§53-5/6/8/9/12/13/15/17 の8件がFAILすることを実装時に手動確認済み
+# （§53-1/2/3/4/7/10/11/14/16はいずれも「todayが正解」の境界のため陰性対照として
+# 元々PASSのまま。詳細は完了報告を参照）。
+
+# ──────────────────────────────────────────
 # 書き込み系ハンドラのスタブベーステスト（run-tests-write.sh、Issue #1648）
 # 3,266行超に肥大化した本ファイルへの追記を避けるため別ファイルに分離し、
 # ここで子プロセスとして呼び出して結果を合算する。実行口は

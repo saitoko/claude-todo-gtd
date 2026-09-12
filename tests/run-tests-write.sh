@@ -4767,6 +4767,238 @@ rm -f "$W36_20_LOG"
 # ガード除去による回帰検出: runAdd 内の `guardBracketedGtdLabel(titleTokens, ADD_USAGE);` 行を
 # 一時的にコメントアウトして実行し、W36-1/4/5/6/7/15/16/17 が確実に FAIL することを実装時に
 # 手動で確認済み（詳細は完了報告を参照）。
+
+# ──────────────────────────────────────────
+# §W37  runAdd — recur指定・due未指定時の初回due自動導出（Issue #1950）
+# 純粋関数 firstDueFromToday() のロジック検証は run-tests.sh §53 参照。
+# ここでは runAdd の結合（issues.create body への反映・出力メッセージ・
+# due明示指定時の非上書き・GTDカテゴリ非依存）をスタブ経由で検証する。
+# ──────────────────────────────────────────
+echo ""
+echo "§W37  runAdd — recur指定・due未指定時の初回due自動導出（Issue #1950）"
+
+W37_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{}],"issues.create":[{"data":{"number":7001,"html_url":"https://github.com/test-owner/test-repo/issues/7001"}}]}'
+
+# W37-1 正常系: recur daily・due未指定 → todayが自動導出され、専用メッセージで示される
+W37_1_LOG=$(mktemp /tmp/todo-test-w37-1-XXXXXX)
+W37_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W37_RESP" OCTOKIT_STUB_LOG_ENV="$W37_1_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run add routine "Water plants" --recur daily 2>&1); W37_1_EC=$?
+assert_exit_ok "W37-1 正常系: exit 0" "$W37_1_EC"
+assert_contains "W37-1: 自動導出メッセージ（期日+recurパターンを明示）" \
+  "期日: 2026-04-05（recur: daily から自動設定）" "$W37_1_OUT"
+assert_not_contains "W37-1: プレースホルダ {due} が生のまま残っていない" '{due}' "$W37_1_OUT"
+assert_not_contains "W37-1: プレースホルダ {recur} が生のまま残っていない" '{recur}' "$W37_1_OUT"
+assert_contains "W37-1: issues.create body に自動導出dueとrecurが反映（today=due）" \
+  '"body":"due: 2026-04-05\nrecur: daily\n"' "$(log_lines_for_method "$W37_1_LOG" issues.create)"
+rm -f "$W37_1_LOG"
+
+# W37-2 正常系: recur weekly:sat・due未指定・today自体が土曜 → todayがそのまま初回due
+W37_2_LOG=$(mktemp /tmp/todo-test-w37-2-XXXXXX)
+W37_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W37_RESP" OCTOKIT_STUB_LOG_ENV="$W37_2_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-04 \
+  node "$ENGINE" run add routine "Weekly review" --recur weekly:sat 2>&1); W37_2_EC=$?
+assert_exit_ok "W37-2 正常系: exit 0" "$W37_2_EC"
+assert_contains "W37-2: 土曜当日登録は自動導出dueがtoday(2026-04-04)になる" \
+  "期日: 2026-04-04（recur: weekly:sat から自動設定）" "$W37_2_OUT"
+assert_contains "W37-2: issues.create body（コロン付きrecurも保持）" \
+  '"body":"due: 2026-04-04\nrecur: weekly:sat\n"' "$(log_lines_for_method "$W37_2_LOG" issues.create)"
+rm -f "$W37_2_LOG"
+
+# W37-2B 正常系: recur weekly:sat・today自体は日曜(登録日≠導出due) → todayではなく次の土曜が
+# 導出されることを確認する（「常にtodayを返すだけの実装」でも通ってしまうW37-1/2との違いを
+# 埋める重要なケース。詳細はガード除去実験の自己申告参照）。
+W37_2B_LOG=$(mktemp /tmp/todo-test-w37-2b-XXXXXX)
+W37_2B_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W37_RESP" OCTOKIT_STUB_LOG_ENV="$W37_2B_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run add routine "Weekly review sun" --recur weekly:sat 2>&1); W37_2B_EC=$?
+assert_exit_ok "W37-2B 正常系: exit 0" "$W37_2B_EC"
+assert_contains "W37-2B: 日曜登録は自動導出dueがtodayでなく次の土曜(2026-04-11)になる" \
+  "期日: 2026-04-11（recur: weekly:sat から自動設定）" "$W37_2B_OUT"
+assert_not_contains "W37-2B: todayがそのまま使われていない（2026-04-05が期日として出ない）" \
+  "期日: 2026-04-05" "$W37_2B_OUT"
+assert_contains "W37-2B: issues.create body に次の土曜(today+6日)が反映" \
+  '"body":"due: 2026-04-11\nrecur: weekly:sat\n"' "$(log_lines_for_method "$W37_2B_LOG" issues.create)"
+rm -f "$W37_2B_LOG"
+
+# W37-3 正常系: recur指定でも due明示指定時は自動導出しない（上書きしない・尊重される）
+W37_3_LOG=$(mktemp /tmp/todo-test-w37-3-XXXXXX)
+W37_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W37_RESP" OCTOKIT_STUB_LOG_ENV="$W37_3_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run add routine "Weekly review 2" --recur weekly --due 2026-04-20 2>&1); W37_3_EC=$?
+assert_exit_ok "W37-3 正常系: exit 0" "$W37_3_EC"
+assert_contains "W37-3: due明示指定時は通常の期日表示（自動設定の注記なし）" \
+  "期日: 2026-04-20" "$W37_3_OUT"
+assert_not_contains "W37-3: 「自動設定」の注記が出ない（明示指定を尊重）" "自動設定" "$W37_3_OUT"
+assert_contains "W37-3: issues.create body に明示指定のdueがそのまま反映（todayに書き換わらない）" \
+  '"body":"due: 2026-04-20\nrecur: weekly\n"' "$(log_lines_for_method "$W37_3_LOG" issues.create)"
+rm -f "$W37_3_LOG"
+
+# W37-4 正常系: recur未指定・due未指定 → 従来通りdue空のまま（期日行が出力されない回帰確認）
+W37_4_LOG=$(mktemp /tmp/todo-test-w37-4-XXXXXX)
+W37_4_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W37_RESP" OCTOKIT_STUB_LOG_ENV="$W37_4_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run add next "Simple task without recur" 2>&1); W37_4_EC=$?
+assert_exit_ok "W37-4 正常系: exit 0" "$W37_4_EC"
+assert_not_contains "W37-4: recurなしの場合は期日行が一切出力されない（従来挙動の回帰確認）" \
+  "期日:" "$W37_4_OUT"
+assert_contains "W37-4: issues.create body が空（due/recurどちらも設定されない）" \
+  '"body":""' "$(log_lines_for_method "$W37_4_LOG" issues.create)"
+rm -f "$W37_4_LOG"
+
+# W37-5 正常系(Issue再現・#1770型): waiting + recur monthly:15、GTDカテゴリで分岐しないこと
+W37_5_LOG=$(mktemp /tmp/todo-test-w37-5-XXXXXX)
+W37_5_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W37_RESP" OCTOKIT_STUB_LOG_ENV="$W37_5_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-15 \
+  node "$ENGINE" run add waiting "IPPF-like waiting task" --recur monthly:15 2>&1); W37_5_EC=$?
+assert_exit_ok "W37-5 正常系: exit 0" "$W37_5_EC"
+assert_contains "W37-5: waiting（routine以外）でも自動導出される（GTDカテゴリ非依存）" \
+  "期日: 2026-04-15（recur: monthly:15 から自動設定）" "$W37_5_OUT"
+assert_contains "W37-5: ラベルはwaiting" "ラベル: ⏳ waiting" "$W37_5_OUT"
+assert_contains "W37-5: issues.create body" \
+  '"body":"due: 2026-04-15\nrecur: monthly:15\n"' "$(log_lines_for_method "$W37_5_LOG" issues.create)"
+rm -f "$W37_5_LOG"
+
+# W37-6 正常系: 英語メッセージ（LANG_ENV=en）でプレースホルダ置換漏れ・日本語混入がないこと
+W37_6_LOG=$(mktemp /tmp/todo-test-w37-6-XXXXXX)
+W37_6_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W37_RESP" OCTOKIT_STUB_LOG_ENV="$W37_6_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 LANG_ENV=en \
+  node "$ENGINE" run add routine "Water plants en" --recur daily 2>&1); W37_6_EC=$?
+assert_exit_ok "W37-6 正常系: exit 0" "$W37_6_EC"
+assert_contains "W37-6: en 自動導出メッセージ" \
+  "Due: 2026-04-05 (auto-set from recur: daily)" "$W37_6_OUT"
+assert_not_contains "W37-6: プレースホルダ {due}/{recur} が生のまま残っていない" '{due}' "$W37_6_OUT"
+assert_no_japanese "W37-6: 出力に日本語が1文字も含まれない" "$W37_6_OUT"
+rm -f "$W37_6_LOG"
+
+# ガード除去による回帰検出: runAdd 内の `if (parsed.recur && !due) { due = firstDueFromToday(...); ... }`
+# ブロックを一時的に無効化して実行し、W37-1/2/2B/5/6 の計9アサーション（自動導出値・
+# issues.create body反映を検証する箇所すべて）が確実に FAIL することを実装時に手動確認済み
+# （W37-3/4はrecurなし/due明示指定のため元々このブロックを通らず、ガード除去の影響を
+# 受けない設計＝陰性対照として引き続きPASS。詳細は完了報告を参照）。
+
+# ──────────────────────────────────────────
+# §W38  routineカテゴリはrecurが必須（Issue #1950 追加対応、reviewer🔴-1/🟡-1）
+# `/todo add routine "タイトル"`（--recur省略）が#1950の症状（due空・recur空のroutineが
+# /todo todayから消える）をノーガードで再現していた穴（🔴-1）と、`add next` → `move <#> routine`
+# の2手順で同型の穴に到達できる経路（🟡-1の一部）を塞ぐ。runBulk の move はexecMoveGtdを
+# 経由しない独立実装であることが本セクション実装時のスキャンで判明したため、bulk move にも
+# 同じガードを追加した（reviewerの走査範囲にはなかった追加スコープ。完了報告で自己申告）。
+# ──────────────────────────────────────────
+echo ""
+echo "§W38  routineカテゴリはrecurが必須（Issue #1950 追加対応）"
+
+# W38-1 異常系(🔴-1核心): add routine・--recur省略 → exit 1・API呼び出しゼロ
+# 注: あえて GET labels / issues.create の応答をフルに用意する（ガードが無効化されても
+# 後続処理が普通に「成功」できる状態にしておく）。応答を用意しないと、ガード除去実験時に
+# 「スタブ未設定エラーによる別原因のexit 1」を「ガードが効いた」と誤認してしまう
+# （exit_failアサーションだけでは discriminate できない偽陽性。実装時に実測して気づいた）。
+W38_1_LOG=$(mktemp /tmp/todo-test-w38-1-XXXXXX); : > "$W38_1_LOG"
+W38_1_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{}],"issues.create":[{"data":{"number":7103,"html_url":"https://github.com/test-owner/test-repo/issues/7103"}}]}'
+W38_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W38_1_RESP" OCTOKIT_STUB_LOG_ENV="$W38_1_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run add routine "No recur routine" 2>&1); W38_1_EC=$?
+assert_exit_fail "W38-1 異常系: add routine(--recur省略) → exit 1" "$W38_1_EC"
+assert_contains "W38-1: エラーメッセージが具体例(--recur weekly)を示す" \
+  '/todo add routine "タイトル" --recur weekly' "$W38_1_OUT"
+assert_eq "W38-1: API呼び出しゼロ（ensureLabel等の副作用より前に検証）" "0" "$(wc -l < "$W38_1_LOG" | tr -d ' ')"
+rm -f "$W38_1_LOG"
+
+# W38-2 正常系(回帰確認): add next・recurなし → 従来どおり成功（routine以外は対象外）
+W38_2_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{}],"issues.create":[{"data":{"number":7101,"html_url":"https://github.com/test-owner/test-repo/issues/7101"}}]}'
+W38_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W38_2_RESP" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run add next "Plain next task" 2>&1); W38_2_EC=$?
+assert_exit_ok "W38-2 正常系: add next(recurなし) → exit 0（routine限定ガードで巻き込まれない）" "$W38_2_EC"
+
+# W38-3 正常系(回帰確認): add waiting・recurなし → 従来どおり成功
+W38_3_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{}],"issues.create":[{"data":{"number":7102,"html_url":"https://github.com/test-owner/test-repo/issues/7102"}}]}'
+W38_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W38_3_RESP" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run add waiting "Plain waiting task" 2>&1); W38_3_EC=$?
+assert_exit_ok "W38-3 正常系: add waiting(recurなし) → exit 0" "$W38_3_EC"
+
+# W38-4 異常系: add routine・--recur省略（英語メッセージ）。W38-1と同じ理由でRESPをフルに用意。
+W38_4_LOG=$(mktemp /tmp/todo-test-w38-4-XXXXXX); : > "$W38_4_LOG"
+W38_4_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{}],"issues.create":[{"data":{"number":7104,"html_url":"https://github.com/test-owner/test-repo/issues/7104"}}]}'
+W38_4_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W38_4_RESP" OCTOKIT_STUB_LOG_ENV="$W38_4_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 LANG_ENV=en \
+  node "$ENGINE" run add routine "No recur routine en" 2>&1); W38_4_EC=$?
+assert_exit_fail "W38-4 異常系(en): add routine(--recur省略) → exit 1" "$W38_4_EC"
+assert_contains "W38-4: en エラーメッセージが具体例を示す" \
+  '/todo add routine "title" --recur weekly' "$W38_4_OUT"
+assert_no_japanese "W38-4: 出力に日本語が1文字も含まれない" "$W38_4_OUT"
+rm -f "$W38_4_LOG"
+
+# W38-5 異常系(🟡-1関連): move <#> routine・移動先issueにrecurがない → exit 1・ラベル変更API呼び出しゼロ
+W38_5_LOG=$(mktemp /tmp/todo-test-w38-5-XXXXXX); : > "$W38_5_LOG"
+# 注: W38-1と同じ理由でremoveLabel/addLabelsの応答も用意しておく（ガード除去時に
+# 「スタブ未設定エラー」ではなく「ガードが本当に効いたか」を判別できるようにするため）。
+W38_5_RESP='{"issues.get":[{"data":{"number":20500,"body":"","labels":[{"name":"📥 inbox"}]}}],"issues.removeLabel":[{}],"issues.addLabels":[{}]}'
+W38_5_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W38_5_RESP" OCTOKIT_STUB_LOG_ENV="$W38_5_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run move 20500 routine 2>&1); W38_5_EC=$?
+assert_exit_fail "W38-5 異常系: move <#> routine(recurなし) → exit 1" "$W38_5_EC"
+assert_contains "W38-5: エラーメッセージが具体的なedit案内を示す(コピペ可能な#番号入り)" \
+  "/todo edit 20500 --recur weekly" "$W38_5_OUT"
+assert_eq "W38-5: issues.get 呼び出し1回のみ" "1" "$(log_count "$W38_5_LOG" issues.get)"
+assert_eq "W38-5: issues.removeLabel 呼び出しゼロ（ラベル変更より前に検証）" "0" "$(log_count "$W38_5_LOG" issues.removeLabel)"
+assert_eq "W38-5: issues.addLabels 呼び出しゼロ（ラベル変更より前に検証）" "0" "$(log_count "$W38_5_LOG" issues.addLabels)"
+rm -f "$W38_5_LOG"
+
+# W38-6 正常系(回帰確認): move <#> routine・移動先issueが既にrecurを持つ → 従来どおり成功
+W38_6_LOG=$(mktemp /tmp/todo-test-w38-6-XXXXXX); : > "$W38_6_LOG"
+W38_6_RESP='{"issues.get":[{"data":{"number":20501,"body":"recur: weekly\n","labels":[{"name":"📥 inbox"}]}}],"issues.removeLabel":[{}],"issues.addLabels":[{}]}'
+W38_6_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W38_6_RESP" OCTOKIT_STUB_LOG_ENV="$W38_6_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run move 20501 routine 2>&1); W38_6_EC=$?
+assert_exit_ok "W38-6 正常系: move <#> routine(recurあり) → exit 0（回帰なし）" "$W38_6_EC"
+assert_eq "W38-6: issues.addLabels 呼び出し1回（ラベル変更は従来どおり実行）" "1" "$(log_count "$W38_6_LOG" issues.addLabels)"
+rm -f "$W38_6_LOG"
+
+# W38-7 異常系(🟡-1核心・追加スキャンで発見): bulk move <#>... routine・recurなしと
+# recurありが混在 → recurなしの項目のみitem_errorとして扱われ、recurありの項目は成功する
+# （bulk系の既存方針「1件の失敗で全体を止めない」を踏襲）
+W38_7_LOG=$(mktemp /tmp/todo-test-w38-7-XXXXXX); : > "$W38_7_LOG"
+# 注: removeLabel/addLabelsを2件ずつ用意する（ガード除去実験で#20600も#20601と同様に
+# 移動処理へ進んだ場合、両方が消費されて初めて「ガードが本当に効いたか」を判別できる。
+# 1件ずつだとスタブ未設定エラーで#20600が失敗した"ように見える"だけの偽陽性になる）。
+W38_7_RESP='{"issues.get":[{"data":{"number":20600,"body":"","labels":[{"name":"📥 inbox"}]}},{"data":{"number":20601,"body":"recur: daily\n","labels":[{"name":"🎯 next"}]}}],"issues.removeLabel":[{},{}],"issues.addLabels":[{},{}]}'
+W38_7_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W38_7_RESP" OCTOKIT_STUB_LOG_ENV="$W38_7_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run bulk move 20600 20601 routine 2>&1); W38_7_EC=$?
+assert_exit_ok "W38-7 正常系(bulk全体はexit 0・item_errorで部分失敗を表現): exit 0" "$W38_7_EC"
+assert_contains "W38-7: recurなしの#20600がitem_errorとして報告される" \
+  "#20600 エラー: routineへの移動にはrecurが必須です" "$W38_7_OUT"
+assert_contains "W38-7: エラーメッセージがコピペ可能なedit案内を示す" \
+  "/todo edit 20600 --recur weekly" "$W38_7_OUT"
+assert_contains "W38-7: 成功件数1・エラー件数1のサマリー" "1件を 🔁 routine に移動（エラー: 1件）" "$W38_7_OUT"
+assert_eq "W38-7: #20600に対するaddLabelsは呼ばれない（recurなし項目は変更されない）" \
+  "1" "$(log_count "$W38_7_LOG" issues.addLabels)"
+# 注(自己申告): 以下のassert_containsは文字列名に反して「20601以外が含まれないこと」
+# までは検証していない（部分一致のみ）。ガード除去実験でも実際にPASSのまま残った
+# （後続の「W38-7: #20600に対するaddLabelsは呼ばれない」assert_eqの方が真の検証を担っている。
+# 詳細は完了報告の自己申告を参照）。
+assert_contains "W38-7: addLabels呼び出しに#20601（recurあり）が含まれる" \
+  '"issue_number":20601' "$(log_lines_for_method "$W38_7_LOG" issues.addLabels)"
+rm -f "$W38_7_LOG"
+
+# ガード除去による回帰検出（3箇所を個別に無効化。stub応答は「ガードが無効化されても
+# 後続処理が正常終了できる」ようフルに用意し、スタブ未設定エラーによる偽陽性を排除した
+# うえで実測 — 詳細は完了報告の自己申告を参照）:
+# (1) runAdd内の `if (gtd === 'routine' && !parsed.recur) { ...exit(1); }` を無効化 →
+#     W38-1(3アサーション: exit_fail・メッセージ・API呼び出しゼロ)・W38-4(2アサーション:
+#     exit_fail・メッセージ)の計5件がFAILすることを実装時に手動確認済み
+#     （W38-2/3はrecur必須ガードの対象外カテゴリのため無傷＝陰性対照）
+# (2) execMoveGtd内の `if (target === 'routine') { ... throw ... }` を無効化 →
+#     W38-5の4アサーション(exit_fail・メッセージ・removeLabelゼロ・addLabelsゼロ)がFAILする
+#     ことを実装時に手動確認済み（「issues.get呼び出し1回のみ」は導出結果に関わらず真の
+#     ため無傷＝陰性対照。W38-6は対象外で無傷）
+# (3) runBulkのmove分岐内の同等ガードを無効化 →
+#     W38-7の4アサーション(item_error報告・メッセージ・サマリー件数・addLabelsゼロ)がFAILする
+#     ことを実装時に手動確認済み（直前の「唯一の〜」assertはPASSのまま残った＝上記の自己申告参照）
+# 3つのガードは独立した挿入箇所（runAdd/execMoveGtd/runBulk）のため、それぞれ個別に無効化して
+# 検証した（詳細は完了報告を参照）。
 echo ""
 echo "=========================================="
 W_TOTAL=$((PASS+FAIL))

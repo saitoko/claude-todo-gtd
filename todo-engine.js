@@ -338,6 +338,9 @@ const MESSAGES = {
     'error.move_to_project_forbidden': 'エラー: project への移動はできません。\nプロジェクト昇格には /todo promote-project <N> を使ってください。',
     'error.gtd_label_required': 'エラー: GTDラベルは {labels} のいずれかです。',
     'error.gtd_label_missing': 'エラー: GTDラベルを指定してください。',
+    'error.routine_needs_recur_add': 'エラー: routine には --recur が必須です（例: /todo add routine "タイトル" --recur weekly）。',
+    'error.routine_needs_recur_move': 'エラー: routine への移動には recur が必須です。先に /todo edit {num} --recur weekly のようにrecurを設定してから移動してください。',
+    'error.routine_needs_recur_move_bulk': 'routineへの移動にはrecurが必須です。先に /todo edit {num} --recur weekly のようにrecurを設定してから移動してください。',
     'error.title_empty': 'エラー: タイトルが空です。',
     'error.unknown_flag': 'エラー: 不明なフラグです: {flag}',
     'error.unknown_flag_hint': 'ヒント: この語をタイトルに含めたい場合は、タイトル全体を1つの引数としてクォートしてください（例: /todo add next "--dry-run を追加する"）。タイトルがこの語1語だけの場合は、前後に語を足してください（例: 「--dry-run」の扱いを決める）。',
@@ -361,6 +364,7 @@ const MESSAGES = {
     'add.title_line': '  タイトル: {title}',
     'add.labels_line': '  ラベル: {labels}',
     'add.due_line': '  期日: {due}',
+    'add.due_line_auto': '  期日: {due}（recur: {recur} から自動設定）',
     'add.activate_line': '  昇格予定: {activate}',
     'add.url_line': '  URL: {url}',
     'warn.project_fetch_failed': '⚠️ プロジェクト #{num} の取得に失敗しました: {msg}',
@@ -717,6 +721,9 @@ const MESSAGES = {
     'error.move_to_project_forbidden': 'Error: Cannot move to project.\nUse /todo promote-project <N> to promote to a project.',
     'error.gtd_label_required': 'Error: GTD label must be one of {labels}.',
     'error.gtd_label_missing': 'Error: Please specify a GTD label.',
+    'error.routine_needs_recur_add': 'Error: routine requires --recur (example: /todo add routine "title" --recur weekly).',
+    'error.routine_needs_recur_move': 'Error: moving to routine requires recur. Set recur first, e.g. /todo edit {num} --recur weekly, then move.',
+    'error.routine_needs_recur_move_bulk': 'moving to routine requires recur. Set recur first, e.g. /todo edit {num} --recur weekly, then move.',
     'error.title_empty': 'Error: Title is empty.',
     'error.unknown_flag': 'Error: unknown flag: {flag}',
     'error.unknown_flag_hint': 'Hint: to keep this word in the title, quote the whole title as a single argument (e.g. /todo add next "add --dry-run"). If the title is only this word, add words around it (e.g. "decide how to handle --dry-run").',
@@ -740,6 +747,7 @@ const MESSAGES = {
     'add.title_line': '  Title: {title}',
     'add.labels_line': '  Labels: {labels}',
     'add.due_line': '  Due: {due}',
+    'add.due_line_auto': '  Due: {due} (auto-set from recur: {recur})',
     'add.activate_line': '  Activate: {activate}',
     'add.url_line': '  URL: {url}',
     'warn.project_fetch_failed': '⚠️ Failed to fetch project #{num}: {msg}',
@@ -1255,6 +1263,63 @@ function nextDueCatchUp(pattern, base, today) {
     process.stderr.write(tpl('warn.recur_catchup_limit', { limit: MAX_RECUR_CATCHUP_ITERATIONS, date })+'\n');
   }
   return { nextDate: date, skipped };
+}
+
+// weekly:<曜日> の「today を含む、today 以降で最初にその曜日と一致する日」を返す。
+// nextDueWeeklyOnDow（周期完了時の次回due計算）とは異なり、最低1周期空ける制約を
+// 課さない。今日がまさにその曜日なら今日を返す（Issue #1950 初回due導出専用）。
+function firstDueOnDow(today, targetDow) {
+  const dow = new Date(today+'T00:00:00').getDay();
+  const diff = (targetDow - dow + 7) % 7;
+  return diff === 0 ? today : addDays(today, diff);
+}
+
+// monthly:<日> の「today を含む、today 以降で最初にその日と一致する日」を返す。
+// nextDueMonthlyOnDay（周期完了時、基準日+1ヶ月以降を狙う）とは異なり、当月内に
+// 対象日がまだ来ていなければ当月中を返す。対象日が当月に存在しない場合
+// （2/30等）は月末にクランプする（Issue #1950 初回due導出専用）。
+function firstDueOnDay(today, targetDay) {
+  const dt = new Date(today+'T00:00:00');
+  const y = dt.getFullYear(), m = dt.getMonth(), day = dt.getDate();
+  const daysInMonth = new Date(y, m+1, 0).getDate();
+  const candidateDay = Math.min(targetDay, daysInMonth);
+  if (candidateDay >= day) {
+    if (candidateDay !== targetDay) {
+      process.stderr.write(tpl('warn.month_day_clamped', { day: targetDay, month: m+1, date: fmt(new Date(y, m, candidateDay)) })+'\n');
+    }
+    return fmt(new Date(y, m, candidateDay));
+  }
+  // 当月の対象日はすでに today より前 → 翌月へ
+  const nextDaysInMonth = new Date(y, m+2, 0).getDate();
+  const nextCandidateDay = Math.min(targetDay, nextDaysInMonth);
+  if (nextCandidateDay !== targetDay) {
+    process.stderr.write(tpl('warn.month_day_clamped', { day: targetDay, month: m+2, date: fmt(new Date(y, m+1, nextCandidateDay)) })+'\n');
+  }
+  return fmt(new Date(y, m+1, nextCandidateDay));
+}
+
+// recur パターンから「初回due」を導出する（Issue #1950）。
+// 登録時点の意図は「今日から回し始める」ことなので、nextDue()（周期完了時、
+// 常に基準日より後を返す）とは異なり「today を含む、today 以降で最初の該当日」を返す。
+// 呼び出し前に validateRecur(pattern) 済みであることが前提（未検証パターンは呼ばない）。
+function firstDueFromToday(pattern, today) {
+  const { base, suffix } = splitRecurPattern(pattern);
+  switch (base) {
+    case 'daily': return today;
+    case 'weekly':
+      if (suffix === null) return today;
+      return firstDueOnDow(today, RECUR_WEEKDAY_TO_DOW[suffix]);
+    case 'monthly':
+      if (suffix === null) return today;
+      return firstDueOnDay(today, parseInt(suffix, 10));
+    case 'weekdays': {
+      const dow = new Date(today+'T00:00:00').getDay(); // 0=Sun..6=Sat
+      if (dow === 6) return addDays(today, 2); // Sat→Mon
+      if (dow === 0) return addDays(today, 1); // Sun→Mon
+      return today;
+    }
+    default: return today;
+  }
 }
 
 // GTDルーティンの「後始末漏れ」検知閾値（Issue #1776）。
@@ -3001,6 +3066,7 @@ switch (cmd) {
   case 'format-time':     process.stdout.write(formatTime(args[1])); break;
   case 'priority-color':  process.stdout.write(priorityColor(args[1])); break;
   case 'next-due':        process.stdout.write(nextDue(args[1], args[2])); break;
+  case 'first-due':       process.stdout.write(firstDueFromToday(args[1], args[2])); break;
   case 'next-due-catchup': process.stdout.write(JSON.stringify(nextDueCatchUp(args[1], args[2], args[3]))); break;
   case 'cycles-overdue':  process.stdout.write(String(computeCyclesOverdue(args[1], args[2], args[3]))); break;
   case 'find-unknown-flag': {
@@ -3753,6 +3819,24 @@ async function runAdd(octokit, owner, repo, tokens) {
   if (due) validateDue(due);
 
   if (parsed.recur) validateRecur(parsed.recur);
+  // Issue #1950 追加対応（reviewer🔴-1）: routineカテゴリはrecurが必須（仕様
+  // routine-status.md:120）。`/todo add routine "タイトル"`（--recur省略）は
+  // due空・recur空のroutineを1コマンドでノーガード生成でき、#1950の症状を
+  // そのまま再現する入口だった。validateRecur直後・API副作用（ensureLabel等）より
+  // 前に検証する。
+  if (gtd === 'routine' && !parsed.recur) {
+    process.stderr.write(t('error.routine_needs_recur_add')+'\n');
+    process.exit(1);
+  }
+  // Issue #1950: recur指定かつdue未指定の場合、初回dueを自動導出する。
+  // due空のroutineが/todo todayのどのセクションにも表示されない問題（#1950）への
+  // 入口対処。GTDカテゴリ（gtd変数）では分岐しない — waiting等routine以外のカテゴリで
+  // recurを使う場合でもdueは有用なため。due明示指定時はこの分岐に入らず尊重される。
+  let dueAutoDerived = false;
+  if (parsed.recur && !due) {
+    due = firstDueFromToday(parsed.recur, today);
+    dueAutoDerived = true;
+  }
   if (parsed.project) validateNumber(parsed.project);
   for (const ctx of parsed.contexts) validateCtx(ctx.slice(1));
   for (const tag of parsed.tags) validateTag(tag.slice(1));
@@ -3858,7 +3942,12 @@ async function runAdd(octokit, owner, repo, tokens) {
   let createdMsg = tpl('add.created_header', { num: data.number })
     + '\n' + tpl('add.title_line', { title })
     + '\n' + tpl('add.labels_line', { labels: labelStr });
-  if (due) createdMsg += '\n' + tpl('add.due_line', { due });
+  if (due) {
+    // Issue #1950: 自動導出した初回dueは、明示指定と区別できるよう別メッセージで示す。
+    createdMsg += '\n' + (dueAutoDerived
+      ? tpl('add.due_line_auto', { due, recur: parsed.recur })
+      : tpl('add.due_line', { due }));
+  }
   if (activate) createdMsg += '\n' + tpl('add.activate_line', { activate });
   createdMsg += '\n' + tpl('add.url_line', { url: data.html_url });
   runOut(createdMsg);
@@ -4239,6 +4328,17 @@ async function execMoveGtd(octokit, owner, repo, num, target) {
     throw apiErr(tpl('error.gtd_label_required', { labels: GTD_LABELS.join('/') }));
   }
   const { data: issue } = await octokit.issues.get({ owner, repo, issue_number: num });
+  // Issue #1950 追加対応（reviewer🟡-1の一部）: routineへの移動もrecur必須にする
+  // （runAddと同じ設計思想）。`add next` → `move <#> routine` の2手順で
+  // recurなしのroutineが作れてしまう入口を、add側と同じ不変条件で塞ぐ。
+  // 「recur指定・due未指定」の初回due自動導出はmove側では行わない（edit --recur
+  // 経由でrecurのみ後付けした場合の挙動は完了報告で自己申告する既知の残課題）。
+  if (target === 'routine') {
+    const { recur: existingRecur } = parseBodyObj(issue.body || '');
+    if (!existingRecur) {
+      throw apiErr(tpl('error.routine_needs_recur_move', { num }));
+    }
+  }
   const labelNames = issue.labels.map(l => l.name);
   const oldGtdLabel = labelNames.find(l => GTD_LABELS.includes(normLabel(l)));
   const newLabel = GTD_DISPLAY[target];
@@ -5520,6 +5620,14 @@ async function runBulk(octokit, owner, repo, tokens) {
     for (const num of nums) {
       try {
         const issue = await fetchAndParseIssue(octokit, owner, repo, num);
+        // Issue #1950 追加対応: bulk move はexecMoveGtdを経由しない独立実装のため、
+        // 単体move（execMoveGtd）に入れたrecur必須ガードがここには効かない。
+        // fetchAndParseIssueが返すissue.recurは既にparseBodyObj済み（3641-3645行相当）。
+        // bulk系の既存方針（1件の失敗で全体を止めず item_error に集約）に合わせ、
+        // process.exit ではなく throw でこのtry/catchに委ねる。
+        if (target === 'routine' && !issue.recur) {
+          throw new Error(tpl('error.routine_needs_recur_move_bulk', { num }));
+        }
         const oldGtd = issue.labels.find(l => GTD_LABELS.includes(normLabel(l)));
         if (oldGtd && oldGtd !== newLabel) {
           await removeLabelIfPresent(octokit, owner, repo, num, oldGtd);

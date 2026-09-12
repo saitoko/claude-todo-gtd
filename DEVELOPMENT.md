@@ -660,6 +660,26 @@ function guardExtraPositional(extraTokens, usage, hintKey, example) {
 
 回帰テストとして `tests/run-tests-write.sh` に §W36-15〜20（6ケース・19アサーション）を追加した。🔴-1 用に半角スペース・タブ・全角スペースでパディングした3ケース（W36-15〜17）と、パディング付きクォート済み多語タイトルが引き続き通ることの誤検知なし確認（W36-18）、🔴-2 用にヒント文言のピンポイント検証（W36-19 ja／W36-20 en。旧文言「前後に」/`add more words around it` が残っていないこと、新文言が存在すること、`{word}` 置換漏れがないことを検証）を追加した。**W36-16（タブケース）の実装時、`assert_exit_fail` 単体では判定力がないことを実測で発見した**: タブ文字は `validateTitle()` の制御文字禁止（`\p{Cc}`）にも該当するため、`trim()` を無効化した状態でもタブケースは「制御文字エラー」という**別の理由**で exit 非0・API 0行になり、当初の `assert_exit_fail`+`assert_eq API0行` の組み合わせでは偽陽性（本来 FAIL すべきなのに PASS）が発生した（#1934パート4/#1937で既出の「別経路のエラーで判定が誤ってPASSする」罠と同型）。エラー本文が「装飾GTDラベル」由来であることを確認するアサーションを追加して判定力を持たせ、無効化実験で正しく FAIL することを再確認した（W36-17も同様に強化）。全2,094件PASS（書き込み系1,147/1,147、前回2,075→+19。新規6ケース19アサーションの純増であり、既存W36-16/17の強化分〔各+1〕もこの19に含まれる）。`guardBracketedGtdLabel(titleTokens, ADD_USAGE)` の呼び出しを一時的に無効化（trim() のみ除去）して実行し、W36-1/4/5/6/7/15/16/17 が確実に FAIL することを実測で確認した。ヒント文言についても、旧文言へ一時的に戻して W36-19/20 の該当アサーションが確実に FAIL することを実測で確認し、直後に元に戻した。
 
+### 2026-09-13: `due` 未設定の `routine` が `/todo today` から消える（Issue #1950）
+
+**症状:** `renderToday()` の `routine` 判定は `if (due && due < todayStr) {...} else if (due && due === todayStr) {...}` の2分岐のみで `else` を持たない。`due` が空の `routine` Issue はどちらの分岐にも該当せず、`/todo today` のどのセクションにも表示されない。表示されないため `done` を打つ機会が来ず、`due` も付かないままになる（`done` を1回でも打てば `recur` の周期計算経由で `due` が自動的に付く設計だが、そもそも実行を促す表示がないため打鍵まで辿り着けない）。
+
+**修正1 — 初回 `due` の自動導出:** `runAdd` で `--recur` を指定し `--due` を省略した場合、新設した `firstDueFromToday(pattern, today)` が「`today` を含む、`today` 以降で最初の該当日」を算出し `due` に設定する。既存の `nextDue()`（周期完了時の次回計算。常に基準日より**後**を返す）とは意図的に異なる関数として分離した: `nextDue()` をそのまま初回 `due` に流用すると `weekly` は `today+7日` になり、登録した週は一度も表示されないまま終わる。`daily`/`weekly`（無サフィックス）/`monthly`（無サフィックス）は `today` 自身、`weekdays` は土日なら翌月曜、`weekly:<曜日>`/`monthly:<日>` は該当日が `today` 以降に来るまで進める（該当日が実在しない月は月末クランプ。既存 `nextDueMonthlyOnDay`/`warn.month_day_clamped` を再利用）。`--due` を明示指定した場合は上書きしない。GTDカテゴリでは分岐しないため `routine` 以外（`waiting` 等）でも同様に働く。
+
+**修正2 — `routine` は `recur` を必須化:** 修正1だけでは「`--recur` 自体を指定し忘れた `add routine`」という、より起きやすい入口が残ったままだった（コードレビューで実測発見）。`routine` は設計上 `recur` とセットで使うカテゴリだが、これを強制するバリデーションがなく、`/todo add routine "タイトル"`（`--recur` 省略）だけで `due`/`recur` ともに空の Issue が作れてしまい、上記の症状をノーガードで再現できた。「`routine` へ入るには `recur` が必須」という不変条件を、`routine` ラベルを付与しうる3つの独立した経路すべてに追加した: (1) `runAdd`（新規作成時、`--recur` 省略でエラー）、(2) `execMoveGtd`（`/todo move <#> routine` および内部の `api move-gtd`。移動先Issueの `body` を確認し `recur` が空ならエラー）、(3) `runBulk` の `move` サブコマンド（`execMoveGtd` を経由しない別実装だったため、コードレビューで発見してから追加した。対象Issueごとに判定し、`recur` を持たない項目のみ `bulk` 既存の `item_error` 方式でエラー表示し、残りの項目は処理を継続する）。生の JSON を直接投入する `api create-issue`/`api add-labels` はこの検証の対象外（既存の設計どおり無検証のエスケープハッチとして維持）。
+
+**既知の残課題（意図的にスコープ外とした）:**
+
+1. `template save`（インライン形式、`routine` カテゴリで `--recur` 省略）→ `template use` の経路は、`runAdd`/`execMoveGtd`/`runBulk` のいずれも経由しない独立実装のため、修正2のガードが一切効かない。コードレビューで構造的な穴として指摘されたが、テンプレートで `routine` を使う既存データが0件だったこと・影響範囲の切り分けのため、本対応では見送り別Issueとして扱う。
+2. `/todo add`（`recur` なし）→ `/todo edit --recur weekly`（`recur` のみ後付け）→ `/todo move <#> routine` という3手順では、`move` の時点で既に `recur` が存在するため修正2のガードを通過し、`due` は空のまま残る。`edit --recur` に初回 `due` 自動導出を入れない判断（`before`/`activate`/`dueChanged` の既存ロジックとの相互作用リスクを理由に対象外とした）を維持する限り、この経路は塞げない。
+3. `/todo add --due clear --recur weekly` は、`validateDue()` が `edit`/`due` コマンドの「期日削除」用に `clear`/空文字を早期許可する既存実装（2026-04-05頃導入）を `add` でも共有しているため、`due` 変数が文字列 `"clear"`（truthy）になり自動導出をすり抜ける。`body` に無意味な `due: clear` が書き込まれるが、これは本Issue以前から存在する別系統の不具合であり、本対応では修正していない。
+
+**テスト:** 純粋関数 `firstDueFromToday()`/`firstDueOnDow()`/`firstDueOnDay()` の単体テストを `tests/run-tests.sh` に §53（17アサーション。recur 4種 × サフィックスあり/なしの全組み合わせ、境界値: `weekdays` の土/日、`weekly:<曜日>`/`monthly:<日>` の当日一致、`monthly:31` の月末クランプ）として新設し、CLI直接呼び出し用の `first-due` サブコマンドを追加した。結合テストは `tests/run-tests-write.sh` に §W37（初回 `due` 自動導出、7ケース）・§W38（`routine` の `recur` 必須化、7ケース・21アサーション）を新設した。全2,159件PASS（書き込み系1,195/1,195）。GitHub への実書き込みは行わず、スタブ経由のみで検証した。
+
+追加した3箇所のガードをそれぞれ個別に一時的に無効化して実行し、対応するアサーション群（`runAdd`側5件・`execMoveGtd`側4件・`runBulk`側4件）が確実に FAIL することを実測で確認した。**実装時に2種類のテスト設計の不備を自分で発見し修正した**: (1) 当初 §W37 のテストケースが「`today` 自体が導出結果と一致する」入力のみで構成されており、`firstDueFromToday()` を「常に `today` を返すだけ」に壊しても差分が出ない状態だった。`today` とは異なる日付が導出されるケース（`weekly:sat` を日曜に登録）を追加して修正した。(2) ガード除去実験用のスタブ応答を必要最小限（検証対象のAPI呼び出しのみ）にしていたため、ガードを無効化すると「スタブ未設定エラー」という別原因で `exit 1` になり、`assert_exit_fail` 単独では実際にガードが効いたかを判別できない偽陽性が生じていた（#1937/#1934パート4で既出の「別経路のエラーで判定が誤ってPASSする」罠と同型）。ガード無効化後も後続処理が正常終了できるよう応答を完備させてから再実験し、正しい FAIL 件数を確定させた。コードレビューでも両方が独立に再現・確認されている。
+
+**対象ファイル:** `todo-engine.js`（`firstDueOnDow()`/`firstDueOnDay()`/`firstDueFromToday()` の新設、`first-due` CLIサブコマンド、`runAdd`/`execMoveGtd`/`runBulk` への配線、`error.routine_needs_recur_add`/`error.routine_needs_recur_move`/`error.routine_needs_recur_move_bulk`/`add.due_line_auto` の ja/en 新設）、`tests/run-tests.sh`（§53新設）、`tests/run-tests-write.sh`（§W37/§W38新設）、`todo.md`（`routine` の説明・`add`/`move`/`bulk` 行への追記）、`CHANGELOG.md`、`DEVELOPMENT.md`（本セクション）
+
 ## 翻訳方針（i18n）
 
 `todo-engine.js` の出力は `MESSAGES`/`t()`（`LANG_ENV=en` で英語、それ以外は日本語）で管理しているが、以下の3箇所は方針として `t()` 化せず英語固定とする。新しくコマンド・出力を追加する際はこの方針に従うこと。
