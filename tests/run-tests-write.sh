@@ -4846,11 +4846,11 @@ assert_contains "W37-4: issues.create body が空（due/recurどちらも設定�
   '"body":""' "$(log_lines_for_method "$W37_4_LOG" issues.create)"
 rm -f "$W37_4_LOG"
 
-# W37-5 正常系(Issue再現・#1770型): waiting + recur monthly:15、GTDカテゴリで分岐しないこと
+# W37-5 正常系(waiting + recur の組み合わせ): waiting + recur monthly:15、GTDカテゴリで分岐しないこと
 W37_5_LOG=$(mktemp /tmp/todo-test-w37-5-XXXXXX)
 W37_5_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W37_RESP" OCTOKIT_STUB_LOG_ENV="$W37_5_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-15 \
-  node "$ENGINE" run add waiting "IPPF-like waiting task" --recur monthly:15 2>&1); W37_5_EC=$?
+  node "$ENGINE" run add waiting "Monthly vendor status check" --recur monthly:15 2>&1); W37_5_EC=$?
 assert_exit_ok "W37-5 正常系: exit 0" "$W37_5_EC"
 assert_contains "W37-5: waiting（routine以外）でも自動導出される（GTDカテゴリ非依存）" \
   "期日: 2026-04-15（recur: monthly:15 から自動設定）" "$W37_5_OUT"
@@ -4878,12 +4878,12 @@ rm -f "$W37_6_LOG"
 # 受けない設計＝陰性対照として引き続きPASS。詳細は完了報告を参照）。
 
 # ──────────────────────────────────────────
-# §W38  routineカテゴリはrecurが必須（Issue #1950 追加対応、reviewer🔴-1/🟡-1）
+# §W38  routineカテゴリはrecurが必須（Issue #1950 追加対応、レビュー指摘🔴-1/🟡-1）
 # `/todo add routine "タイトル"`（--recur省略）が#1950の症状（due空・recur空のroutineが
 # /todo todayから消える）をノーガードで再現していた穴（🔴-1）と、`add next` → `move <#> routine`
 # の2手順で同型の穴に到達できる経路（🟡-1の一部）を塞ぐ。runBulk の move はexecMoveGtdを
 # 経由しない独立実装であることが本セクション実装時のスキャンで判明したため、bulk move にも
-# 同じガードを追加した（reviewerの走査範囲にはなかった追加スコープ。完了報告で自己申告）。
+# 同じガードを追加した（レビュー指摘の走査範囲にはなかった追加スコープ。完了報告で自己申告）。
 # ──────────────────────────────────────────
 echo ""
 echo "§W38  routineカテゴリはrecurが必須（Issue #1950 追加対応）"

@@ -3819,7 +3819,7 @@ async function runAdd(octokit, owner, repo, tokens) {
   if (due) validateDue(due);
 
   if (parsed.recur) validateRecur(parsed.recur);
-  // Issue #1950 追加対応（reviewer🔴-1）: routineカテゴリはrecurが必須（仕様
+  // Issue #1950 追加対応（レビュー指摘🔴-1）: routineカテゴリはrecurが必須（仕様
   // routine-status.md:120）。`/todo add routine "タイトル"`（--recur省略）は
   // due空・recur空のroutineを1コマンドでノーガード生成でき、#1950の症状を
   // そのまま再現する入口だった。validateRecur直後・API副作用（ensureLabel等）より
@@ -4328,7 +4328,7 @@ async function execMoveGtd(octokit, owner, repo, num, target) {
     throw apiErr(tpl('error.gtd_label_required', { labels: GTD_LABELS.join('/') }));
   }
   const { data: issue } = await octokit.issues.get({ owner, repo, issue_number: num });
-  // Issue #1950 追加対応（reviewer🟡-1の一部）: routineへの移動もrecur必須にする
+  // Issue #1950 追加対応（レビュー指摘🟡-1の一部）: routineへの移動もrecur必須にする
   // （runAddと同じ設計思想）。`add next` → `move <#> routine` の2手順で
   // recurなしのroutineが作れてしまう入口を、add側と同じ不変条件で塞ぐ。
   // 「recur指定・due未指定」の初回due自動導出はmove側では行わない（edit --recur
