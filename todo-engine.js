@@ -288,6 +288,7 @@ const MESSAGES = {
     // promote / activate
     'error.before_needs_due': 'エラー: --before を使うには --due が必要です',
     'error.before_format': 'エラー: --before は 14d / 2w 形式で指定してください（例: 14d, 2w）',
+    'error.add_due_clear_not_allowed': 'エラー: 新規作成時に --due clear は指定できません（削除する既存の期日が存在しないため）。期日を設定しない場合は --due 自体を省略してください。',
     'error.activate_after_due': '⚠️ 警告: activate日（{activate}）が due日（{due}）より後です',
     'promote.header': '## チクラーファイル昇格',
     'promote.promoted': '✅ #{num} 「{title}」を next に昇格しました（activate: {activate}）',
@@ -671,6 +672,7 @@ const MESSAGES = {
     // promote / activate
     'error.before_needs_due': 'Error: --before requires --due',
     'error.before_format': 'Error: --before must be in 14d / 2w format (e.g. 14d, 2w)',
+    'error.add_due_clear_not_allowed': 'Error: --due clear cannot be used when creating a new issue (there is no existing due date to clear). Omit --due entirely if you do not want to set one.',
     'error.activate_after_due': '⚠️ Warning: activate date ({activate}) is after due date ({due})',
     'promote.header': '## Tickler File Promotion',
     'promote.promoted': '✅ #{num} "{title}" promoted to next (activate: {activate})',
@@ -2613,6 +2615,13 @@ function templateSaveFrom() {
   if (recur) t.recur = recur;
   const proj = process.env.PROJECT_ENV || '';
   if (proj) t.project = parseInt(proj);
+  // 呼び出し側（template save <name> from <#>）はコピー元Issueの優先度ラベルを
+  // 解析済みで PRIORITY_ENV にセットしている。以前は templateSave()（インライン形式）
+  // だけが t.priority を書き込んでおり、この関数（from形式）には対応する代入が
+  // 存在しなかった（非対称）。読み忘れたまま常に templateUse() 側の
+  // `t.priority||'p3'` フォールバックへ落ちるため、コピー元が p1/p2 でも
+  // 保存後は常に p3 扱いになっていた。
+  t.priority = process.env.PRIORITY_ENV || 'p3';
   const desc = process.env.DESC_ENV || '';
   if (desc) t.desc = desc;
   data[name] = t;
@@ -3814,6 +3823,19 @@ async function runAdd(octokit, owner, repo, tokens) {
     }
   }
 
+  // Issue #1953: 'clear' は「既存Issueの期日を削除する」ための予約語（validateDue が
+  // due/edit 向けに早期許可している）。add はまだ存在しないIssueを作る操作であり、
+  // 削除対象の期日自体が存在しないため 'clear' は意味を持たない。normalizeDue に渡すと
+  // どのパターンにも一致せず 'clear' がそのまま返り（truthy）、#1950 の初回due自動導出
+  // （if (parsed.recur && !due)）もすり抜けて、body に無意味な `due: clear` が書き込まれて
+  // しまう。normalizeDue に渡す前に弾く。
+  // 空文字（--due ""）は従来どおり許可する: parsed.due は falsy になり due 正規化自体を
+  // 経由しない（次行の三項演算子で due='' のまま）ため、--due 省略時と同じ「期日なし」に
+  // 収束する。body への書き込みも発生しない（buildBody の `if (due) body += ...`）。
+  if (parsed.due === 'clear') {
+    process.stderr.write(t('error.add_due_clear_not_allowed')+'\n');
+    process.exit(1);
+  }
   // due 正規化（normalizeDue が M/D → YYYY-MM-DD も処理する）
   let due = parsed.due ? normalizeDue(parsed.due, today) : '';
   if (due) validateDue(due);
