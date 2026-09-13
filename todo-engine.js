@@ -891,7 +891,10 @@ const MESSAGES = {
 function t(key) { return (MESSAGES[LANG] || MESSAGES.ja)[key] || MESSAGES.ja[key] || key; }
 function tpl(key, vars) {
   let s = t(key);
-  for (const [k, v] of Object.entries(vars)) s = s.replace('{' + k + '}', v);
+  // #1949: String.replace() は非グローバルのため、同一プレースホルダを1メッセージ内で
+  // 2回以上使うと2回目以降が置換されず生の "{key}" のまま残っていた。
+  // split/join は正規表現を使わないため特殊文字エスケープ不要で、全出現を安全に置換できる。
+  for (const [k, v] of Object.entries(vars)) s = s.split('{' + k + '}').join(v);
   return s;
 }
 function cnt(n) { return LANG === 'ja' ? n + '件' : String(n); }
