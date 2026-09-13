@@ -139,6 +139,50 @@ assert_exit_fail() {
   fi
 }
 
+# ────────────────────────────────────────────
+# セクション帰属ヘルパー（Issue #1952 Phase 2）
+#
+# list-all/list --group/today/eisenhower は、複数カテゴリ（GTDラベル別セクション・
+# 期限別バケット・四象限）が同一の per-item renderer（renderIssueList()/renderIssue()）
+# を共有している。そのため bare な `#N` やタイトル文字列の grep では「どのカテゴリに
+# 出たか」を判別できず、分類ロジックが壊れて隣接カテゴリへ混入しても検出できない
+# （空アサーション。Issue #1952 Phase 2）。
+#
+# 見出し行から次の見出し行または終端までを抽出してスコープを絞る、という一般的な
+# セクション抽出の形である。ファイルを対象にする実装が多いが、本ファイルはコマンド
+# 出力を bash 変数に格納する慣習のため、変数を直接受け取る形にしている。境界マーカーは呼び出し側が
+# 指定する（list-all/today/eisenhower は "^## "、list --group は "^── "）。
+extract_section() {
+  local content="$1" section_header="$2" boundary_regex="${3:-^## }"
+  printf '%s\n' "$content" | awk -v hdr="$section_header" -v bre="$boundary_regex" '
+    $0 ~ hdr { flag=1; next }
+    flag && $0 ~ bre { flag=0 }
+    flag { print }
+  '
+}
+
+assert_in_section() {
+  local desc="$1" content="$2" section_header="$3" needle="$4" boundary_regex="${5:-^## }"
+  if extract_section "$content" "$section_header" "$boundary_regex" | grep -aqF -- "$needle"; then
+    printf "  ✅ %s\n" "$desc"; PASS=$((PASS+1))
+  else
+    printf "  ❌ %s\n" "$desc"
+    printf "     section=[%s] 内に needle=[%s] が見つからない\n" "$section_header" "$needle"
+    FAIL=$((FAIL+1))
+  fi
+}
+
+assert_not_in_section() {
+  local desc="$1" content="$2" section_header="$3" needle="$4" boundary_regex="${5:-^## }"
+  if extract_section "$content" "$section_header" "$boundary_regex" | grep -aqF -- "$needle"; then
+    printf "  ❌ %s\n" "$desc"
+    printf "     section=[%s] に needle=[%s] が意図せず存在する\n" "$section_header" "$needle"
+    FAIL=$((FAIL+1))
+  else
+    printf "  ✅ %s\n" "$desc"; PASS=$((PASS+1))
+  fi
+}
+
 # normalize_due を TEST_TODAY を使って実行
 normalize_due_test() {
   local raw="$1"
@@ -1155,7 +1199,12 @@ LIST_MOCK='[
 LIST_ALL_OUT=$(OPEN_ENV="$LIST_MOCK" TODAY_ENV="$TEST_TODAY" node "$ENGINE" list-all)
 assert_contains "engine: list-all next ヘッダー"    "Next Actions"    "$LIST_ALL_OUT"
 assert_contains "engine: list-all inbox ヘッダー"   "Inbox"           "$LIST_ALL_OUT"
-assert_contains "engine: list-all #1 表示"          "#1"              "$LIST_ALL_OUT"
+# Issue #1952 Phase 2 書き直し: LIST_MOCKは#1=next,#2=next,#3=inbox,#7=project の
+# 3カテゴリが同時に非空。旧アサーションは「#1がどこかに出現する」だけを見ており、
+# 分類ロジックが壊れて#1がinbox/projectセクションに誤分類されても検出できなかった。
+assert_in_section     "engine: list-all #1はNext Actionsセクションに出現する"    "$LIST_ALL_OUT" "Next Actions" "#1"
+assert_not_in_section "engine: list-all #1はInboxセクションには出現しない"       "$LIST_ALL_OUT" "Inbox"        "#1"
+assert_not_in_section "engine: list-all #1はProjectsセクションには出現しない"    "$LIST_ALL_OUT" "Projects"     "#1"
 assert_contains "engine: list-all サマリー"          "next: 2件"       "$LIST_ALL_OUT"
 assert_contains "engine: list-all project Next有無" "Next Action"     "$LIST_ALL_OUT"
 
@@ -1776,9 +1825,17 @@ TODAY_OUT=$(LANG_ENV=ja OPEN_ENV="$TODAY_DATA" CLOSED_ENV="$CLOSED_DATA" TODAY_E
 assert_contains "ja: today ヘッダー"       "今日のタスク"            "$TODAY_OUT"
 assert_contains "ja: today 日付"           "$TEST_TODAY"             "$TODAY_OUT"
 assert_contains "ja: today 期限超過あり"   "期限超過"                "$TODAY_OUT"
-assert_contains "ja: today #10 表示"       "#10"                     "$TODAY_OUT"
+# Issue #1952 Phase 2 書き直し: TODAY_DATAは#10=overdue,#11=dueTodayの2カテゴリが
+# 同時に非空。旧アサーションは「#10がどこかに出現する」だけを見ており、#10が
+# overdue/dueToday間で誤分類されても検出できなかった。
+# hdrは見出し行のアイコン付き文言を使う（フィクスチャのタイトル自体が
+# "期限超過"というテキストのため、アイコンなしの"期限超過"をhdrにすると
+# アイテム行自体もhdrパターンにマッチしてしまい、抽出が壊れる）。
+assert_in_section     "ja: today #10は期限超過セクションに出現する"     "$TODAY_OUT" "⚠️ 期限超過"   "#10"
+assert_not_in_section "ja: today #10は今日が期限セクションには出現しない" "$TODAY_OUT" "🎯 今日が期限" "#10"
 assert_contains "ja: today 今日が期限"     "今日が期限"              "$TODAY_OUT"
-assert_contains "ja: today #11 表示"       "#11"                     "$TODAY_OUT"
+assert_in_section     "ja: today #11は今日が期限セクションに出現する"     "$TODAY_OUT" "🎯 今日が期限" "#11"
+assert_not_in_section "ja: today #11は期限超過セクションには出現しない"   "$TODAY_OUT" "⚠️ 期限超過"   "#11"
 assert_not_contains "ja: today #12 非表示" "#12"                     "$TODAY_OUT"
 assert_not_contains "ja: today #13 非表示" "#13"                     "$TODAY_OUT"
 assert_contains "ja: today 合計"           "合計"                    "$TODAY_OUT"
@@ -1855,12 +1912,25 @@ assert_contains "group: 明日セクション"      "明日"      "$GROUP_OUT"
 assert_contains "group: 今週セクション"      "今週"      "$GROUP_OUT"
 assert_contains "group: 来週以降セクション"  "来週以降"  "$GROUP_OUT"
 assert_contains "group: 期限なしセクション"  "期限なし"  "$GROUP_OUT"
-assert_contains "group: #1 期限超過"         "#1"        "$GROUP_OUT"
-assert_contains "group: #2 今日"             "#2"        "$GROUP_OUT"
-assert_contains "group: #3 明日"             "#3"        "$GROUP_OUT"
-assert_contains "group: #4 今週"             "#4"        "$GROUP_OUT"
-assert_contains "group: #5 来週以降"         "#5"        "$GROUP_OUT"
-assert_contains "group: #6 期限なし"         "#6"        "$GROUP_OUT"
+# Issue #1952 Phase 2 書き直し: GROUP_MOCKはoverdue/today/tomorrow/thisWeek/later/noDue
+# の6バケットが各1件ずつ同時に非空。旧アサーションは「#Nがどこかに出現する」だけを
+# 見ており、境界値バグで別バケットへ混入しても検出できなかった。バケットの区切りは
+# "── " で始まる（list --group 固有の見出し記法のため boundary_regex を明示指定）。
+assert_in_section     "group: #1は期限超過セクションに出現する（境界混入検出）" "$GROUP_OUT" "期限超過" "#1" '^── '
+assert_not_in_section "group: #1は今日セクションには出現しない"                 "$GROUP_OUT" "── 📅 今日" "#1" '^── '
+assert_in_section     "group: #2は今日セクションに出現する（境界混入検出）"     "$GROUP_OUT" "── 📅 今日" "#2" '^── '
+assert_not_in_section "group: #2は期限超過セクションには出現しない"             "$GROUP_OUT" "期限超過" "#2" '^── '
+assert_not_in_section "group: #2は明日セクションには出現しない"                 "$GROUP_OUT" "明日" "#2" '^── '
+assert_in_section     "group: #3は明日セクションに出現する（境界混入検出）"     "$GROUP_OUT" "明日" "#3" '^── '
+assert_not_in_section "group: #3は今日セクションには出現しない"                 "$GROUP_OUT" "── 📅 今日" "#3" '^── '
+assert_not_in_section "group: #3は今週セクションには出現しない"                 "$GROUP_OUT" "今週" "#3" '^── '
+assert_in_section     "group: #4は今週セクションに出現する（境界混入検出）"     "$GROUP_OUT" "今週" "#4" '^── '
+assert_not_in_section "group: #4は明日セクションには出現しない"                 "$GROUP_OUT" "明日" "#4" '^── '
+assert_not_in_section "group: #4は来週以降セクションには出現しない"             "$GROUP_OUT" "来週以降" "#4" '^── '
+assert_in_section     "group: #5は来週以降セクションに出現する（境界混入検出）" "$GROUP_OUT" "来週以降" "#5" '^── '
+assert_not_in_section "group: #5は今週セクションには出現しない"                 "$GROUP_OUT" "今週" "#5" '^── '
+assert_in_section     "group: #6は期限なしセクションに出現する（境界混入検出）" "$GROUP_OUT" "期限なし" "#6" '^── '
+assert_not_in_section "group: #6は来週以降セクションには出現しない"             "$GROUP_OUT" "来週以降" "#6" '^── '
 
 # --group なし（従来通りフラットリスト）
 GROUP_NOGROUP=$(OPEN_ENV="$GROUP_MOCK" TODAY_ENV="$GROUP_TODAY" FILTER_GTD_ENV="next" node "$ENGINE" list-all)
@@ -1873,7 +1943,9 @@ fi
 # --group フィルタなし（全タスク対象）
 GROUP_ALL=$(OPEN_ENV="$GROUP_MOCK" TODAY_ENV="$GROUP_TODAY" FILTER_GROUP_ENV="1" node "$ENGINE" list-all)
 assert_contains "group: フィルタなし全タスク期限超過" "期限超過" "$GROUP_ALL"
-assert_contains "group: フィルタなし#6表示"          "#6"       "$GROUP_ALL"
+# Issue #1952 Phase 2 書き直し: フィルタなし版も同じ6バケット構造・同じリスクを持つ。
+assert_in_section     "group: フィルタなし#6は期限なしセクションに出現する（境界混入検出）" "$GROUP_ALL" "期限なし" "#6" '^── '
+assert_not_in_section "group: フィルタなし#6は来週以降セクションには出現しない"             "$GROUP_ALL" "来週以降" "#6" '^── '
 
 # 空データ
 GROUP_EMPTY=$(OPEN_ENV='[]' TODAY_ENV="$GROUP_TODAY" FILTER_GTD_ENV="next" FILTER_GROUP_ENV="1" node "$ENGINE" list-all)
@@ -2428,10 +2500,20 @@ EN1_I4=$(make_issue 4 "Q4タスクp3期限なし" "next,p3" "")
 EN1_ISSUES="[${EN1_I1},${EN1_I2},${EN1_I3},${EN1_I4}]"
 
 EN1_OUTPUT=$(OPEN_ENV="$EN1_ISSUES" TODAY_ENV="$EN1_TODAY" node "$ENGINE" eisenhower 2>&1)
-assert_contains "E-N-1: Q1にp1+今日期限タスクが表示される" "今すぐやるタスク" "$EN1_OUTPUT"
-assert_contains "E-N-1: Q2にp2+明日期限タスクが表示される" "計画タスクp2明日" "$EN1_OUTPUT"
-assert_contains "E-N-1: Q3にp3+今日期限タスクが表示される" "Q3タスクp3今日" "$EN1_OUTPUT"
-assert_contains "E-N-1: Q4にp3+期限なしタスクが表示される" "Q4タスクp3期限なし" "$EN1_OUTPUT"
+# Issue #1952 Phase 2 書き直し: EN1_ISSUESはQ1〜Q4に1件ずつ、4象限が同時に非空。
+# descが自ら「Qxに表示される」とカテゴリを主張しているにもかかわらず、旧アサーションは
+# 全文検索のみで、象限判定ロジック（isImportant/isUrgent）が反転しても4件のタイトルは
+# 象限を跨いで出現し続けるため検出できなかった。Q見出しは絵文字付きのため footer の
+# summary行（"📊 Q1: ..."）とは衝突しない。
+assert_in_section     "E-N-1: Q1に今すぐやるタスクが出現する（境界混入検出）"     "$EN1_OUTPUT" "🔴 Q1" "今すぐやるタスク"
+assert_not_in_section "E-N-1: 今すぐやるタスクはQ2には出現しない"                 "$EN1_OUTPUT" "🟡 Q2" "今すぐやるタスク"
+assert_in_section     "E-N-1: Q2に計画タスクp2明日が出現する（境界混入検出）"     "$EN1_OUTPUT" "🟡 Q2" "計画タスクp2明日"
+assert_not_in_section "E-N-1: 計画タスクp2明日はQ1には出現しない"                 "$EN1_OUTPUT" "🔴 Q1" "計画タスクp2明日"
+assert_not_in_section "E-N-1: 計画タスクp2明日はQ4には出現しない"                 "$EN1_OUTPUT" "⬛ Q4" "計画タスクp2明日"
+assert_in_section     "E-N-1: Q3にQ3タスクp3今日が出現する（境界混入検出）"       "$EN1_OUTPUT" "🔵 Q3" "Q3タスクp3今日"
+assert_not_in_section "E-N-1: Q3タスクp3今日はQ4には出現しない"                   "$EN1_OUTPUT" "⬛ Q4" "Q3タスクp3今日"
+assert_in_section     "E-N-1: Q4にQ4タスクp3期限なしが出現する（境界混入検出）"   "$EN1_OUTPUT" "⬛ Q4" "Q4タスクp3期限なし"
+assert_not_in_section "E-N-1: Q4タスクp3期限なしはQ3には出現しない"               "$EN1_OUTPUT" "🔵 Q3" "Q4タスクp3期限なし"
 
 # Q1ヘッダよりQ2ヘッダが後に来ることを確認（順序）
 EN1_Q1_POS=$(printf '%s' "$EN1_OUTPUT" | grep -n "Q1" | head -1 | cut -d: -f1)
@@ -4101,8 +4183,15 @@ TODAY_ROUTINE_MOCK='[
 TODAY_ROUTINE_OUT=$(OPEN_ENV="$TODAY_ROUTINE_MOCK" TODAY_ENV="2026-08-11" CLOSED_ENV='[]' node "$ENGINE" today)
 assert_contains "§43 today: cycles=1(#9101) は従来通り「ルーティン未実施」セクションに出る" \
   "ルーティン未実施（1件）" "$TODAY_ROUTINE_OUT"
-assert_contains "§43 today: #9101(cycles=1)がrenderされる" \
-  "#9101  overdue-1cycle" "$TODAY_ROUTINE_OUT"
+# Issue #1952 Phase 2 書き直し: TODAY_ROUTINE_MOCKは#9101=routineOverdue(cycles=1),
+# #9102/#9103=routineStale(cycles>=2)が同時に非空。旧アサーションはneedleが
+# 「番号+タイトル」のみでrenderIssue()のstale用サフィックス（（推定N周遅延）等）を
+# 含まないため、#9101がroutineStale側に誤分類されてサフィックス付きで出力されても
+# 接頭部分列は一致してしまい検出できなかった。
+assert_in_section     "§43 today: #9101はルーティン未実施セクションに出現する（境界混入検出）" \
+  "$TODAY_ROUTINE_OUT" "ルーティン未実施" "#9101  overdue-1cycle"
+assert_not_in_section "§43 today: #9101は要確認（推定サイクル遅延）セクションには出現しない" \
+  "$TODAY_ROUTINE_OUT" "要確認（推定サイクル遅延" "#9101"
 assert_contains "§43 today: cycles>=2は新設「要確認（推定サイクル遅延）」セクションに分離される（2件）" \
   "要確認（推定サイクル遅延・2件）" "$TODAY_ROUTINE_OUT"
 assert_contains "§43 today: #9102(cycles=3)に推定周遅延の表示が付く" \
