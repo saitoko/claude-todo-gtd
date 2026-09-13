@@ -1498,6 +1498,12 @@ assert_eq "#1652-B1 runDone: postDoneProcessing未到達のためissues.listForR
 assert_contains "#1652-B1 runDone: エラーメッセージに元Issue番号(#90101)が含まれる" "#90101" "$W1652_B1_OUT"
 assert_contains "#1652-B1 runDone: エラーメッセージに作成済み新Issue番号(#90111)が含まれる（副作用の可視化）" "#90111" "$W1652_B1_OUT"
 assert_contains "#1652-B1 runDone: エラーメッセージに元のAPIエラー内容(boom)が含まれる" "boom" "$W1652_B1_OUT"
+# #1949: {num}/{newNum} はいずれも本メッセージ内に2回出現する。上の2アサーションは
+# 1回目の出現（"#{num} のクローズに失敗" / "Issue #{newNum} は作成済み"）だけで既にPASSして
+# しまうため、旧実装（非グローバルreplace）の欠陥を検知できない。2回目の出現位置
+# （末尾の "元 #{num} と新規 #{newNum}"）を実際の値でneedleに含め、そちらも正しく
+# 置換されていることを検証する（旧実装ではこのassertがFAILする）。
+assert_contains "#1652-B1 runDone: 2回目のプレースホルダ出現（元#90101と新規#90111）が正しく置換されている" "元 #90101 と新規 #90111" "$W1652_B1_OUT"
 rm -f "$W1652_B1_LOG"
 
 # #1652-B2: runDone — recurなし・close失敗のケース。newIssueNumberが無いので通常のエラーに
@@ -1887,7 +1893,11 @@ W1880_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1880_3_RESP
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
   node "$ENGINE" run unlink 8703 2>&1); W1880_3_EC=$?
 assert_exit_fail "W22-3 親の食い違い(--forceなし): exit非0" "$W1880_3_EC"
-assert_contains "W22-3: 食い違いエラーに --force の案内が含まれる" "--force を実行してください" "$W1880_3_OUT"
+# #1949: {num} は本メッセージ内に2回出現する（冒頭の "#{num} の body は" と末尾の
+# "/todo unlink {num} --force"）。tpl()が非グローバルreplaceだった旧実装では1回目のみ
+# 置換され、末尾は生の "{num}" のまま残っていた。needleに実際の番号(8703)を含めることで
+# 2回目の出現位置が正しく置換されていることを検証する（旧実装ではこのassertがFAILする）。
+assert_contains "W22-3: 食い違いエラーに --force の案内が含まれる（2回目のプレースホルダ出現=/todo unlink 8703が正しく置換されていること）" "/todo unlink 8703 --force を実行してください" "$W1880_3_OUT"
 assert_eq "W22-3: 登録されていない親へのDELETEは試みない" "0" "$(log_count "$W1880_3_LOG" "DELETE /repos/{owner}/{repo}/issues/{issue_number}/sub_issue")"
 assert_eq "W22-3: issues.update が呼ばれない（bodyは無傷）" "0" "$(log_count "$W1880_3_LOG" issues.update)"
 rm -f "$W1880_3_LOG"
@@ -5224,6 +5234,48 @@ rm -rf "$W40_FAKE_HOME" 2>/dev/null || true
 # ラベル・issues.create labelsにp1が出ない)の計3アサーションが確実にFAILすることを実装時に
 # 手動確認済み（W40-1/4/5は追加した1行を通らない経路のため無傷＝陰性対照として引き続きPASS。
 # 詳細は完了報告を参照）。
+
+# ──────────────────────────────────────────
+# §W41  tpl() の非グローバル replace で同一プレースホルダの2回目以降が
+# 未置換のまま残る（Issue #1949）
+#
+# 背景: tpl() が String.replace() を非グローバルで呼んでおり、同一プレースホルダを
+# 1メッセージ内で2回以上使うメッセージは2回目以降が生の "{key}" のまま出力されていた。
+# 既存3キー（ja: audit.suggestion / error.unlink_mismatch / error.close_failed_after_recur）
+# のうち audit.suggestion はこれまで1件もテストされていなかった。unlink_mismatch /
+# close_failed_after_recur は既存テスト（W22-3 / #1652-B1）があったが、needle が
+# 1回目の出現だけで満たされてしまう弱いアサーションだったため、2回目の出現を検証する形へ
+# 強化した（本セクション直前の該当箇所を参照）。本セクションは audit.suggestion 用の
+# 新規テストを追加する。
+# 以下は「ガード除去による回帰検出」で有効性を検証済み（完了報告に破壊時の FAIL 結果を記載）。
+# ──────────────────────────────────────────
+echo ""
+echo "§W41  tpl() の同一プレースホルダ2回目以降の未置換修正（Issue #1949）"
+
+# W41-1 【新規】audit.suggestion: next欠落プロジェクトの「対応候補」案内に {n} が
+# 3回登場する（--project {n} / move {n} someday / close {n}）。旧実装では1回目
+# （--project の直後）のみ置換され、2回目以降（move/close の対象番号）が生の "{n}" の
+# まま出力され、案内コマンドをそのままコピー実行できなくなっていた。
+W1949_1_LOG=$(mktemp /tmp/todo-test-1949-1-XXXXXX)
+W1949_1_PROJECT='{"number":50101,"title":"NoNextProject","updated_at":"2026-04-01T00:00:00Z","body":"","labels":[{"name":"📁 project"}]}'
+W1949_1_RESP="{\"issues.listForRepo\":[{\"data\":[$W1949_1_PROJECT]}],\"GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"data\":[]}]}"
+W1949_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1949_1_RESP" OCTOKIT_STUB_LOG_ENV="$W1949_1_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run weekly-project-audit 2>&1); W1949_1_EC=$?
+assert_exit_ok "W41-1 weekly-project-audit(#1949): exit 0" "$W1949_1_EC"
+assert_contains "W41-1: next欠落の判定が出る" "next欠落" "$W1949_1_OUT"
+assert_contains "W41-1: 1回目のプレースホルダ出現（--project 50101）が置換されている" "--project 50101" "$W1949_1_OUT"
+assert_contains "W41-1: 【核心】2回目・3回目のプレースホルダ出現（move 50101 / close 50101）が正しく置換されている（旧実装では /todo move {n} someday / /todo close {n} のまま残る）" \
+  "/todo move 50101 someday / /todo close 50101" "$W1949_1_OUT"
+assert_not_contains "W41-1: 生のプレースホルダ {n} が出力に残らない" "{n}" "$W1949_1_OUT"
+rm -f "$W1949_1_LOG"
+
+# ガード除去による回帰検出: tpl() の split/join を修正前の非グローバル replace に
+# 一時的に戻して実行し、W41-1(2アサーション: 核心needle・{n}残存チェック)・
+# W22-3(1アサーション: /todo unlink 8703 --force needle)・
+# #1652-B1(1アサーション: 元#90101と新規#90111 needle)の計4アサーションが
+# 確実にFAILすることを実装時に手動確認済み（他の既存アサーションは1回目の出現のみを
+# 見る弱いneedleのため無傷＝陰性対照として引き続きPASS。詳細は完了報告を参照）。
 
 echo ""
 echo "=========================================="
