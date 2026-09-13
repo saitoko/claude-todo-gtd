@@ -5212,6 +5212,11 @@ async function runTemplate(octokit, owner, repo, tokens) {
     guardUnknownFlag(tokens.slice(2), [], TEMPLATE_USAGE, 'error.unknown_flag_hint');
     validateName(name);
     const overrideTitle = tokens.slice(2).join(' ');
+    // #1977: overrideTitle が空（上書きなし）のときはテンプレート側のタイトルを使う仕様
+    // （下記 `const title = overrideTitle || name;` 参照）。validateTitle は空文字を
+    // error.name_empty でエラー終了させるため、無条件に呼ぶと「上書きなし」の正常系が
+    // 全部壊れる。overrideTitle が真のときのみ検証する。
+    if (overrideTitle) validateTitle(overrideTitle);
     process.env.TNAME_ENV = name;
     // templateUse は stdout に KEY=VALUE を出力する関数なので、内部で直接読む
     const data = readJsonFile(getTemplatePath());

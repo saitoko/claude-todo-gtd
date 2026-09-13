@@ -51,7 +51,7 @@ cp todo.sh ~/.claude/todo.sh
 ## テスト
 
 - テストランナー: `bash tests/run-tests.sh`（+ 書き込み系は `bash tests/run-tests-write.sh` として個別実行も可能。通常は `run-tests.sh` から自動的に呼び出される）
-- 自動テスト総件数: **2,094件**（read-only系 947 + 書き込み系 1,147。`bash tests/run-tests.sh` の最終行が出す実測値。2026-09-12 時点。全件PASSが目安）
+- 自動テスト総件数: **2,218件**（read-only系 984 + 書き込み系 1,234。`bash tests/run-tests.sh` の最終行が出す実測値。2026-09-13 時点。全件PASSが目安）
 - シナリオ一覧: `tests/scenarios.md`
 - 全件 PASS が Pull Request マージの必須条件
 - 件数を更新する際は README.md の記載も合わせて更新する
@@ -680,6 +680,32 @@ function guardExtraPositional(extraTokens, usage, hintKey, example) {
 
 **対象ファイル:** `todo-engine.js`（`firstDueOnDow()`/`firstDueOnDay()`/`firstDueFromToday()` の新設、`first-due` CLIサブコマンド、`runAdd`/`execMoveGtd`/`runBulk` への配線、`error.routine_needs_recur_add`/`error.routine_needs_recur_move`/`error.routine_needs_recur_move_bulk`/`add.due_line_auto` の ja/en 新設）、`tests/run-tests.sh`（§53新設）、`tests/run-tests-write.sh`（§W37/§W38新設）、`todo.md`（`routine` の説明・`add`/`move`/`bulk` 行への追記）、`CHANGELOG.md`、`DEVELOPMENT.md`（本セクション）
 
+### 2026-09-13: `template use` のタイトル上書きだけが `validateTitle` を通らない（Issue #1977）
+
+**症状:** タイトルを設定・変更する経路は `add`（3815行）・`edit title`（3178行）・`rename`（4787行）・`promote-project --outcome`（5834行）の4つがあり、いずれも制御文字（改行等）を禁止する `validateTitle` を通る。しかし `template use <name> [タイトル上書き]` の上書きタイトルだけが無検証で `issues.create` に渡っていた（`validateName(name)` は名前側にだけ掛かり、同一行内で非対称になっていた）。シェル注入の経路ではない（Octokit 経由の HTTP API にのみ渡る）ため、セキュリティ上の欠陥ではなく「タイトルを書き換える全経路が同じ最低限の検証を受ける」という一貫性の欠落として扱う。先行する別Issue（#1929）の調査は3経路（`add`/`rename`/`promote-project --outcome`）と報告していたが、本Issue対応にあたり実装を直接走査したところ `edit title` を含む4経路だった。
+
+**原因:** `template use` は #1921 第2弾（2026-09-02）で判明したとおり `runAdd` を経由せず自前で `issues.create` を呼ぶ独立実装であり、`runAdd` 側の `validateTitle` 呼び出しが構造的に効かない。
+
+**修正:** `overrideTitle` 算出直後に `if (overrideTitle) validateTitle(overrideTitle);` を追加した。条件付きにしたのは、`template use` は上書きタイトル省略時にテンプレート側のタイトル（`overrideTitle || name`）を使う仕様であり、`validateTitle` は空文字を `error.name_empty` でエラー終了させるため、無条件に呼ぶと「上書きなし」の正常系が全滅するため。
+
+**全数走査（本Issue対応の中心）:** `issues.create`/`issues.update` の呼び出し全27箇所を機械的に列挙し、`title`/`newTitle`/`issue.title` 等タイトルを渡す全6箇所を洗い出した。
+
+| 行番号 | 関数 | title の由来 | 検証 |
+|---|---|---|---|
+| 2893 | `api create-issue` | `ISSUE_INPUT_ENV`（生JSON） | 無検証（既存設計で意図的な無検証エスケープハッチ。#1950 の DEVELOPMENT.md 記載で既出） |
+| 2906 | `api edit-issue` | `ISSUE_INPUT_ENV`（生JSON） | 無検証（同上） |
+| 3965 | `runAdd` | `title` | `validateTitle`（3815行）済み |
+| 4209 | `createRecurIssue` | `issue.title` | 既存Issueの再利用（新規ユーザー入力ではない）のため検証不要 |
+| 4788 | `runRename` | `newTitle` | `validateTitle`（4787行）済み |
+| 5255 | `template use` | `title = overrideTitle \|\| name` | **無検証だった（本Issueの修正対象）** |
+| 5835 | `runPromoteProject` | `newTitle` | `validateTitle`（5834行）済み |
+
+`api create-issue`/`api edit-issue` は `todo.md`/`todo-engine.js` のどこからも呼ばれておらず、`/todo api <subcommand>` として文書化された低レベル JSON API 経由でのみ到達する。`routine`/`recur` 必須化（Issue #1950、本ファイル2026-09-13の別項）でも同型のエスケープハッチとして明記され「既存の設計どおり無検証のまま維持」と判断されている前例に倣い、本Issueでも変更対象に含めなかった。**新規の同型漏れは見つからなかった**（`template use` 1箇所のみ）。
+
+**テスト:** `tests/run-tests-write.sh` §W28 に2ケース追加。W28-51（制御文字を含む上書きタイトルの拒否・`issues.create` 未到達を確認）、W28-52（上書きタイトルなしの `template use` が従来どおり動作し、テンプレート名がそのままタイトルになることを確認するリグレッションテスト）。全2,218件PASS（書き込み系1,234/1,234、前回2,159→+59。差分には本修正の5アサーションのほか、直前の #1950 対応との間に別セッションで加わった分を含む）。
+
+**対象ファイル:** `todo-engine.js`（`template use` の `overrideTitle` 検証追加）、`tests/run-tests-write.sh`（§W28-51/52新設）、`DEVELOPMENT.md`（本セクション・テスト総件数の更新）
+
 ## 翻訳方針（i18n）
 
 `todo-engine.js` の出力は `MESSAGES`/`t()`（`LANG_ENV=en` で英語、それ以外は日本語）で管理しているが、以下の3箇所は方針として `t()` 化せず英語固定とする。新しくコマンド・出力を追加する際はこの方針に従うこと。
@@ -695,3 +721,4 @@ function guardExtraPositional(extraTokens, usage, hintKey, example) {
 - `python3` は使用不可（`node` を使うこと）
 - `jq` は使用不可（`gh` の `-q` フラグか `node` を使うこと）
 - GNU/BSD 両対応の日付処理を維持すること
+- **`todo.md`/`CHANGELOG.md` 等、公開リポジトリ（`claude-todo-gtd`）に同期しうるファイルには、000-partner内部限定の情報を書かないこと**: 内部エージェントロール名（architect/researcher/COO/secretary等）、`/weekly-review`のような公開版に存在しないコマンド名、`/health`等の内部専用スキル名、`workspaces/`配下の内部パス参照。公開版で完結する一般的な表現に留める（実事故: 2026-08-04、`resume_condition`機能の公開同期直前にreviewerが4件発見。詳細は`content/reviews/2026-08-04_review-public-repo-resume-condition.md`）

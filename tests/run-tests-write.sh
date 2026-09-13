@@ -3016,6 +3016,27 @@ assert_exit_ok "W28-30【セキュリティ】template use のタイトルにコ
 assert_contains "W28-30: title が \$(whoami) のリテラル（展開されていない）" '"title":"$(whoami) を含むタイトル"' "$(log_lines_for_method "$W28_LOG" issues.create)"
 rm -f "$W28_LOG"
 
+# W28-51【核心・#1977】template use のタイトル上書きに制御文字（改行）を含む場合、
+# validateTitle で拒否される。修正前は他4経路（add/edit title/rename/promote-project
+# --outcome）と違い template use だけ validateTitle を通らず、制御文字混入タイトルの
+# Issue が exit 0 で作られていた。
+W28_LOG=$(mktemp /tmp/todo-test-w28-51-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_TMPLUSE_RESP"
+W28_51_OUT=$(w28_run template use daily $'制御文字\n含むタイトル'); W28_51_EC=$?
+assert_exit_fail "W28-51【核心・#1977】template use のタイトル上書きに制御文字: exit非0" "$W28_51_EC"
+assert_contains "W28-51: エラー本文がタイトル制御文字のもの" "エラー: タイトルに制御文字（改行等）を含めることはできません" "$W28_51_OUT"
+assert_eq "W28-51【核心・副作用ゼロ】issues.create は呼ばれない" "0" "$(log_count "$W28_LOG" issues.create)"
+rm -f "$W28_LOG"
+
+# W28-52【リグレッション・#1977】上書きタイトルなしの template use は従来どおり動作する。
+# validateTitle は空文字を error.name_empty でエラーにするため、overrideTitle の真偽で
+# 呼び出しを分岐する実装（`if (overrideTitle) validateTitle(overrideTitle);`）を
+# ロックインする。無条件呼び出しに戻すとこのテストが FAIL する。
+W28_LOG=$(mktemp /tmp/todo-test-w28-52-XXXXXX); : > "$W28_LOG"; W28_RESP_CUR="$W28_TMPLUSE_RESP"
+W28_52_OUT=$(w28_run template use daily); W28_52_EC=$?
+assert_exit_ok "W28-52【リグレッション・#1977】上書きタイトルなしの template use: exit 0" "$W28_52_EC"
+assert_contains "W28-52: title はテンプレート名(daily)がそのまま使われる" '"title":"daily"' "$(log_lines_for_method "$W28_LOG" issues.create)"
+rm -f "$W28_LOG"
+
 # 隔離 HOME を元に戻す
 export HOME="$W28_REAL_HOME"
 if [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* ]]; then
