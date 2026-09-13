@@ -26,6 +26,17 @@ REPO="${TODO_REPO_OWNER}/${TODO_REPO_NAME}"
 PASS=0; FAIL=0
 CREATED_ISSUES=""
 
+# エンジン本体への絶対パス。製品コマンド（list-all / dashboard / report / stats /
+# run <サブコマンド> 等）を自前ロジックの代わりに直接実行するテストで使う。
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+ENGINE_PATH="$SCRIPT_DIR/scripts/todo-engine.js"
+[ -f "$ENGINE_PATH" ] || ENGINE_PATH="$SCRIPT_DIR/todo-engine.js"  # 公開リポジトリはルート直下レイアウト
+
+# run サブコマンド（実 @octokit/rest 経由）は GH_TOKEN/GITHUB_TOKEN を直接参照し、
+# gh auth token への自動フォールバックを持たない。gh CLI が認証済みであることを前提に
+# ここで1度だけ取得し、run サブコマンドを直接呼び出すテスト全箇所で使い回す。
+GH_TOKEN_LIVE="$(gh auth token 2>/dev/null || true)"
+
 # 絵文字ラベル変数（Windows環境でのシェル渡し問題を回避）
 LBL_NEXT="🎯 next"
 LBL_INBOX="📥 inbox"
@@ -943,55 +954,30 @@ echo "§W  stats コマンド（統計情報）"
 # ─────────────────────────────────────────────
 
 TODAY=$(date +%Y-%m-%d)
-STATS_OUT=$(gh issue list --repo "$REPO" --state open --json number,title,body,labels --limit 200 \
-  | TODAY_ENV="$TODAY" node -e "
-const c=[]; process.stdin.on('data',d=>c.push(d));
-process.stdin.on('end',()=>{
-  const today=process.env.TODAY_ENV;
-  const issues=JSON.parse(c.join(''));
-  const gtd=['next','inbox','waiting','someday','project','reference'];
-  const counts={};
-  gtd.forEach(l=>counts[l]=0);
-  let total=issues.length;
-  for(const i of issues){
-    const ln=i.labels.map(l=>l.name);
-    for(const g of gtd){ if(ln.includes(g)) counts[g]++; }
-  }
-  process.stdout.write('total='+total+'\n');
-  gtd.forEach(l=>{ if(counts[l]>0) process.stdout.write(l+'='+counts[l]+'\n'); });
-});
-")
+STATS_OPEN=$(gh issue list --repo "$REPO" --state open --json number,title,body,labels --limit 200)
+STATS_CLOSED=$(gh issue list --repo "$REPO" --state closed --json closedAt --limit 200)
+STATS_OUT=$(OPEN_ENV="$STATS_OPEN" CLOSED_ENV="$STATS_CLOSED" TODAY_ENV="$TODAY" LANG_ENV=ja node "$ENGINE_PATH" stats 2>/dev/null || true)
 
-if echo "$STATS_OUT" | grep -q "^total="; then
-  STATS_TOTAL=$(echo "$STATS_OUT" | grep '^total=' | cut -d= -f2)
+STATS_TOTAL=$(printf '%s' "$STATS_OUT" | sed -nE 's/.*全タスク: ([0-9]+)件.*/\1/p')
+if [ -n "$STATS_TOTAL" ] && [ "$STATS_TOTAL" -ge 1 ]; then
   ok "stats: 全タスク数取得成功 (${STATS_TOTAL}件)"
 else
   fail "stats: 統計取得失敗" "出力: $STATS_OUT"
 fi
 
-if echo "$STATS_OUT" | grep -q "^next="; then
+if echo "$STATS_OUT" | grep -qE '^ +next: '; then
   ok "stats: カテゴリ別集計あり (next)"
 else
   skip_test "stats: next カテゴリ集計" "next が0件の可能性"
 fi
 
-# 完了数の取得テスト
-DONE_WEEK=$(gh issue list --repo "$REPO" --state closed --limit 50 \
-  --json closedAt \
-  | TODAY_ENV="$TODAY" node -e "
-const c=[]; process.stdin.on('data',d=>c.push(d));
-process.stdin.on('end',()=>{
-  const today=new Date(process.env.TODAY_ENV);
-  const d7=new Date(today); d7.setDate(d7.getDate()-7);
-  const issues=JSON.parse(c.join(''));
-  const cnt=issues.filter(i=>i.closedAt&&new Date(i.closedAt)>=d7).length;
-  process.stdout.write(cnt+'');
-});
-")
-if [ -n "$DONE_WEEK" ]; then
+# 完了数の取得テスト（直近7日間の完了数を stats の実出力から取得する）。
+# §R bulk done 等でこの時点までに複数件クローズ済みのため、0件ではなく1件以上を要求する。
+DONE_WEEK=$(printf '%s' "$STATS_OUT" | sed -nE 's/.*直近7日間: ([0-9]+)件完了.*/\1/p')
+if [ -n "$DONE_WEEK" ] && [ "$DONE_WEEK" -ge 1 ]; then
   ok "stats: 直近7日間の完了数取得成功 (${DONE_WEEK}件)"
 else
-  fail "stats: 完了数取得失敗" ""
+  fail "stats: 完了数取得失敗" "出力: $STATS_OUT"
 fi
 # ─────────────────────────────────────────────
 echo ""
@@ -1076,53 +1062,55 @@ sleep 2
 DASH_GH_OPEN=$(gh issue list --repo "$REPO" --state open --json number,title,body,labels --limit 200)
 DASH_GH_CLOSED=$(gh issue list --repo "$REPO" --state closed --limit 30 --json number,closedAt)
 
-DASH_GH_OUT=$(OPEN_ENV="$DASH_GH_OPEN" TODAY_ENV="$TODAY_GH" CLOSED_ENV="$DASH_GH_CLOSED" node -e "
-  const issues=JSON.parse(process.env.OPEN_ENV);
-  const today=process.env.TODAY_ENV;
-  const closed=JSON.parse(process.env.CLOSED_ENV||'[]');
-  const w=s=>process.stdout.write(s);
-  const getLnames=i=>i.labels.map(l=>l.name);
-  const getDue=i=>{const m=(i.body||'').match(/^due: (\d{4}-\d{2}-\d{2})/m); return m?m[1]:null;};
-  const getPri=lnames=>lnames.find(l=>/^p[123]$/.test(l))||'p9';
-  const d7=new Date(today); d7.setDate(d7.getDate()+7);
-  const d7str=d7.toISOString().slice(0,10);
-  const overdue=[], dueToday=[];
-  const emojiMap={next:'🎯 next',inbox:'📥 inbox',waiting:'⏳ waiting',someday:'🌈 someday',project:'📁 project',reference:'📚 reference'};
-  const gtdCounts={next:0,inbox:0,waiting:0,someday:0,project:0,reference:0};
-  for(const issue of issues){
-    const lnames=getLnames(issue);
-    for(const gl of Object.keys(gtdCounts)){ if(lnames.includes(emojiMap[gl]||gl)) gtdCounts[gl]++; }
-    const due=getDue(issue);
-    if(lnames.includes('🎯 next')){
-      if(due && due<today) overdue.push(issue);
-      else if(due && due===today) dueToday.push(issue);
-    } else if(due && due<today){
-      overdue.push(issue);
-    }
+# 製品の dashboard コマンドを実行する。分類（overdue/today/inbox）は製品の判断に
+# 委ね、テスト側は出力テキストを見出し単位で分割して該当 Issue の有無・件数を
+# 確認するだけに留める（製品の分類ロジックの再実装はしない）。
+DASH_GH_OUT=$(OPEN_ENV="$DASH_GH_OPEN" TODAY_ENV="$TODAY_GH" CLOSED_ENV="$DASH_GH_CLOSED" LANG_ENV=ja \
+  node "$ENGINE_PATH" dashboard 2>/dev/null || true)
+
+DASH_PARSED=$(printf '%s' "$DASH_GH_OUT" | node -e "
+const c=[]; process.stdin.on('data',d=>c.push(d));
+process.stdin.on('end',()=>{
+  const text=c.join('');
+  const lines=text.split('\n');
+  const sections={};
+  let cur=null;
+  for(const line of lines){
+    if(line.startsWith('## ')){ cur=line; sections[cur]=[]; continue; }
+    if(cur) sections[cur].push(line);
   }
-  w('OVERDUE='+overdue.length+'\n');
-  w('TODAY='+dueToday.length+'\n');
-  w('INBOX='+gtdCounts.inbox+'\n');
+  const findSection=needle => {
+    const key=Object.keys(sections).find(k=>k.includes(needle));
+    return key ? sections[key].join('\n') : '';
+  };
+  const overdueText=findSection('期限超過');
+  const todayText=findSection('今日やること');
+  const footerLine=lines.find(l=>l.startsWith('📊 '))||'';
+  const inboxMatch=footerLine.match(/inbox: (\d+)件/);
+  process.stdout.write('OVERDUE_HAS='+(overdueText.includes('#${NUM_DASH1}')?'YES':'NO')+'\n');
+  process.stdout.write('TODAY_HAS='+(todayText.includes('#${NUM_DASH2}')?'YES':'NO')+'\n');
+  process.stdout.write('INBOX_CNT='+(inboxMatch?inboxMatch[1]:'0')+'\n');
+});
 ")
 
-DASH_OVERDUE=$(echo "$DASH_GH_OUT" | grep '^OVERDUE=' | cut -d= -f2)
-DASH_TODAY_CNT=$(echo "$DASH_GH_OUT" | grep '^TODAY=' | cut -d= -f2)
-DASH_INBOX_CNT=$(echo "$DASH_GH_OUT" | grep '^INBOX=' | cut -d= -f2)
+DASH_OVERDUE_HAS=$(printf '%s' "$DASH_PARSED" | grep '^OVERDUE_HAS=' | cut -d= -f2)
+DASH_TODAY_HAS=$(printf '%s' "$DASH_PARSED" | grep '^TODAY_HAS=' | cut -d= -f2)
+DASH_INBOX_CNT=$(printf '%s' "$DASH_PARSED" | grep '^INBOX_CNT=' | cut -d= -f2)
 
-if [ "$DASH_OVERDUE" -ge 1 ]; then
-  ok "Dashboard統合: overdue >= 1 (実際: $DASH_OVERDUE)"
+if [ "$DASH_OVERDUE_HAS" = "YES" ]; then
+  ok "Dashboard: 期限超過セクションに #${NUM_DASH1}（due=昨日）が含まれる"
 else
-  fail "Dashboard統合: overdue >= 1" "実際: $DASH_OVERDUE"
+  fail "Dashboard: 期限超過セクションに #$NUM_DASH1 が含まれない" "$DASH_GH_OUT"
 fi
-if [ "$DASH_TODAY_CNT" -ge 1 ]; then
-  ok "Dashboard統合: dueToday >= 1 (実際: $DASH_TODAY_CNT)"
+if [ "$DASH_TODAY_HAS" = "YES" ]; then
+  ok "Dashboard: 今日やることセクションに #${NUM_DASH2}（due=今日）が含まれる"
 else
-  fail "Dashboard統合: dueToday >= 1" "実際: $DASH_TODAY_CNT"
+  fail "Dashboard: 今日やることセクションに #$NUM_DASH2 が含まれない" "$DASH_GH_OUT"
 fi
-if [ "$DASH_INBOX_CNT" -ge 1 ]; then
-  ok "Dashboard統合: inbox >= 1 (実際: $DASH_INBOX_CNT)"
+if [ -n "$DASH_INBOX_CNT" ] && [ "$DASH_INBOX_CNT" -ge 1 ]; then
+  ok "Dashboard: inbox 集計 >= 1 (実際: $DASH_INBOX_CNT)"
 else
-  fail "Dashboard統合: inbox >= 1" "実際: $DASH_INBOX_CNT"
+  fail "Dashboard: inbox 集計 >= 1" "実際: $DASH_INBOX_CNT / 出力: $DASH_GH_OUT"
 fi
 
 # ─────────────────────────────────────────────
@@ -1222,34 +1210,22 @@ sleep 2
 RPT_OPEN_GH=$(gh issue list --repo "$REPO" --state open --json number,title,body,labels --limit 200)
 RPT_CLOSED_GH=$(gh issue list --repo "$REPO" --state closed --limit 200 --json number,title,labels,closedAt,body)
 
-RPT_GH_OUT=$(OPEN_ENV="$RPT_OPEN_GH" TODAY_ENV="$TODAY_GH" DAYS_ENV="7" CLOSED_ENV="$RPT_CLOSED_GH" node -e "
-  const today=process.env.TODAY_ENV;
-  const days=parseInt(process.env.DAYS_ENV);
-  const closed=JSON.parse(process.env.CLOSED_ENV||'[]');
-  const startDate=new Date(today);
-  startDate.setDate(startDate.getDate()-days);
-  const startStr=startDate.toISOString().slice(0,10);
-  const periodClosed=closed.filter(i=>{
-    if(!i.closedAt) return false;
-    const d=i.closedAt.slice(0,10);
-    return d>=startStr && d<=today;
-  });
-  process.stdout.write('CLOSED_COUNT='+periodClosed.length+'\n');
-  process.stdout.write('HAS_TODAY='+(periodClosed.some(i=>i.closedAt.slice(0,10)===today)?'YES':'NO')+'\n');
-")
+# 製品の report コマンドを実行し、実出力から完了数・完了一覧を取得する。
+RPT_OUT=$(OPEN_ENV="$RPT_OPEN_GH" TODAY_ENV="$TODAY_GH" DAYS_ENV="7" CLOSED_ENV="$RPT_CLOSED_GH" LANG_ENV=ja \
+  node "$ENGINE_PATH" report 2>/dev/null || true)
 
-RPT_CLOSED_COUNT=$(echo "$RPT_GH_OUT" | grep '^CLOSED_COUNT=' | cut -d= -f2)
-RPT_HAS_TODAY=$(echo "$RPT_GH_OUT" | grep '^HAS_TODAY=' | cut -d= -f2)
+RPT_COMPLETED_LINE=$(printf '%s\n' "$RPT_OUT" | grep '完了タスク数')
+RPT_CLOSED_COUNT=$(printf '%s' "$RPT_COMPLETED_LINE" | sed -nE 's/.*\*\*([0-9]+)件\*\*.*/\1/p')
 
-if [ "$RPT_CLOSED_COUNT" -ge 1 ]; then
-  ok "Report統合: 期間内完了 >= 1 (実際: $RPT_CLOSED_COUNT)"
+if [ -n "$RPT_CLOSED_COUNT" ] && [ "$RPT_CLOSED_COUNT" -ge 1 ]; then
+  ok "Report: 期間内完了 >= 1 (実際: $RPT_CLOSED_COUNT)"
 else
-  fail "Report統合: 期間内完了 >= 1" "実際: $RPT_CLOSED_COUNT"
+  fail "Report: 期間内完了 >= 1" "実際: $RPT_CLOSED_COUNT / 出力: $RPT_OUT"
 fi
-if [ "$RPT_HAS_TODAY" = "YES" ]; then
-  ok "Report統合: 今日のクローズが含まれる"
+if printf '%s' "$RPT_OUT" | grep -q "#${NUM_RPT} "; then
+  ok "Report: 今日クローズした #$NUM_RPT が完了タスク一覧に含まれる"
 else
-  fail "Report統合: 今日のクローズが含まれない" "$RPT_GH_OUT"
+  fail "Report: #$NUM_RPT が完了タスク一覧に含まれない" "$RPT_OUT"
 fi
 
 # ─────────────────────────────────────────────
@@ -1504,61 +1480,48 @@ else
   ok "P-03: 親 #$NUM_P03_PARENT は project ラベルなし（エラー条件確認済み）"
 fi
 
-# todo-engine のロジック検証（normLabel で project を検出できること）
-P03_LOGIC=$(node -e "
-  const LABELS = ['next','routine','inbox','waiting','someday','reference'];
-  const PROJECT_LABEL = 'project';
-  const GTD_DISPLAY = { next:'🎯 next', routine:'🔁 routine', inbox:'📥 inbox', waiting:'⏳ waiting', someday:'🌈 someday', project:'📁 project', reference:'📎 reference' };
-  function normLabel(name) {
-    if (name === GTD_DISPLAY[PROJECT_LABEL]) return PROJECT_LABEL;
-    for (const key of LABELS) { if (name === GTD_DISPLAY[key]) return key; }
-    return name;
-  }
-  const lbls = ['🎯 next','p3'];
-  const isProject = lbls.some(l => normLabel(l) === PROJECT_LABEL);
-  process.stdout.write(isProject ? 'IS_PROJECT' : 'NOT_PROJECT');
-" 2>/dev/null)
-if [ "$P03_LOGIC" = "NOT_PROJECT" ]; then
-  ok "P-03: project ラベルなし Issue を非プロジェクトと判定"
+# 製品の run link を実行し、project ラベルなしの Issue を親に指定すると
+# 実際にエラーで拒否されることを確認する（runLink 内の
+# parentIssue.labels.some(l => normLabel(l) === PROJECT_LABEL) を直接検証）。
+NUM_P03_CHILD=$(create_issue "[test] P-03 child候補" --label "next" --label "p3" --body "test")
+track "$NUM_P03_CHILD"
+wait_field "$NUM_P03_CHILD" labels "$LABELS_FILTER" match "next"
+
+P03_LINK_OUT=$(GH_TOKEN="$GH_TOKEN_LIVE" node "$ENGINE_PATH" run link "$NUM_P03_CHILD" "$NUM_P03_PARENT" 2>&1)
+P03_LINK_EXIT=$?
+if [ "$P03_LINK_EXIT" -ne 0 ] && echo "$P03_LINK_OUT" | grep -q "はプロジェクトではありません"; then
+  ok "P-03: project ラベルなしの親を指定すると run link がエラーで拒否する (#$NUM_P03_PARENT)"
 else
-  fail "P-03: project 判定ロジックが誤っている" "結果: $P03_LOGIC"
+  fail "P-03: project でない親を指定してもエラーにならない" "exit=$P03_LINK_EXIT / 出力: $P03_LINK_OUT"
 fi
 
 # ─── P-05: /todo list で project が独立セクション表示 ───
 echo ""
 echo "  [P-05] /todo list 出力で project が独立セクションになること"
 
-# open Issues をフェッチして listAll をシミュレート
-P05_OPEN=$(gh issue list --repo "$REPO" --state open --json number,title,body,labels --limit 200 2>/dev/null)
-P05_LIST_OUT=$(OPEN_ENV="$P05_OPEN" TODAY_ENV="$TODAY_P3" node -e "
-  const issues = JSON.parse(process.env.OPEN_ENV || '[]');
-  const today = process.env.TODAY_ENV;
-  const GTD_LABELS = ['next','routine','inbox','waiting','someday','reference'];
-  const PROJECT_LABEL = 'project';
-  const GTD_DISPLAY = { next:'🎯 next', routine:'🔁 routine', inbox:'📥 inbox', waiting:'⏳ waiting', someday:'🌈 someday', project:'📁 project', reference:'📎 reference' };
-  function normLabel(name) {
-    if (name === GTD_DISPLAY[PROJECT_LABEL]) return PROJECT_LABEL;
-    for (const k of GTD_LABELS) { if (name === GTD_DISPLAY[k]) return k; }
-    return name;
-  }
-  // project セクションが GTD セクションと並列でない（独立）かを確認
-  const labelsToShow = ['next','routine','inbox','waiting','someday','reference'];
-  for (const l of labelsToShow) {
-    process.stdout.write('GTD:'+l+'\n');
-  }
-  // project は別途出力
-  process.stdout.write('PROJ_SECTION\n');
-" 2>/dev/null)
+# open Issues をフェッチし、製品の list-all（/todo list の実処理本体）に通す。
+P05_OPEN=$(gh issue list --repo "$REPO" --state open --json number,title,body,labels,updated_at --limit 200 2>/dev/null)
+P05_LIST_OUT=$(OPEN_ENV="$P05_OPEN" TODAY_ENV="$TODAY_P3" LANG_ENV=ja node "$ENGINE_PATH" list-all 2>/dev/null || true)
 
-if echo "$P05_LIST_OUT" | grep -q "GTD:next"; then
-  ok "P-05: GTD セクション（next 等）が出力される"
+if echo "$P05_LIST_OUT" | grep -q "## ✅ Next Actions"; then
+  ok "P-05: GTD セクション（Next Actions 等）が出力される"
 else
   fail "P-05: GTD セクションが出力されない" "$P05_LIST_OUT"
 fi
-if echo "$P05_LIST_OUT" | grep -q "PROJ_SECTION"; then
-  ok "P-05: project セクションが独立して出力される"
+
+if echo "$P05_LIST_OUT" | grep -q "## 📁 Projects"; then
+  ok "P-05: project セクションが出力される"
 else
-  fail "P-05: project セクションが独立していない" "$P05_LIST_OUT"
+  fail "P-05: project セクションが出力されない" "$P05_LIST_OUT"
+fi
+
+# 独立セクションであること（GTD 並列でない）＝ project 見出しが GTD 見出し群より後に出現することを確認
+P05_NEXT_LINE=$(printf '%s\n' "$P05_LIST_OUT" | grep -n "## ✅ Next Actions" | head -1 | cut -d: -f1)
+P05_PROJ_LINE=$(printf '%s\n' "$P05_LIST_OUT" | grep -n "## 📁 Projects" | head -1 | cut -d: -f1)
+if [ -n "$P05_NEXT_LINE" ] && [ -n "$P05_PROJ_LINE" ] && [ "$P05_PROJ_LINE" -gt "$P05_NEXT_LINE" ]; then
+  ok "P-05: project セクションが GTD セクション群の後に独立して出力される"
+else
+  fail "P-05: project セクションが独立していない" "Next行: $P05_NEXT_LINE / Project行: $P05_PROJ_LINE"
 fi
 
 # ─── P-06: /todo list project N が sub-issue API 経由で子一覧を返す ───
@@ -1745,91 +1708,68 @@ fi
 echo ""
 echo "§P4  Phase 3: weekly-project-audit / migrate sub-issue テスト"
 # ─────────────────────────────────────────────
-
-# §P4 で使うエンジンパス（todo-engine.js の絶対パス）
-SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-ENGINE_PATH="$SCRIPT_DIR/scripts/todo-engine.js"
-[ -f "$ENGINE_PATH" ] || ENGINE_PATH="$SCRIPT_DIR/todo-engine.js"  # 公開リポジトリはルート直下レイアウト
+# ENGINE_PATH / GH_TOKEN_LIVE はファイル冒頭で定義済み（本セクション以外でも使用するため）。
 
 # ─── P-07: /todo list で next 欠落プロジェクトの ⚠️ マーカー表示 ───
 echo ""
 echo "  [P-07] /todo list で next 欠落プロジェクトの ⚠️ マーカー表示"
 
-P07_RESULT=$(TODAY_ENV="2026-04-17" OPEN_ENV='[
-  {"number":100,"title":"[test] P-07 nextなしプロジェクト","body":"","labels":[{"name":"📁 project"}],"updated_at":"2026-04-17","closedAt":null},
-  {"number":101,"title":"[test] P-07 子タスク","body":"project: #100","labels":[{"name":"📎 reference"}],"updated_at":"2026-04-17","closedAt":null}
-]' node "$ENGINE_PATH" list-summary 2>/dev/null || true)
+# list-all（/todo list の実処理本体）に project ラベルのみを持つ Issue と、
+# その project タグを body に持つが next ラベルなしの子 Issue を通し、
+# 実際に ⚠️ next欠落 バッジが出力されるかを確認する（固定フィクスチャ、GitHub接続不要）。
+P07_OUT=$(TODAY_ENV="2026-04-17" OPEN_ENV='[
+  {"number":100,"title":"[test] P-07 nextなしプロジェクト","body":"","labels":[{"name":"📁 project"}],"updated_at":"2026-04-17"},
+  {"number":101,"title":"[test] P-07 子タスク","body":"project: #100","labels":[{"name":"📎 reference"}]}
+]' node "$ENGINE_PATH" list-all 2>/dev/null || true)
 
-P07_LOGIC=$(TODAY_ENV="2026-04-17" OPEN_ENV='[
-  {"number":100,"title":"[test] P-07 nextなしプロジェクト","body":"","labels":[{"name":"📁 project"}],"updated_at":"2026-04-17","closedAt":null}
-]' node -e "
-const issues = JSON.parse(process.env.OPEN_ENV);
-const today = process.env.TODAY_ENV;
-const PROJECT_LABEL = 'project';
-const GTD_DISPLAY = {project:'📁 project'};
-function normLabel(n) { if(n===GTD_DISPLAY[PROJECT_LABEL]) return PROJECT_LABEL; return n; }
-function getLnames(i) { return (i.labels||[]).map(l=>l.name||l).map(normLabel); }
-const projItems = issues.filter(i=>getLnames(i).includes(PROJECT_LABEL));
-const allIssues = issues;
-let noNextCount=0;
-projItems.forEach(proj=>{
-  const tag='project: #'+proj.number;
-  const children=allIssues.filter(i=>(i.body||'').includes(tag));
-  const hasNext=children.some(i=>getLnames(i).includes('next'));
-  if(!hasNext) noNextCount++;
-});
-process.stdout.write(noNextCount > 0 ? 'NO_NEXT_DETECTED' : 'ALL_HAVE_NEXT');
-" 2>/dev/null)
-
-if [ "$P07_LOGIC" = "NO_NEXT_DETECTED" ]; then
-  ok "P-07: next 欠落プロジェクトを noNextCount で検出できる"
+if echo "$P07_OUT" | grep -q "next欠落"; then
+  ok "P-07: next 欠落プロジェクトに ⚠️ next欠落 バッジが表示される"
 else
-  fail "P-07: next 欠落の検出失敗" "結果: $P07_LOGIC"
+  fail "P-07: next 欠落マーカーが表示されない" "$P07_OUT"
 fi
 
 # ─── P-08: /todo list で停滞 30 日プロジェクトの停滞バッジ表示 ───
 echo ""
 echo "  [P-08] /todo list で停滞 30 日プロジェクトの停滞バッジ表示"
 
-P08_LOGIC=$(node -e "
-const today='2026-04-17';
-const updatedAt='2026-03-10'; // 38日前
-function daysBetween(a,b){
-  return Math.floor((new Date(b)-new Date(a))/(1000*60*60*24));
-}
-const days=daysBetween(updatedAt,today);
-const isStale=days>=30;
-process.stdout.write(isStale ? 'STALE_DETECTED' : 'NOT_STALE');
-" 2>/dev/null)
+# list-all に updated_at が38日前のプロジェクトを通し、実際に「停滞30日以上」バッジが
+# 出力されるかを確認する（子タスクは next 付きにして、next欠落バッジと混ざらないようにする）。
+P08_OUT=$(TODAY_ENV="2026-04-17" OPEN_ENV='[
+  {"number":110,"title":"[test] P-08 停滞プロジェクト","body":"","labels":[{"name":"📁 project"}],"updated_at":"2026-03-10T00:00:00Z"},
+  {"number":111,"title":"[test] P-08 子タスク","body":"project: #110","labels":[{"name":"🎯 next"}]}
+]' node "$ENGINE_PATH" list-all 2>/dev/null || true)
 
-if [ "$P08_LOGIC" = "STALE_DETECTED" ]; then
-  ok "P-08: 38日前の updated_at が停滞（30日以上）として検出される"
+if echo "$P08_OUT" | grep -q "停滞30日以上"; then
+  ok "P-08: 38日前の updated_at を持つプロジェクトに停滞バッジが表示される"
 else
-  fail "P-08: 停滞判定が機能していない" "結果: $P08_LOGIC"
+  fail "P-08: 停滞バッジが表示されない" "$P08_OUT"
 fi
 
 # ─── P-13: /todo migrate sub-issue --dry-run が対象一覧を表示 ───
 echo ""
 echo "  [P-13] /todo migrate sub-issue --dry-run が対象一覧を表示"
 
-# migrate sub-issue --dry-run のロジックをオフライン検証
-P13_LOGIC=$(node -e "
-const issues=[
-  {number:200,title:'migrate テスト子1',body:'project: #10\ntest',labels:[],updated_at:'',closedAt:null},
-  {number:201,title:'migrate テスト子2',body:'other body',labels:[],updated_at:'',closedAt:null},
-  {number:202,title:'migrate テスト子3',body:'project: #11\ntest',labels:[],updated_at:'',closedAt:null}
-];
-const targets=issues.filter(i=>/^project: #(\d+)/m.test(i.body||''));
-const dryRun=true;
-if(dryRun){
-  process.stdout.write('DRY_RUN_OK targets='+targets.length);
-}
-" 2>/dev/null)
+# --dry-run は書き込みを行わないため、実サンドボックスに対して製品の run migrate
+# sub-issue --dry-run をそのまま実行する（§P2 で作成済みの NUM_P02 は
+# body に project: #${NUM_PROJ} を持つオープン Issue なので対象に含まれるはず）。
+P13_OUT=$(GH_TOKEN="$GH_TOKEN_LIVE" node "$ENGINE_PATH" run migrate sub-issue --dry-run 2>&1)
 
-if echo "$P13_LOGIC" | grep -q "DRY_RUN_OK targets=2"; then
-  ok "P-13: --dry-run で対象2件を検出（project: #N を持つ Issue のみ）"
+if echo "$P13_OUT" | grep -q "^## migrate sub-issue --dry-run"; then
+  ok "P-13: --dry-run が対象一覧ヘッダーを出力する"
 else
-  fail "P-13: --dry-run の対象検出が正しくない" "結果: $P13_LOGIC"
+  fail "P-13: --dry-run のヘッダーが出力されない" "$P13_OUT"
+fi
+
+if echo "$P13_OUT" | grep -q "#${NUM_P02} .*→ 親 #${NUM_PROJ}"; then
+  ok "P-13: project: #${NUM_PROJ} を body に持つ #$NUM_P02 が対象一覧に含まれる"
+else
+  fail "P-13: 既知の project: #N 保持 Issue が対象一覧に含まれない" "$P13_OUT"
+fi
+
+if echo "$P13_OUT" | grep -q "実際の登録は行いません"; then
+  ok "P-13: --dry-run モードで実際の登録を行わない旨が出力される"
+else
+  fail "P-13: --dry-run フッターが出力されない" "$P13_OUT"
 fi
 
 # ─── P-14: /todo migrate sub-issue 実行後 sub-issue が登録される ───
@@ -1875,89 +1815,90 @@ fi
 echo ""
 echo "  [P-15] マイグレーション冪等性（2回実行で重複なし）"
 
-# addSubIssue の冪等ロジック検証（422 をスキップすることを確認）
-P15_LOGIC=$(node -e "
-// addSubIssue の 422 スキップロジックをシミュレート
-let registered=0, skipped=0;
-function addSubIssueSimulate(alreadyExists){
-  if(alreadyExists){
-    // 422 相当: スキップ
-    skipped++;
-    return;
-  }
-  registered++;
-}
-addSubIssueSimulate(false); // 1回目: 登録
-addSubIssueSimulate(true);  // 2回目: 422 スキップ
-process.stdout.write('registered='+registered+' skipped='+skipped);
-" 2>/dev/null)
-
-if echo "$P15_LOGIC" | grep -q "registered=1 skipped=1"; then
-  ok "P-15: 2回目の登録は 422 スキップ（冪等）で重複しない"
+if [ -z "${NUM_PROJ:-}" ]; then
+  skip_test "P-15" "NUM_PROJ が未定義（§P2 テスト未実行）"
 else
-  fail "P-15: 冪等ロジックが正しくない" "結果: $P15_LOGIC"
+  # run link を同じ子・親の組み合わせで2回実行する。製品の addSubIssue() は
+  # 1回目は登録、2回目は 422（既登録）を検出してスキップする実装のため、
+  # 2回目の標準エラー出力に冪等スキップの警告文が出ることを確認する。
+  NUM_P15=$(create_issue "[test] P-15 idempotent child" --label "$LBL_NEXT" --label "p3" --body "test")
+  track "$NUM_P15"
+  wait_field "$NUM_P15" labels "$LABELS_FILTER" match "next"
+
+  P15_LINK_1=$(GH_TOKEN="$GH_TOKEN_LIVE" node "$ENGINE_PATH" run link "$NUM_P15" "$NUM_PROJ" 2>&1)
+  sleep 1
+  P15_LINK_2=$(GH_TOKEN="$GH_TOKEN_LIVE" node "$ENGINE_PATH" run link "$NUM_P15" "$NUM_PROJ" 2>&1)
+
+  if echo "$P15_LINK_1" | grep -q "紐付けました"; then
+    ok "P-15: 1回目の run link で #$NUM_P15 が登録される"
+  else
+    fail "P-15: 1回目の run link が失敗した" "$P15_LINK_1"
+  fi
+
+  if echo "$P15_LINK_2" | grep -q "sub-issue 登録スキップ"; then
+    ok "P-15: 2回目の run link は 422 を検出しスキップ（冪等）の警告を出す"
+  else
+    fail "P-15: 2回目の run link が冪等スキップを検出しない" "$P15_LINK_2"
+  fi
+
+  sleep 1
+  P15_SUBLIST=$(gh api "repos/${REPO}/issues/${NUM_PROJ}/sub_issues" --jq '[.[].number] | join(",")' 2>/dev/null || true)
+  P15_DUP_COUNT=$(printf '%s' "$P15_SUBLIST" | tr ',' '\n' | grep -xc "$NUM_P15" || true)
+  if [ "$P15_DUP_COUNT" -le 1 ]; then
+    ok "P-15: 2回実行しても sub-issue 一覧に #$NUM_P15 の重複が発生しない"
+  else
+    fail "P-15: sub-issue 一覧に重複登録が発生した" "一覧: $P15_SUBLIST / 件数: $P15_DUP_COUNT"
+  fi
 fi
 
 # ─── P-16: /todo weekly-project-audit が全プロジェクトを列挙 ───
 echo ""
 echo "  [P-16] /todo weekly-project-audit が全プロジェクトを列挙"
 
-# weekly-project-audit の出力フォーマット検証（オフライン: プロジェクト件数確認）
-P16_LOGIC=$(node -e "
-const projects=[
-  {number:300,title:'プロジェクトA',body:'',labels:[{name:'📁 project'}],updated_at:'2026-04-17'},
-  {number:301,title:'プロジェクトB',body:'',labels:[{name:'📁 project'}],updated_at:'2026-04-17'}
-];
-// 出力形式: [N/total] #num title
-const total=projects.length;
-let out='';
-projects.forEach((p,i)=>{
-  out+='['+(i+1)+'/'+total+'] #'+p.number+' '+p.title+'\n';
-});
-// 全件出力していることを確認
-const lines=out.trim().split('\n');
-process.stdout.write(lines.length===total ? 'ALL_LISTED count='+total : 'MISMATCH');
-" 2>/dev/null)
+# run weekly-project-audit をサンドボックスに対してそのまま実行する。next 欠落/停滞の
+# プロジェクトへ reviewed_at を書き込む副作用があるが、対象はサンドボックス内の
+# project ラベル付き Issue のみで、削除等の不可逆操作は行わない。
+P16_OUT=$(GH_TOKEN="$GH_TOKEN_LIVE" node "$ENGINE_PATH" run weekly-project-audit 2>&1)
 
-if echo "$P16_LOGIC" | grep -q "ALL_LISTED count=2"; then
-  ok "P-16: weekly-project-audit が全プロジェクト 2件を列挙する形式を確認"
+P16_HEADER_N=$(printf '%s' "$P16_OUT" | grep -oE '全[0-9]+件' | head -1 | grep -oE '[0-9]+')
+P16_LISTED=$(printf '%s\n' "$P16_OUT" | grep -cE '^\[[0-9]+/[0-9]+\] #' || true)
+
+if [ -n "$P16_HEADER_N" ] && [ "$P16_LISTED" = "$P16_HEADER_N" ]; then
+  ok "P-16: weekly-project-audit がヘッダー件数（${P16_HEADER_N}）と同数の行を列挙する"
 else
-  fail "P-16: 全件列挙の形式が正しくない" "結果: $P16_LOGIC"
+  fail "P-16: 列挙行数がヘッダー件数と一致しない" "ヘッダー件数: $P16_HEADER_N / 列挙行数: $P16_LISTED"
+fi
+
+if echo "$P16_OUT" | grep -qE "^\[[0-9]+/[0-9]+\] #${NUM_PROJ} "; then
+  ok "P-16: 実在するプロジェクト #$NUM_PROJ が一覧に含まれる"
+else
+  fail "P-16: #$NUM_PROJ が一覧に含まれない" "$P16_OUT"
 fi
 
 # ─── P-17: next 欠落プロジェクトの検出 ───
 echo ""
 echo "  [P-17] next 欠落プロジェクトの検出"
 
-P17_LOGIC=$(node -e "
-const PROJECT_LABEL='project';
-const GTD_DISPLAY={next:'🎯 next',project:'📁 project'};
-const GTD_LABELS=['next','project'];
-function normLabel(n){if(n===GTD_DISPLAY[PROJECT_LABEL])return PROJECT_LABEL;for(const k of GTD_LABELS){if(n===GTD_DISPLAY[k])return k;}return n;}
-function getLnames(i){return(i.labels||[]).map(l=>l.name||l).map(normLabel);}
+# list-all に project 2件（next 欠落1件・next あり1件）を通し、ヘッダーの
+# ⚠️ next欠落 バッジの件数が正確に「1」になる（2件中1件のみ）ことを確認する。
+P17_OUT=$(TODAY_ENV="2026-04-17" OPEN_ENV='[
+  {"number":420,"title":"[test] P-17 nextなしプロジェクト","body":"","labels":[{"name":"📁 project"}]},
+  {"number":421,"title":"[test] P-17 nextありプロジェクト","body":"","labels":[{"name":"📁 project"}]},
+  {"number":422,"title":"[test] P-17 子タスク","body":"project: #421","labels":[{"name":"🎯 next"}]}
+]' node "$ENGINE_PATH" list-all 2>/dev/null || true)
 
-const allIssues=[
-  // プロジェクト（next なし）
-  {number:400,title:'nextなしプロジェクト',body:'',labels:[{name:'📁 project'}]},
-  // プロジェクト（next あり）
-  {number:401,title:'nextありプロジェクト',body:'',labels:[{name:'📁 project'}]},
-  // 子タスク（next）
-  {number:402,title:'子',body:'project: #401',labels:[{name:'🎯 next'}]}
-];
+P17_HEADER=$(printf '%s\n' "$P17_OUT" | grep '^## 📁 Projects')
 
-const projects=allIssues.filter(i=>getLnames(i).includes(PROJECT_LABEL));
-const noNextProjects=projects.filter(proj=>{
-  const tag='project: #'+proj.number;
-  const children=allIssues.filter(i=>(i.body||'').includes(tag));
-  return !children.some(i=>getLnames(i).includes('next'));
-});
-process.stdout.write('noNext='+noNextProjects.length+' total='+projects.length);
-" 2>/dev/null)
-
-if echo "$P17_LOGIC" | grep -q "noNext=1 total=2"; then
-  ok "P-17: 2件中 1件の next 欠落プロジェクトを正確に検出"
+if echo "$P17_HEADER" | grep -q "（2"; then
+  ok "P-17: プロジェクト総数2件を正しく集計"
 else
-  fail "P-17: next 欠落の検出が正しくない" "結果: $P17_LOGIC"
+  fail "P-17: プロジェクト総数の集計が正しくない" "$P17_HEADER"
+fi
+
+if echo "$P17_HEADER" | grep -q "next欠落: 1"; then
+  ok "P-17: 2件中1件の next 欠落プロジェクトを正確に検出"
+else
+  fail "P-17: next 欠落の検出数が正しくない" "$P17_HEADER"
 fi
 
 # ─── P-18: reviewed_at が親 Issue body に書き込まれる ───
