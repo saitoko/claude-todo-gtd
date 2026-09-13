@@ -682,7 +682,9 @@ function guardExtraPositional(extraTokens, usage, hintKey, example) {
 
 ### 2026-09-13: `template use` のタイトル上書きだけが `validateTitle` を通らない（Issue #1977）
 
-**症状:** タイトルを設定・変更する経路は `add`（3815行）・`edit title`（3178行）・`rename`（4787行）・`promote-project --outcome`（5834行）の4つがあり、いずれも制御文字（改行等）を禁止する `validateTitle` を通る。しかし `template use <name> [タイトル上書き]` の上書きタイトルだけが無検証で `issues.create` に渡っていた（`validateName(name)` は名前側にだけ掛かり、同一行内で非対称になっていた）。シェル注入の経路ではない（Octokit 経由の HTTP API にのみ渡る）ため、セキュリティ上の欠陥ではなく「タイトルを書き換える全経路が同じ最低限の検証を受ける」という一貫性の欠落として扱う。先行する別Issue（#1929）の調査は3経路（`add`/`rename`/`promote-project --outcome`）と報告していたが、本Issue対応にあたり実装を直接走査したところ `edit title` を含む4経路だった。
+**症状:** Issue のタイトルを設定・変更する経路は `add`（3815行）・`rename`（4787行）・`promote-project --outcome`（5834行）の3つがあり、いずれも制御文字（改行等）を禁止する `validateTitle` を通る。しかし `template use <name> [タイトル上書き]` の上書きタイトルだけが無検証で `issues.create` に渡っていた（`validateName(name)` は名前側にだけ掛かり、同一行内で非対称になっていた）。シェル注入の経路ではない（Octokit 経由の HTTP API にのみ渡る）ため、セキュリティ上の欠陥ではなく「タイトルを書き換える全経路が同じ最低限の検証を受ける」という一貫性の欠落として扱う。
+
+なお `validateTitle` の呼び出しはソース上4箇所（3178 / 3815 / 4787 / 5834行）あるが、**3178行はタイトルを書き換える経路ではない**。これは `node todo-engine.js validate title <value>` という検証専用 CLI サブコマンドのディスパッチであり（現状 `tests/run-tests.sh` からのみ呼ばれる）、Issue の更新は行わない。本Issue起票時には3178行を `edit title` 経路と誤って数えて「4経路」と記載していたが、`runEdit` の `updateParams` は `body` のみで `title` を含まず（4649行）、`edit` にタイトル変更機能は存在しない（タイトル変更は `rename` が担当する）。したがって書き換え経路は3つが正しい。
 
 **原因:** `template use` は #1921 第2弾（2026-09-02）で判明したとおり `runAdd` を経由せず自前で `issues.create` を呼ぶ独立実装であり、`runAdd` 側の `validateTitle` 呼び出しが構造的に効かない。
 
