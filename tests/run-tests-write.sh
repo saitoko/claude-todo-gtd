@@ -5057,6 +5057,174 @@ rm -f "$W38_7_LOG"
 #     ことを実装時に手動確認済み（直前の「唯一の〜」assertはPASSのまま残った＝上記の自己申告参照）
 # 3つのガードは独立した挿入箇所（runAdd/execMoveGtd/runBulk）のため、それぞれ個別に無効化して
 # 検証した（詳細は完了報告を参照）。
+
+# ──────────────────────────────────────────
+# §W39  runAdd --due clear 拒否（Issue #1953）
+# 'clear' は既存Issueの期日削除用の予約語（validateDue が due/edit 向けに早期許可）。add は
+# まだ存在しないIssueを作る操作であり削除対象の期日が存在しないため、normalizeDue に渡すと
+# どのパターンにも一致せず 'clear' がそのまま返り（truthy）、body に無意味な `due: clear` が
+# 書き込まれてしまっていた（症状: エラーなし・exit 0 で完了）。normalizeDue に渡す前に弾く
+# ガードを追加した。due <#> clear / edit <#> --due clear（既存Issueの期日削除）は従来どおり
+# 許可されることを併せて回帰確認する。
+# ──────────────────────────────────────────
+echo ""
+echo "§W39  runAdd --due clear 拒否（Issue #1953）"
+
+# W39-1 異常系(核心): add --due clear → exit 1・API呼び出しゼロ（body書き込み前に検証）
+W39_1_LOG=$(mktemp /tmp/todo-test-w39-1-XXXXXX); : > "$W39_1_LOG"
+W39_1_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{},{}],"issues.create":[{"data":{"number":7201}}]}'
+W39_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W39_1_RESP" OCTOKIT_STUB_LOG_ENV="$W39_1_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run add next "Clear due test" --due clear 2>&1); W39_1_EC=$?
+assert_exit_fail "W39-1 異常系: add --due clear → exit 1" "$W39_1_EC"
+assert_contains "W39-1: エラーメッセージ（新規作成時は指定不可）" \
+  "新規作成時に --due clear は指定できません" "$W39_1_OUT"
+assert_eq "W39-1: API呼び出しゼロ（due正規化より前に検証・body書き込み防止）" "0" "$(wc -l < "$W39_1_LOG" | tr -d ' ')"
+rm -f "$W39_1_LOG"
+
+# W39-2 異常系(#1950との相互作用・すり抜け経路の閉塞確認): add routine --due clear --recur weekly
+# #1950の初回due自動導出は `if (parsed.recur && !due)` が条件のため、due='clear'（truthy）だと
+# 自動導出をすり抜けてbodyに`due: clear`が書き込まれる経路が残っていた。W39-1と同じガードで
+# 塞がることを確認する。
+W39_2_LOG=$(mktemp /tmp/todo-test-w39-2-XXXXXX); : > "$W39_2_LOG"
+W39_2_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{},{}],"issues.create":[{"data":{"number":7202}}]}'
+W39_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W39_2_RESP" OCTOKIT_STUB_LOG_ENV="$W39_2_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run add routine "Routine clear due" --due clear --recur weekly 2>&1); W39_2_EC=$?
+assert_exit_fail "W39-2 異常系(#1950すり抜け経路の閉塞): add routine --due clear --recur weekly → exit 1" "$W39_2_EC"
+assert_eq "W39-2: API呼び出しゼロ" "0" "$(wc -l < "$W39_2_LOG" | tr -d ' ')"
+rm -f "$W39_2_LOG"
+
+# W39-3 正常系(回帰確認): due <#> clear（既存Issueの期日削除）は従来どおり許可される
+W39_3_LOG=$(mktemp /tmp/todo-test-w39-3-XXXXXX); : > "$W39_3_LOG"
+W39_3_RESP='{"issues.get":[{"data":{"number":7203,"body":"due: 2026-05-01\n","labels":[{"name":"🎯 next"}]}}],"issues.update":[{}]}'
+W39_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W39_3_RESP" OCTOKIT_STUB_LOG_ENV="$W39_3_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run due 7203 clear 2>&1); W39_3_EC=$?
+assert_exit_ok "W39-3 正常系(回帰): due <#> clear → exit 0（既存Issueの期日削除は引き続き許可）" "$W39_3_EC"
+rm -f "$W39_3_LOG"
+
+# W39-4 正常系(回帰確認): edit <#> --due clear（既存Issueの期日削除）は従来どおり許可される
+W39_4_LOG=$(mktemp /tmp/todo-test-w39-4-XXXXXX); : > "$W39_4_LOG"
+W39_4_RESP='{"issues.get":[{"data":{"number":7204,"body":"due: 2026-05-01\n","labels":[{"name":"🎯 next"}]}}],"issues.update":[{}]}'
+W39_4_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W39_4_RESP" OCTOKIT_STUB_LOG_ENV="$W39_4_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run edit 7204 --due clear 2>&1); W39_4_EC=$?
+assert_exit_ok "W39-4 正常系(回帰): edit <#> --due clear → exit 0（既存Issueの期日削除は引き続き許可）" "$W39_4_EC"
+rm -f "$W39_4_LOG"
+
+# W39-5 正常系: add --due ""（空文字）は従来どおり無言のno-op（--due省略と同じ扱い）。
+# parsed.due が falsy になり due 正規化自体を経由しない（三項演算子でdue=''のまま）ため、
+# clear のような正規化後truthy値は発生せず、body に due 行は一切出力されない。
+W39_5_LOG=$(mktemp /tmp/todo-test-w39-5-XXXXXX); : > "$W39_5_LOG"
+W39_5_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{},{}],"issues.create":[{"data":{"number":7205}}]}'
+W39_5_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W39_5_RESP" OCTOKIT_STUB_LOG_ENV="$W39_5_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run add next "Empty due test" --due "" 2>&1); W39_5_EC=$?
+assert_exit_ok "W39-5 正常系: add --due \"\" → exit 0（--due省略と同じ無言no-op）" "$W39_5_EC"
+assert_not_contains "W39-5: 期日行が表示されない" "期日:" "$W39_5_OUT"
+assert_contains "W39-5: issues.create body が空（due行が書き込まれない）" \
+  '"body":""' "$(log_lines_for_method "$W39_5_LOG" issues.create)"
+rm -f "$W39_5_LOG"
+
+# W39-6 異常系(英語メッセージ): LANG_ENV=en でプレースホルダ漏れ・日本語混入がないこと
+# 注: W39-1/2と同じ理由でGET labels/issues.createの応答もフルに用意する（ガード除去実験で
+# ガードが無効化されても後続処理が普通に「成功」できる状態にしておく。応答を用意しないと、
+# 「スタブ未設定エラーによる別原因のexit 1」を「ガードが効いた」と誤認する偽陽性になる）。
+W39_6_LOG=$(mktemp /tmp/todo-test-w39-6-XXXXXX); : > "$W39_6_LOG"
+W39_6_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{},{}],"issues.create":[{"data":{"number":7206}}]}'
+W39_6_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W39_6_RESP" OCTOKIT_STUB_LOG_ENV="$W39_6_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 LANG_ENV=en \
+  node "$ENGINE" run add next "Clear due test en" --due clear 2>&1); W39_6_EC=$?
+assert_exit_fail "W39-6 異常系(en): add --due clear → exit 1" "$W39_6_EC"
+assert_contains "W39-6: en エラーメッセージ" \
+  "cannot be used when creating a new issue" "$W39_6_OUT"
+assert_eq "W39-6: API呼び出しゼロ（due正規化より前に検証）" "0" "$(wc -l < "$W39_6_LOG" | tr -d ' ')"
+assert_no_japanese "W39-6: 出力に日本語が1文字も含まれない" "$W39_6_OUT"
+rm -f "$W39_6_LOG"
+
+# ガード除去による回帰検出: runAdd 内の `if (parsed.due === 'clear') { ...exit(1); }` ブロックを
+# 一時的に無効化して実行し、W39-1(3アサーション)・W39-2(2アサーション)・W39-6(4アサーション)の
+# 計9アサーションが確実にFAILすることを実装時に手動確認済み（W39-3/4/5はガード対象外の
+# 経路のため無傷＝陰性対照として引き続きPASS。詳細は完了報告を参照）。
+
+# ──────────────────────────────────────────
+# §W40  template save <name> from <#> の priority 欠落修正（Issue #1946）
+# templateSave()（インライン形式）は t.priority を書き込むが、templateSaveFrom()（from形式）
+# には対応する代入が存在せず、コピー元Issueがp1/p2でも保存後は常にp3扱いになっていた
+# （呼び出し側は PRIORITY_ENV を正しくセットしているが読み忘れていた非対称。エラーは出ない）。
+# ~/.claude/todo-templates.json への書き込みを伴うため §W3 と同じ isolated HOME サンドボックスを
+# 使う。
+# ──────────────────────────────────────────
+echo ""
+echo "§W40  template save from の priority 欠落修正（Issue #1946）"
+
+W40_REAL_HOME="$HOME"
+W40_FAKE_HOME=$(mktemp -d /tmp/todo-test-w40-home-XXXXXX)
+mkdir -p "$W40_FAKE_HOME/.claude"
+printf '{}' > "$W40_FAKE_HOME/.claude/todo-templates.json"
+export HOME="$W40_FAKE_HOME"
+if [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* ]]; then
+  W40_REAL_USERPROFILE="${USERPROFILE:-}"
+  export USERPROFILE="$W40_FAKE_HOME"
+fi
+
+# W40-1〜W40-3 通し回帰(核心): p1のIssue → save from → show にp1が反映 → use でp1ラベルが付く
+W40_1_RESP='{"issues.get":[{"data":{"number":7301,"body":"","labels":[{"name":"🎯 next"},{"name":"p1"}]}}]}'
+W40_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W40_1_RESP" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run template save p1tpl from 7301 2>&1); W40_1_EC=$?
+assert_exit_ok "W40-1 正常系: template save p1tpl from 7301(p1) → exit 0" "$W40_1_EC"
+assert_contains "W40-1: 保存メッセージ" "テンプレート「p1tpl」を #7301 からコピーして保存しました。" "$W40_1_OUT"
+
+W40_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run template show p1tpl 2>&1); W40_2_EC=$?
+assert_exit_ok "W40-2 正常系: template show p1tpl → exit 0" "$W40_2_EC"
+assert_contains "W40-2(核心): show にコピー元のp1が反映される（修正前はp3固定だった）" \
+  "priority: p1" "$W40_2_OUT"
+
+W40_3_LOG=$(mktemp /tmp/todo-test-w40-3-XXXXXX); : > "$W40_3_LOG"
+W40_3_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{},{}],"issues.create":[{"data":{"number":7302}}]}'
+W40_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W40_3_RESP" OCTOKIT_STUB_LOG_ENV="$W40_3_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run template use p1tpl 2>&1); W40_3_EC=$?
+assert_exit_ok "W40-3 正常系: template use p1tpl → exit 0" "$W40_3_EC"
+assert_contains "W40-3(核心): 作成Issueのラベルにp1が付く" "ラベル: 🎯 next, p1" "$W40_3_OUT"
+assert_contains "W40-3: issues.create labels に p1 が含まれる" \
+  '"labels":["🎯 next","p1"]' "$(log_lines_for_method "$W40_3_LOG" issues.create)"
+rm -f "$W40_3_LOG"
+
+# W40-4/W40-5 正常系(後方互換): priority欠落の既存テンプレートエントリはp3フォールバックのまま動く
+printf '%s' '{"legacy_notpl": {"gtd": "next", "context": [], "tags": []}}' > "$W40_FAKE_HOME/.claude/todo-templates.json"
+W40_4_OUT=$(OCTOKIT_STUB_ENV="$STUB" TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run template show legacy_notpl 2>&1); W40_4_EC=$?
+assert_exit_ok "W40-4 正常系(後方互換): template show legacy_notpl → exit 0" "$W40_4_EC"
+assert_contains "W40-4: priority欠落エントリはp3フォールバック（後方互換の回帰確認）" \
+  "priority: p3" "$W40_4_OUT"
+
+W40_5_LOG=$(mktemp /tmp/todo-test-w40-5-XXXXXX); : > "$W40_5_LOG"
+W40_5_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{},{}],"issues.create":[{"data":{"number":7303}}]}'
+W40_5_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W40_5_RESP" OCTOKIT_STUB_LOG_ENV="$W40_5_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run template use legacy_notpl 2>&1); W40_5_EC=$?
+assert_exit_ok "W40-5 正常系(後方互換): template use legacy_notpl → exit 0" "$W40_5_EC"
+assert_contains "W40-5: priority欠落エントリはp3ラベルで作成される（後方互換の回帰確認）" \
+  "ラベル: 🎯 next, p3" "$W40_5_OUT"
+rm -f "$W40_5_LOG"
+
+export HOME="$W40_REAL_HOME"
+if [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* ]]; then
+  if [ -n "${W40_REAL_USERPROFILE:-}" ]; then export USERPROFILE="$W40_REAL_USERPROFILE"; else unset USERPROFILE; fi
+fi
+rm -rf "$W40_FAKE_HOME" 2>/dev/null || true
+
+# ガード除去による回帰検出: templateSaveFrom() 内の
+# `t.priority = process.env.PRIORITY_ENV || 'p3';` を一時的に削除（修正前の非対称な状態へ
+# 戻す）して実行し、W40-2(1アサーション: show にp1が出ない)・W40-3(2アサーション: use の
+# ラベル・issues.create labelsにp1が出ない)の計3アサーションが確実にFAILすることを実装時に
+# 手動確認済み（W40-1/4/5は追加した1行を通らない経路のため無傷＝陰性対照として引き続きPASS。
+# 詳細は完了報告を参照）。
+
 echo ""
 echo "=========================================="
 W_TOTAL=$((PASS+FAIL))
