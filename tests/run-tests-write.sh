@@ -170,6 +170,51 @@ log_lines_for_method() {
   "
 }
 
+# ────────────────────────────────────────────
+# イシュー単位ブロック抽出ヘルパー（Issue #1952 Phase 2）
+#
+# runBulk done の出力は "  #{num}: {recurLine}"（成功）か "  #{num} エラー: {msg}"
+# （エラー）のいずれかの行を Issue ごとに出力する。同一実行内で成功・エラーが
+# 混在すると、成功メッセージ・エラーメッセージの両方に同じテンプレート由来の
+# 埋め込み文言（"繰り返しIssue #{newNum}"）が出現しうるため、bare な文字列検索
+# では「どちらのIssueのどちらの分岐で出たか」を区別できない
+# （項目の開始行から次の項目・サマリー行・終端までを抽出する、一般的なブロック抽出の
+# 形である。ここでは対象がファイルではなくコマンド出力を格納した bash 変数のため、
+# 変数を直接受け取る形にしている）。
+#
+# 各Issueのブロックは "  #{num}"（先頭が2スペース+#num）で始まり、次の
+# "  #{別num}" 行または "✅"（サマリー行）または EOF で終わる。
+extract_issue_block() {
+  local content="$1" number="$2"
+  printf '%s\n' "$content" | awk -v anchor="  #${number}" '
+    index($0, anchor) == 1 { flag=1; print; next }
+    flag && (/^  #/ || /^✅/) { flag=0 }
+    flag { print }
+  '
+}
+
+assert_block_contains() {
+  local desc="$1" content="$2" number="$3" needle="$4"
+  if extract_issue_block "$content" "$number" | grep -aFq -- "$needle"; then
+    printf "  ✅ %s\n" "$desc"; PASS=$((PASS+1))
+  else
+    printf "  ❌ %s\n" "$desc"
+    printf "     #%s のブロック内に needle=[%s] が見つからない\n" "$number" "$needle"
+    FAIL=$((FAIL+1))
+  fi
+}
+
+assert_block_not_contains() {
+  local desc="$1" content="$2" number="$3" needle="$4"
+  if extract_issue_block "$content" "$number" | grep -aFq -- "$needle"; then
+    printf "  ❌ %s\n" "$desc"
+    printf "     #%s のブロック内に needle=[%s] が意図せず存在する\n" "$number" "$needle"
+    FAIL=$((FAIL+1))
+  else
+    printf "  ✅ %s\n" "$desc"; PASS=$((PASS+1))
+  fi
+}
+
 # ──────────────────────────────────────────
 # §W0  Octokit スタブ単体スモークテスト（Phase 0）
 # ──────────────────────────────────────────
@@ -1482,7 +1527,17 @@ assert_exit_ok "#1652-B3 runBulk done: bulk全体はexit 0（per-item errorの�
 assert_contains "#1652-B3 runBulk done: サマリーが1件完了/1件エラー" "✅ 1件完了" "$W1652_B3_OUT"
 assert_contains "#1652-B3 runBulk done: サマリーにエラー件数1件" "（エラー: 1件）" "$W1652_B3_OUT"
 assert_contains "#1652-B3 runBulk done: #90201はrecur再作成メッセージが出る" "#90201: 繰り返しタスク #90211" "$W1652_B3_OUT"
-assert_contains "#1652-B3 runBulk done: #90202のエラーに新Issue番号(#90212)が含まれる（副作用の可視化）" "#90212" "$W1652_B3_OUT"
+# Issue #1952 Phase 2 書き直し: #90201=成功+recur再作成, #90202=close失敗エラーが同一実行内
+# に共存し、両テンプレートとも「繰り返しIssue #{newNum}」を埋め込む。旧アサーションは
+# "#90212がどこかに出現する"だけを見ており、成功/エラー判定が反転して#90202が誤って
+# 成功扱いになっても（recurLineがそのまま出力される）検出できなかった。ブロック単位で
+# 「#90202のブロックにエラー表示がある」ことまで検証する。
+assert_block_contains     "#1652-B3 runBulk done: #90202のブロックにエラー表示(エラー:)が含まれる（成功/エラー混同の検出）" \
+  "$W1652_B3_OUT" 90202 "エラー:"
+assert_block_contains     "#1652-B3 runBulk done: #90202のエラーに新Issue番号(#90212)が含まれる（副作用の可視化）" \
+  "$W1652_B3_OUT" 90202 "#90212"
+assert_block_not_contains "#1652-B3 runBulk done: #90201のブロックにエラー表示は含まれない（#90202のエラーと混同されない）" \
+  "$W1652_B3_OUT" 90201 "エラー:"
 assert_eq "#1652-B3 runBulk done: issues.create は2回（両方ともrecur再作成は実行される）" "2" "$(log_count "$W1652_B3_LOG" issues.create)"
 assert_eq "#1652-B3 runBulk done: issues.listForRepo は1回（postDoneProcessing到達は#90201のみ）" "1" "$(log_count "$W1652_B3_LOG" issues.listForRepo)"
 rm -f "$W1652_B3_LOG"
@@ -4975,12 +5030,15 @@ assert_contains "W38-7: エラーメッセージがコピペ可能なedit案内�
 assert_contains "W38-7: 成功件数1・エラー件数1のサマリー" "1件を 🔁 routine に移動（エラー: 1件）" "$W38_7_OUT"
 assert_eq "W38-7: #20600に対するaddLabelsは呼ばれない（recurなし項目は変更されない）" \
   "1" "$(log_count "$W38_7_LOG" issues.addLabels)"
-# 注(自己申告): 以下のassert_containsは文字列名に反して「20601以外が含まれないこと」
-# までは検証していない（部分一致のみ）。ガード除去実験でも実際にPASSのまま残った
-# （後続の「W38-7: #20600に対するaddLabelsは呼ばれない」assert_eqの方が真の検証を担っている。
-# 詳細は完了報告の自己申告を参照）。
+# Issue #1952 Phase 2 書き直し（テスト作成者の自己申告に基づく修正。
+# assert_not_contains を追加してペア化する）: 旧アサーションは「20601以外が含まれないこと」
+# までは検証していない（部分一致のみ）。ガード除去実験でも実際にPASSのまま残った。
+# addLabels呼び出し回数=1（4931-4932行のassert_eq）が真の検証を担っているが、
+# 「誰に対して呼ばれたか」まで直接確認するペアに書き直す。
 assert_contains "W38-7: addLabels呼び出しに#20601（recurあり）が含まれる" \
   '"issue_number":20601' "$(log_lines_for_method "$W38_7_LOG" issues.addLabels)"
+assert_not_contains "W38-7: addLabels呼び出しに#20600（recurなし）は含まれない（recurなし項目の混入防止）" \
+  '"issue_number":20600' "$(log_lines_for_method "$W38_7_LOG" issues.addLabels)"
 rm -f "$W38_7_LOG"
 
 # ガード除去による回帰検出（3箇所を個別に無効化。stub応答は「ガードが無効化されても
