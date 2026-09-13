@@ -718,7 +718,7 @@ rm -f "$W9_6_LOG"
 # §W10  postDoneProcessing — depends_on昇格ガードの独立修正（Issue #1660 バグ1）
 # ──────────────────────────────────────────
 echo ""
-echo "§W10  postDoneProcessing — depends_on昇格ガードの独立修正（#1299/#1275型の回帰確認）"
+echo "§W10  postDoneProcessing — depends_on昇格ガードの独立修正（#1299/#1275の同型バグ回帰確認）"
 
 # 背景: 旧実装は `if (issue.project || issue.dependsOn)` で depends_on 昇格ブロック全体を
 # ガードしていた。しかし depends_on 昇格は「他のオープンIssueがこの完了Issueに依存しているか」
