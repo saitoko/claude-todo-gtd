@@ -708,6 +708,25 @@ function guardExtraPositional(extraTokens, usage, hintKey, example) {
 
 **対象ファイル:** `todo-engine.js`（`template use` の `overrideTitle` 検証追加）、`tests/run-tests-write.sh`（§W28-51/52新設）、`DEVELOPMENT.md`（本セクション・テスト総件数の更新）
 
+### 2026-09-13: `FORBIDDEN_CHARS` に `[` `]` を追加しない（仕様として確定。Issue #1976）
+
+**背景:** `todo.md` のセキュリティルール7 は、Issue #1929（2026-09-13）で書き換えられるまで禁止文字として `;$\`()"'\|&><{}[]` を列挙しており `[` `]` を含んでいた。一方 `FORBIDDEN_CHARS`（`todo-engine.js:17`）は最初からこの2文字を含んでいない。#1929 では文書側を実装に合わせて整合を取ったため、逆方向（実装側に2文字を追加して文書の元の意図に合わせる）の検討が残っていた。
+
+**判断: 追加しない。** 現状を仕様として確定する。
+
+**根拠**（いずれも 2026-09-13 の実測）:
+
+- `FORBIDDEN_CHARS` が効くのは `validateName` 経由の**テンプレート名・ビュー名のみ**（`template show/save/use/delete` / `view save/delete/use` の7経路）。Issue のタイトル・本文など自由記述には適用されない
+- **これらの名前はシェルに一切渡らない。** `grep -n "TNAME_ENV\|VNAME_ENV" todo.sh` は0件で、名前は `process.env` 経由で同一 Node プロセス内でのみ消費される。`[` `]` がグロブとして解釈される経路が存在しない
+- **名前はファイル名にもならない。** 保存先は `getTemplatePath()` / `getViewPath()` が返す固定パス（`~/.claude/todo-templates.json` / `~/.claude/todo-views.json`）で、名前は JSON のオブジェクトキーにすぎない
+- Issue #1825 で `validateTitle` を新設した際、「タイトルはシェルを経由しないので `FORBIDDEN_CHARS` による禁止は過剰」と判断してこの路線を降りている（`validateTitle` 直前のコメント参照）。同じ論理を名前に当てはめるなら `FORBIDDEN_CHARS` は拡大ではなく縮小が筋であり、2文字の追加は方向として整合しない
+
+**副作用の確認:** 判断時点の実データはテンプレート0件・ビュー1件（`v1`）で、`[` `]` を含む既存名はゼロだった。どちらに決めても既存データは壊れない状態での判断である。
+
+**変更なし:** コード・`todo.md`・テストはいずれも変更していない（実装と文書は既に一致している）。本セクションは「なぜ追加しないか」を残すための記録。
+
+**残課題:** `validateTitle` と同じ論理で `FORBIDDEN_CHARS` 自体を縮小・廃止する方向は未検討のまま残っている。着手する場合は本Issueとは別に扱うこと。
+
 ## 翻訳方針（i18n）
 
 `todo-engine.js` の出力は `MESSAGES`/`t()`（`LANG_ENV=en` で英語、それ以外は日本語）で管理しているが、以下の3箇所は方針として `t()` 化せず英語固定とする。新しくコマンド・出力を追加する際はこの方針に従うこと。
