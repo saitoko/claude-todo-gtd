@@ -129,7 +129,7 @@ Environment variable: LANG_ENV=en
 | `day after tomorrow` | +2 days |
 | `next week` | +7 days |
 | `next month` | +1 month |
-| `this weekend` | Next Saturday |
+| `this weekend` | Saturday of this week (today, if today is Saturday) |
 | `end of this month` | Last day of this month |
 | `end of next month` | Last day of next month |
 | `in N days` | +N days |
