@@ -54,7 +54,8 @@ MCP_MODEでは `bash ~/.claude/todo.sh` は呼び出さない。GitHub MCP ツ�
 
 6. **テンプレート・ビューのJSONはローカルファイルにのみ保存する。外部に送信しない。**
 
-7. **`run` サブコマンドの引数にシェル特殊文字（`;$\`()"'\|&><{}[]`）が含まれる場合はエラーで中断する。**
+7. **`run` サブコマンドの引数のうち、テンプレート名・ビュー名としてローカルにのみ保存される値には、シェル特殊文字（`;$\`()"'\|&><{}`）を禁止する。**
+   Issueのタイトル・説明・本文・コメントなど GitHub API にのみ渡る自由記述はこの対象外とし、改行等の制御文字のみを禁止する（丸括弧・引用符等の記号は許可する）。
 
 ---
 
@@ -80,21 +81,50 @@ MCP_MODEでは `bash ~/.claude/todo.sh` は呼び出さない。GitHub MCP ツ�
 
 ## コマンド一覧（基本形式: `bash ~/.claude/todo.sh <command> [args]`）
 
+### GTD カテゴリ
+
+GTD ラベルは `next` / `routine` / `inbox` / `waiting` / `someday` / `reference` の6種類（`project` は独立した親カテゴリ）。`routine` は繰り返しタスク専用のカテゴリで、`--recur` とのセット使用が必須（例: `add routine "日報を書く" --recur daily`）。`--recur` を指定しない `add routine`、および `recur` を持たない Issue を `routine` へ `move`/`bulk move` する操作はエラーになる（先に `edit --recur` で設定してから移動する）。`--recur` 指定時に `--due` を省略すると、`today` を含む `today` 以降で最初の該当日を初回 `due` として自動算出する（`--due` を明示指定した場合は上書きしない）。`today`/`dashboard` には routine 専用の表示区分があり、実施漏れが期日超過とは別枠で通知される。詳細は `todo-manual.md` の「引き出しの種類」を参照。
+
 ### タスク管理
+
+> **未知フラグのエラー化（引数の扱い）**
+>
+> **対象コマンド**: `add` / `list` / `done` / `move` / `edit` / `comment` / `rename` / `due` / `desc` / `recur` / `priority` / `link` / `label` / `template` / `bulk`（`done` / `move` / `priority` のみ）/ `search` / `archive`（`search` サブコマンドのみ）。
+> これらのコマンドでは、そのコマンドの引数欄に載っていない `--` で始まる引数を**未知フラグとしてエラー終了する**（黙って無視したり、タイトル・本文へ連結したりしない）。フラグ名のタイプミス（`--boddy-file`）と、値を書き忘れた既知フラグ（末尾の `--due` 等）の両方が対象。`label` / `template` はサブコマンド名の次に来る**名前の位置**も対象（例: `label add --foo` はゴミラベルを作らずにエラー終了する）。
+> `--dry-run` のような語をタイトルや本文に含めたい場合は、**その全体を1つの引数としてクォートする**（例: `/todo add next "--dry-run を追加する"`）。
+> 判定対象は「`--` + 英字始まり + 英数字/ハイフンのみで構成される1語」に限る。Markdown の水平線（`---`）や空白・日本語を含む文字列（`"--body を説明する"`）は自由記述として通る。
+>
+> **対象外（未知フラグとしてはエラーにならないもの）**:
+> - 上の対象コマンド・下記の個別ガード対象以外（`stats` / `dashboard` / `today` / `eisenhower` / `help` / `schema` / `promote` / `weekly-project-audit` など、そもそも引数を受け取らない設計のコマンド）は該当なし
+> - `tag` / `untag` / `bulk tag` / `bulk untag` の `-` 始まりトークンは、専用の「オプション指定に見えます」エラーで従来どおり止まる（エラーにはなるが文言が異なる）
+> - `unlink <#> [--force]` の `--force` はタイプミス（`--forse` 等）であれば未知フラグとしてエラー終了する（17種の値付きフラグとは別の単発フラグのため上の対象コマンド一覧には含めていないが、`--force` 以外の未知の `--` 引数は個別にガードしている）
+> - `show <#> [--json]` の `--json` はタイプミス（`--jsn` 等）であれば未知フラグとしてエラー終了する（`unlink` と同型。第2の位置引数スロットを持たないため位置引数の余剰チェックはない）
+> - `migrate sub-issue [--dry-run]` の `--dry-run` はタイプミス（`--dryrun` 等）であれば未知フラグとしてエラー終了する（デフォルトが本実行側のため、タイプミス放置は #1937 の `unlink --force` より実害が大きい）
+> - `review-someday <#>` は位置引数以外の `--` 始まり引数を未知フラグとしてエラー終了する（`unlink` と同型。位置引数の余剰チェックはない）
+> - `promote-project <#> [--outcome "タイトル"]` の `--outcome` はタイプミス（`--outcom` 等）であれば未知フラグとしてエラー終了する。値のクォート漏れ（`--outcome New Marketing Campaign` のような複数トークン）も位置引数の余剰としてエラー終了する
+> - `view save <名前> [GTD] [@ctx] [p1|p2|p3]` は GTD ラベル・優先度・`@ctx` のいずれにも一致しないトークンを、フラグ字面（`--` 始まり）なら未知フラグ、それ以外なら位置引数の余剰としてエラー終了する（書き込み先はローカル `views.json` のみ）。`view use` / `view delete` / `view list` は対象外（現状維持）
+>
+> **17種の値付きフラグ（`--due` / `--desc` / `--recur` / `--project` / `--priority` / `--estimate` / `--actual` / `--due-offset` / `--color` / `--activate` / `--before` / `--depends-on` / `--resume-condition` / `--note` / `--body` / `--body-file` / `--label`）と `@ctx` / `#tag`（`parseArgs()` が消費する位置トークン）に共通の注記**:
+> - 対象コマンドであっても、**別のコマンドでは有効だがそのコマンドが読まないフラグ・トークン**（例: `add` の `--note` / `--actual` / `--color`、`edit` の `--note`、`list` の `--due`、`done` / `move` / `edit` / `label add` / `bulk done` の `@ctx` / `#tag`）を渡すと、**「このコマンドでは使えません」というエラーで終了する**（`--` の綴りミスと区別されるが、いずれもエラー終了する点は同じ）
+> - `template save`（インライン形式・`from <#>` 形式の両方）は `@ctx` と `#tag` のいずれも使える（#1936 で対称化済み）
+>
+> **位置引数の余剰（`due` / `recur` / `link` / `priority` / `activate`（ショートカット）に共通の注記）**:
+> - これら5コマンドは `<#>` の次に来る値を1つだけ受け取る。値の**直後に余分な引数**を渡すとエラー終了する（例: `due 42 今週 金曜` は「今週」の後の「金曜」が余剰、`link 42 100 101` は「100」の後の「101」が余剰、`activate 42 2026-09-10 メモ` は「2026-09-10」の後の「メモ」が余剰）
+> - `due` / `recur` / `activate`（ショートカット）は値が空白を含む自然文（日付・パターン）になりうるため、エラーのヒントは**値全体を1つの引数としてクォートする**修正例を示す（例: `/todo due 42 "今週 金曜"`）。`link` / `priority` は値が単一トークン（番号・`p1`〜`p3`）なのでクォートではなく余剰を外す修正例を示す
 
 | コマンド | 引数 | 説明 |
 |---------|------|------|
-| `add` / GTDキーワード | `[GTD] <タイトル> [@ctx...] [--due 日付] [--desc テキスト] [--recur パターン] [--project 番号] [--priority p1\|p2\|p3] [--estimate 時間]` | タスク追加（GTD省略時: inbox）。英字で始まるタイトルは `add` を明示必須（例: `/todo add My Task`）。英字で始まる引数を `add` なしで渡すとコマンド名と混同されエラーになる。タイトルが `list`/`help`/`project`/`counts` 等の単一トークンかつ既知コマンド名と完全一致する場合（例: `/todo project list`）もゴミIssue化を防ぐため誤爆ガードが発火する（`add` を明示すれば通る） |
-| `list` | `[GTD] [@ctx] [p1\|p2\|p3] [project <番号>] [--group] [--no-due] [--no-estimate]` | タスク一覧（フィルタ組み合わせ可）。`--group` で期限別グルーピング表示。`--no-due` で期限未設定のタスクのみ表示（`--group` より優先）。`--no-estimate` で見積もり未設定のタスクのみ表示 |
+| `add` / GTDキーワード | `[GTD] <タイトル> [@ctx...] [#tag...] [--due 日付] [--desc テキスト] [--body "本文"] [--body-file <path>] [--recur パターン] [--project 番号] [--priority p1\|p2\|p3\|--p1\|--p2\|--p3] [--estimate 時間] [--label 名前] [--activate 日付] [--before 期間] [--depends-on 番号] [--resume-condition テキスト]` | タスク追加（GTD省略時: inbox）。`--body`/`--body-file` で本文を直接指定可能（`--body-file` が優先）。`--label` は `@ctx`/`#tag` とは別枠の汎用ラベルを付与（未存在なら自動作成）。英字で始まるタイトルは `add` を明示必須（例: `/todo add My Task`）。英字で始まる引数を `add` なしで渡すとコマンド名と混同されエラーになる。タイトルが `list`/`help`/`project`/`counts` 等の単一トークンかつ既知コマンド名と完全一致する場合（例: `/todo project list`）もゴミIssue化を防ぐため誤爆ガードが発火する（`add` を明示すれば通る）。引数欄にないフラグ名（タイプミス・値を書き忘れた既知フラグを含む）は未知フラグとしてエラー終了する（黙ってタイトルへ連結しない）。`--dry-run` のような語をタイトルに含めたい場合は、タイトル全体を1つの引数としてクォートする（例: `/todo add next "--dry-run を追加する"`）。`--note` / `--actual` / `--color` / `--due-offset` など**他コマンドでは有効なフラグ**を `add` に渡すと、「このコマンドでは使えません」というエラーで終了する。タイトルの先頭語が `[inbox]` / `「next」` / `【project】` のように角括弧・鉤括弧・隅付き括弧で装飾された GTD ラベルと完全一致する場合、カテゴリ指定の書き損じとしてエラー終了する（カテゴリのつもりなら角括弧を外す、タイトルの一部にしたいならタイトル全体を1つの引数としてクォートする。判定は先頭語のみを見るため、語を足して回避する場合はラベルより前に足すこと。後ろに足しても解消しない）。`routine` カテゴリは `--recur` が必須で、省略するとエラー終了する（`add routine "タイトル" --recur weekly` のように指定する）。`--recur` を指定し `--due` を省略した場合は初回 `due` を自動算出する |
+| `list` | `[GTD] [@ctx] [#tag] [p1\|p2\|p3] [project <番号>] [--group] [--no-due] [--no-estimate] [--json]` | タスク一覧（フィルタ組み合わせ可）。`--group` で期限別グルーピング表示。`--no-due` で期限未設定のタスクのみ表示（`--group` より優先）。`--no-estimate` で見積もり未設定のタスクのみ表示。`--json` で JSON 出力（他フラグと併用可） |
 | `done` | `<#> [--actual 時間] [--note "テキスト"]` | タスク完了（recurあれば次のIssue自動作成）。`--note` を指定すると close 後にコメントを追加（振り返りメモ等） |
-| `move` | `<#> <GTD> [--note "テキスト"]` | GTDカテゴリ変更。`--note` を指定するとラベル変更後にコメントを追加（降格理由等） |
-| `edit` | `<#> [--due 日付] [--desc テキスト] [--recur パターン\|clear] [--priority p1\|p2\|p3\|clear] [--project 番号] [--estimate 時間]` | 複数フィールド一括編集 |
+| `move` | `<#> <GTD> [--note "テキスト"]` | GTDカテゴリ変更。`--note` を指定するとラベル変更後にコメントを追加（降格理由等）。`routine` への移動は移動先Issueが既に `recur` を持つことが必須（未設定ならエラー。先に `edit --recur` で設定する） |
+| `edit` | `<#> [--due 日付] [--desc テキスト] [--recur パターン\|clear] [--priority p1\|p2\|p3\|clear\|--p1\|--p2\|--p3] [--project 番号] [--estimate 時間] [--activate 日付] [--before 期間] [--depends-on 番号] [--resume-condition テキスト]` | 複数フィールド一括編集（後半4つの使い方は「チクラーファイル」節を参照） |
 | `rename` | `<#> <新タイトル>` | タイトル変更 |
-| `due` | `<#> <日付>` | 期日設定 |
+| `due` | `<#> <日付>` | 期日設定。日付に空白を含む場合はクォートする（例: `due 42 "今週 金曜"`）。クォートせず値の後に余分な引数を渡すとエラー終了する |
 | `desc` | `<#> <テキスト>` | 説明に追記（上書きは `edit --desc` を使う）。テキスト省略はエラー |
-| `recur` | `<#> <daily\|weekly\|monthly\|weekdays\|clear>` | 繰り返し設定 |
-| `priority` | `<#> <p1\|p2\|p3\|clear>` | 優先度設定 |
-| `link` | `<#> <project#>` | プロジェクト紐付け |
+| `recur` | `<#> <daily\|weekly\|monthly\|weekdays\|clear>` | 繰り返し設定。パターンの後に余分な引数を渡すとエラー終了する |
+| `priority` | `<#> <p1\|p2\|p3\|clear>` | 優先度設定。値は1つのみ（`priority 42 p1 p2` のように2つ目を渡すとエラー終了する） |
+| `link` | `<#> <project#>` | プロジェクト紐付け。project番号は1つのみ（余分な番号を渡すとエラー終了する） |
 
 > **注意**: `desc` のテキストに `due:` `activate:` 等を含めると body 内で重複します。
 > メタデータ変更は `/todo edit <#> --due <日付>` 等を使ってください。
@@ -103,8 +133,9 @@ MCP_MODEでは `bash ~/.claude/todo.sh` は呼び出さない。GitHub MCP ツ�
 
 | コマンド | 引数 | 説明 |
 |---------|------|------|
-| `tag` | `<#> @ctx...` | コンテキスト追加 |
-| `untag` | `<#> @ctx...` | コンテキスト削除 |
+| `tag` | `<#> @ctx...\|#tag...` | コンテキスト・タグ追加（`@`/`#`混在可）。`#tag` は場所・状況を表す `@ctx` とは別の自由な分類軸 |
+| `tag rename` | `<旧名> <新名>` | コンテキスト名を全タスク横断でリネーム（`label rename` と処理内容は同じ） |
+| `untag` | `<#> @ctx...\|#tag...` | コンテキスト・タグ削除 |
 | `label` | `list\|add <名前> [--color hex]\|delete <名前>\|rename <旧> <新>` | ラベル管理 |
 
 ### コメント操作
@@ -118,13 +149,20 @@ MCP_MODEでは `bash ~/.claude/todo.sh` は呼び出さない。GitHub MCP ツ�
 
 ### 一括操作・読み取り・分析
 
+> **チクラーファイル（時限式の引き出し）**: `--activate` / `--before` / `--depends-on` / `--resume-condition` / `review-someday` は、いずれも「いつ・何をきっかけに next へ戻すか」を予約するための同一システムの一部。予約の実行（一括昇格）は `promote` が担う。詳細は `todo-manual.md` の「チクラーファイル」を参照。
+
 | コマンド | 説明 |
 |---------|------|
-| `bulk <done\|move\|tag\|untag\|priority> <#>...` | 複数Issue一括操作（`bulk done` はリカレンス再作成・依存タスク昇格も個別 `done` と同様に実行） |
-| `search <キーワード>` | オープンIssueをタイトル・本文から検索 |
+| `bulk <done\|move\|tag\|untag\|priority> <#>...` | 複数Issue一括操作（`bulk done` はリカレンス再作成・依存タスク昇格も個別 `done` と同様に実行）。`bulk move ... routine` は対象Issueごとに `recur` の有無を確認し、`recur` を持たない項目のみエラー表示（全体は継続。単体 `move` と同じ条件） |
+| `search <キーワード> [--json]` | オープンIssueをタイトル・本文から検索。`--json` 以外の `--` で始まる引数（タイプミス）はエラー終了する（キーワードへ黙って混入しない） |
+| `show <#> [--json]` | 個別タスク詳細表示 |
+| `schema` | `--json` 出力のフィールド定義を表示 |
 | `edit <#> --activate <日付>` | フォローアップ日（自動昇格日）を設定。waiting タスクに活用（例: `bash ~/.claude/todo.sh edit 42 --activate 4/22`） |
-| `activate <#> <日付>` | `edit <#> --activate <日付>` の簡略記法 |
+| `activate <#> <日付>` | `edit <#> --activate <日付>` の簡略記法。`<日付>` の直後に余分な引数・未知フラグを渡すとエラー終了する（上の「位置引数の余剰」注記を参照。`edit --activate` に委譲する前にこのコマンド自身がガードする） |
+| `edit <#> --before <期間>` | due の N 日前を自動計算して activate に設定（`--due` が必須。例: `14d`、`2w`） |
+| `edit <#> --depends-on <#N>` | 指定タスクが完了したタイミングで自動的に next へ昇格 |
 | `edit <#> --resume-condition <テキスト>` | 再開条件（フリーテキスト）を設定。`promote` は activate 到来かつ resume_condition 設定済みの Issue を機械的に自動昇格せず、確認待ちとして通知のみ行う（`clear` でクリア。週次レビュー時に resume_condition が設定済みかつ activate 到来のタスクを一覧し、条件が満たされたか自分で確認してから `promote` または `edit --activate` で再設定して昇格させる運用） |
+| `promote` | activate 到来タスクを一括で next へ昇格（`project` ラベル・既に next のものはスキップ。resume_condition 設定済みは自動昇格せず確認待ちとして通知） |
 | `review-someday <番号>` | somedayタスクの見直し日(reviewed_at)を今日に更新 |
 | `today` | 今日のタスク（期限超過＋今日期限） |
 | `eisenhower` | アイゼンハワーマトリクス（next タスクを重要×緊急の4象限で表示） |
@@ -132,7 +170,7 @@ MCP_MODEでは `bash ~/.claude/todo.sh` は呼び出さない。GitHub MCP ツ�
 | `stats` | 統計情報 |
 | `report <weekly\|monthly\|Nd>` | 生産性レポート |
 | `help` | コマンド一覧 |
-| `archive [list [GTD\|@ctx]\|search <キーワード>\|reopen <#>]` | 完了済みタスク |
+| `archive [list [GTD\|@ctx]\|search <キーワード>\|reopen <#>]` | 完了済みタスク。`archive search` の `--` で始まる引数（タイプミス）はエラー終了する（キーワードへ黙って混入しない） |
 
 ### プロジェクト管理
 
@@ -140,7 +178,7 @@ MCP_MODEでは `bash ~/.claude/todo.sh` は呼び出さない。GitHub MCP ツ�
 |---------|------|
 | `project <Outcome>` | プロジェクト Issue を作成（タイトルは完了状態を記述） |
 | `promote-project <#> [--outcome "タイトル"]` | 既存 Issue をプロジェクトに昇格（GTD ラベルを外し 📁 project を付与） |
-| `unlink <#>` | 子 Issue のプロジェクト紐付けを解除（sub-issue 解除 + body `project: #N` 行削除） |
+| `unlink <#> [--force]` | 子 Issue のプロジェクト紐付けを解除（sub-issue 解除 + body `project: #N` 行削除）。body の親と GitHub 上の親が食い違う場合は解除せずエラー終了する。`--force` で body 側のみ解除する。`--force` のタイプミス（例: `--forse`）は未知フラグとしてエラー終了する（黙って無視されない） |
 | `migrate sub-issue [--dry-run]` | body `project: #N` を持つ Issue を GitHub sub-issue に一括登録。`--dry-run` で対象一覧のみ表示 |
 | `weekly-project-audit` | 全プロジェクトを走査して棚卸し。next 欠落・停滞を検出し `reviewed_at` を自動記録 |
 
@@ -150,7 +188,7 @@ MCP_MODEでは `bash ~/.claude/todo.sh` は呼び出さない。GitHub MCP ツ�
 |---------|------|
 | `template list` | テンプレート一覧 |
 | `template show <名前>` | テンプレート詳細 |
-| `template save <名前> [GTD] [@ctx...] [--*フラグ]` | テンプレート保存（インライン） |
+| `template save <名前> [GTD] [@ctx...] [#tag...] [--due 日付] [--due-offset N] [--recur パターン] [--project 番号] [--priority p1\|p2\|p3\|--p1\|--p2\|--p3] [--desc テキスト]` | テンプレート保存（インライン）。`--due-offset <N>` はテンプレート専用フラグで、使用日から N日後を自動的に期日に設定する（`--due` と同時指定時は `--due-offset` が優先） |
 | `template save <名前> from <#>` | 既存IssueからTemplate作成 |
 | `template use <名前> [タイトル上書き]` | テンプレートからIssue作成 |
 | `template delete <名前>` | テンプレート削除 |
@@ -161,7 +199,7 @@ MCP_MODEでは `bash ~/.claude/todo.sh` は呼び出さない。GitHub MCP ツ�
 
 `--due` の日本語表現（`今日`/`きょう`、`明日`/`あした`/`あす`、`明後日`/`あさって`、
 `昨日`/`きのう`、`月曜`〜`日曜`（次の該当曜日）、`今週金曜`（今週のその曜日）、
-`来週`（来週月曜）、`来月`（来月1日））も使用可能。
+`来週`（+7日）、`来月`（翌月の同じ日））も使用可能。
 
 ---
 
