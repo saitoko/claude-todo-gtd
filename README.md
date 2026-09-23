@@ -21,7 +21,9 @@ Just type `/todo` to add, manage, and review tasks entirely from the terminal.
 
 ## Installation
 
-### Plugin install (recommended)
+### Plugin install (under marketplace review)
+
+> **Note:** claude-todo-gtd has been submitted to the Claude Code community marketplace and is under review. Until it is listed, the command below will not work. Please use the [manual install](#manual-install) in the meantime.
 
 ```bash
 claude plugin install claude-todo-gtd@claude-community

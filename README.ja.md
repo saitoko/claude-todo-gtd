@@ -22,7 +22,9 @@ GitHub Issues をバックエンドに使った、Claude Code 用の GTD（Getti
 
 ## インストール
 
-### プラグインインストール（推奨）
+### プラグインインストール（マーケットプレイス審査中）
+
+> **注意:** claude-todo-gtd は Claude Code コミュニティマーケットプレイスへ申請済みで、現在審査中です。掲載されるまで下記コマンドは動作しません。それまでは[下記の手順](#前提条件)による手動インストールをご利用ください。
 
 ```bash
 claude plugin install claude-todo-gtd@claude-community
