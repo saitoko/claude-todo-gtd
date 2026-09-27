@@ -18,6 +18,14 @@ const FORBIDDEN_CHARS = ';$`()\"\'' + String.fromCharCode(92) + '|&><{}';
 const MAX_OPEN_ISSUES_LIMIT = 200; // GitHub API ページネーション上限。これを超える場合は警告を出力
 const MAX_SUB_ISSUES_LIMIT = 500; // sub-issue 一覧のページネーション上限（#1881: 無限ループ防止の安全弁。GitHub の現行上限は親1つにつき100件なので通常は到達しない）
 const PRI_COLORS = { p1: 'B60205', p2: 'FBCA04', p3: '0075CA' };
+// GitHub REST API バージョン（Issue #2031）。2022-11-28 は2028-03-10に sunset 予定
+// （廃止対象はエンドポイントではなくバージョンそのもの。書き込み系リクエストで
+// Deprecation 警告が出る）。移行先は破壊的変更を含む初のカレンダーバージョン
+// 2026-03-10。todo-engine が参照するフィールド（issues.get の labels/body/state 等、
+// sub-issues の id/number）は 2026-03-10 の breaking changes（単数形 assignee 削除・
+// has_downloads・use_squash_pr_title_as_default）に抵触しないことを実測確認済み
+// （2026-09-27、`gh api` で GET /issues/{n} の返却キー差分を比較して実測確認）。
+const GITHUB_API_VERSION = '2026-03-10';
 // recur の曜日固定サフィックス（weekly:sat 等）で使う曜日名→Date.getDay()数値の対応表。
 // キーの集合が「有効な曜日サフィックス一覧」を兼ねる（Issue #1676）
 const RECUR_WEEKDAY_TO_DOW = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
@@ -3376,6 +3384,19 @@ async function initOctokit() {
     throw apiErr('Error: @octokit/rest not found. Run: npm install --prefix ~/.claude @octokit/rest\nDetail: '+e.message);
   }
   const realOctokit = new OctokitClass({ auth: token, log: OCTOKIT_LOGGER });
+  // API バージョンを全リクエストの既定ヘッダーへ注入する（Issue #2031）。
+  // Octokit v22 のコンストラクタは `options.headers` を読まず、`options.request.headers`
+  // に入れても endpoint の parse() は `options.headers`（トップレベル）しか実 HTTP
+  // ヘッダーへ反映しない（`options.request` は fetch/signal 等の fetch 設定専用のフィールドで
+  // ヘッダーには一切使われない）ため、コンストラクタ引数での指定は静かに無視される
+  // （2026-09-27 実測: `new Octokit({ request: { headers: {...} } })` は
+  // `x-github-api-version-selected` レスポンスヘッダーが 2022-11-28 のまま変化しなかった）。
+  // `hook.before('request', ...)` は octokit.issues.* / octokit.request() の両方が
+  // 経由する共通の Hook.Collection に対する登録のため、両経路に確実に反映される
+  // （同日実測で両経路とも 2026-03-10 選択を確認）。
+  realOctokit.hook.before('request', async (options) => {
+    options.headers['x-github-api-version'] = GITHUB_API_VERSION;
+  });
   return TIMING_ENABLED ? wrapOctokitTiming(realOctokit) : realOctokit;
 }
 
@@ -3675,7 +3696,7 @@ async function addSubIssue(octokit, owner, repo, parentNumber, childInternalId) 
       owner, repo,
       issue_number: parentNumber,
       sub_issue_id: childInternalId,
-      headers: { 'X-GitHub-Api-Version': '2022-11-28' },
+      headers: { 'X-GitHub-Api-Version': GITHUB_API_VERSION },
     });
     return 'registered';
   } catch (e) {
@@ -3722,7 +3743,7 @@ async function listSubIssues(octokit, owner, repo, parentNumber, opts = {}) {
         issue_number: parentNumber,
         per_page: 100,
         page,
-        headers: { 'X-GitHub-Api-Version': '2022-11-28' },
+        headers: { 'X-GitHub-Api-Version': GITHUB_API_VERSION },
       });
       if (!data.length) break;
       all.push(...data);
@@ -3751,7 +3772,7 @@ async function removeSubIssue(octokit, owner, repo, parentNumber, childInternalI
       owner, repo,
       issue_number: parentNumber,
       data: { sub_issue_id: childInternalId },
-      headers: { 'X-GitHub-Api-Version': '2022-11-28' },
+      headers: { 'X-GitHub-Api-Version': GITHUB_API_VERSION },
     });
     return 'removed';
   } catch (e) {
