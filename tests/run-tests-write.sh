@@ -5887,6 +5887,136 @@ else
 fi
 rm -f "$_W56_TMP" "$_W56_TMP.err"
 
+# ── §W57 Issue 番号引数は数字だけで構成された正の整数のみ受け付ける（Issue #2132） ──
+# 旧実装は位置引数を parseInt で数値化してから validateNumber(String(num)) で検証していたため、
+# `42abc`・`4.2`・`0x10`・`1e3`・` 42`・`+42` が 42・4・16・1・42・42 という別の Issue 番号として
+# 通り、`/todo done 21O4`（0 を O と打ち間違え）が #21 を閉じていた。
+# 番号を受け取る全経路（run 層 + api 層 + --project / --depends-on / template save from / show / bulk）に
+# 不正な番号を渡し、(1) exit 非0、(2) エラー文言（positive integer か Usage か No issue numbers）、
+# (3) 書き込み系 API が1回も呼ばれない、を確かめる。対照として正しい番号 `42` では API 呼び出しが
+# 記録されること（ログが読めていること）を確かめる。
+# 安全条件: HOME を一時ディレクトリに隔離し、OCTOKIT_STUB_ENV でスタブを指定する。
+echo ""
+echo "§W57  Issue 番号引数の厳密検証（Issue #2132）"
+
+W57_HOME=$(mktemp -d /tmp/todo-test-w57-XXXXXX)
+W57_LOG="$W57_HOME/stub.jsonl"
+W57_ISSUE='{"number":42,"title":"W57 issue","body":"","labels":[{"name":"🎯 next"}],"state":"open","updated_at":"2026-01-01T00:00:00Z"}'
+W57_RESP="{\"issues.get\":[{\"data\":$W57_ISSUE},{\"data\":$W57_ISSUE},{\"data\":$W57_ISSUE}],\"issues.update\":[{},{},{}],\"issues.addLabels\":[{},{}],\"issues.removeLabel\":[{},{}],\"issues.createComment\":[{\"data\":{\"html_url\":\"x\"}}],\"issues.create\":[{\"data\":{\"number\":9001,\"id\":1,\"html_url\":\"x\"}}],\"issues.listForRepo\":[{\"data\":[]}],\"GET /repos/{owner}/{repo}/labels/{name}\":[{},{},{}]}"
+
+# 書き込み系メソッド（issues.update 等と、POST/PUT/PATCH/DELETE の request）の記録件数を数える。
+# ログが読めなかったとき（ファイルなし）は数を返さず ERR を返す（「読めない」を「0件=問題なし」にしない）。
+w57_write_count() {
+  LOGFILE="$1" node -e "
+    const fs=require('fs'); const f=process.env.LOGFILE;
+    if(!fs.existsSync(f)){process.stdout.write('ERR');process.exit(0);}
+    const W=/^(issues\.(update|create|addLabels|removeLabel|createLabel|deleteLabel|createComment)|(POST|PUT|PATCH|DELETE) )/;
+    let n=0;
+    for(const l of fs.readFileSync(f,'utf8').split('\n').filter(Boolean)){try{if(W.test(JSON.parse(l).method))n++;}catch(e){process.stdout.write('ERR');process.exit(0);}}
+    process.stdout.write(String(n));"
+}
+w57_total_count() {
+  LOGFILE="$1" node -e "
+    const fs=require('fs'); const f=process.env.LOGFILE;
+    if(!fs.existsSync(f)){process.stdout.write('ERR');process.exit(0);}
+    process.stdout.write(String(fs.readFileSync(f,'utf8').split('\n').filter(Boolean).length));"
+}
+
+# w57_run <args...>: ログを空にして実行し、W57_OUT / W57_EC に格納する
+w57_run() {
+  : > "$W57_LOG"
+  W57_OUT=$(HOME="$W57_HOME" LANG_ENV=en LABELS_ENV=w57 COMMENT_BODY_ENV=w57 ISSUE_INPUT_ENV='{"title":"w57"}' OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W57_RESP" \
+    OCTOKIT_STUB_LOG_ENV="$W57_LOG" TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+    node "$ENGINE" "$@" 2>&1); W57_EC=$?
+}
+
+# 拒否すべき入力（旧実装は先頭5つを別の番号として受け付けていた。残りは旧実装でも拒否されていたもの）
+W57_BAD=("42abc" "4.2" "0x10" "1e3" " 42" "+42" "-1" "0" "" "０４２" "#42")
+W57_FAILED_ROUTES=0
+
+# w57_route <名前> <hash許容:0|1> -- <引数（番号の位置に @N@）>
+# W57_SKIP_EMPTY=1 のとき空文字を不正入力から外す（`--project ""` は「指定なし」、`template save n from ""` は
+# inline 形式として扱われる。いずれも番号を別の Issue として解釈する経路ではなく、従来からの仕様）。
+w57_route() {
+  local name="$1" allow_hash="$2"; shift 3
+  local tmpl=("$@") bad_list=() v a args problems=""
+  for v in "${W57_BAD[@]}"; do
+    [ "$allow_hash" = "1" ] && [ "$v" = "#42" ] && continue
+    [ "${W57_SKIP_EMPTY:-0}" = "1" ] && [ -z "$v" ] && continue
+    bad_list+=("$v")
+  done
+  for v in "${bad_list[@]}"; do
+    args=()
+    for a in "${tmpl[@]}"; do [ "$a" = "@N@" ] && args+=("$v") || args+=("$a"); done
+    w57_run "${args[@]}"
+    local wc; wc=$(w57_write_count "$W57_LOG")
+    if [ "$W57_EC" -eq 0 ]; then problems="$problems [exit0:'$v']"; fi
+    if [ "$wc" != "0" ]; then problems="$problems [write=$wc:'$v']"; fi
+    if ! printf '%s' "$W57_OUT" | grep -aqE "positive integer|Usage:|No issue numbers"; then problems="$problems [msg:'$v']"; fi
+  done
+  if [ -z "$problems" ]; then
+    printf "  ✅ W57 %s: 不正な番号 %d 種すべて exit≠0・エラー文言あり・書き込みなし\n" "$name" "${#bad_list[@]}"; PASS=$((PASS+1))
+  else
+    printf "  ❌ W57 %s: 受け付けてしまった入力あり:%s\n" "$name" "$problems"; FAIL=$((FAIL+1)); W57_FAILED_ROUTES=$((W57_FAILED_ROUTES+1))
+  fi
+  # 対照: 正しい番号 42（または #42）ではログが読め、API 呼び出しが1回以上記録され、番号エラーにならない
+  args=()
+  local good="42"; [ "$allow_hash" = "1" ] && good="#42"
+  for a in "${tmpl[@]}"; do [ "$a" = "@N@" ] && args+=("$good") || args+=("$a"); done
+  w57_run "${args[@]}"
+  local tc; tc=$(w57_total_count "$W57_LOG")
+  if [ "$tc" != "ERR" ] && [ "$tc" -ge 1 ] 2>/dev/null && ! printf '%s' "$W57_OUT" | grep -aqE "positive integer"; then
+    printf "  ✅ W57 %s: 正しい番号 %s は受け付けられる（API 呼び出し %s 件を記録）\n" "$name" "$good" "$tc"; PASS=$((PASS+1))
+  else
+    printf "  ❌ W57 %s: 正しい番号 %s が受け付けられない、またはログが読めない (total=%s)\n     出力: %s\n" "$name" "$good" "$tc" "$(printf '%s' "$W57_OUT" | head -c 300)"; FAIL=$((FAIL+1))
+  fi
+}
+
+# run 層（位置引数 tokens[0]）
+w57_route "run done"            0 -- run done @N@
+w57_route "run close"           0 -- run close @N@
+w57_route "run move"            0 -- run move @N@ next
+w57_route "run comment"         0 -- run comment @N@ hello
+w57_route "run edit"            0 -- run edit @N@ --due 2026-12-01
+w57_route "run due"             0 -- run due @N@ 2026-12-01
+w57_route "run desc"            0 -- run desc @N@ text
+w57_route "run recur"           0 -- run recur @N@ daily
+w57_route "run rename"          0 -- run rename @N@ newtitle
+w57_route "run priority"        0 -- run priority @N@ p1
+w57_route "run tag"             0 -- run tag @N@ @home
+w57_route "run untag"           0 -- run untag @N@ @home
+w57_route "run review-someday"  0 -- run review-someday @N@
+w57_route "run promote-project" 0 -- run promote-project @N@
+w57_route "run unlink"          0 -- run unlink @N@
+w57_route "run activate"        0 -- run activate @N@ 2026-12-01
+# 2つの番号を取る・サブコマンドの後ろに番号が来る経路
+w57_route "run link (1つ目)"      0 -- run link @N@ 100
+w57_route "run link (project)"    0 -- run link 42 @N@
+w57_route "run archive reopen"    0 -- run archive reopen @N@
+W57_SKIP_EMPTY=1 w57_route "run template save from" 0 -- run template save w57tpl from @N@
+# フラグの値として番号を取る経路（--project / --depends-on。後者は先頭 # を従来から許す）
+w57_route "run edit --project"     0 -- run edit 42 --project @N@
+w57_route "run edit --depends-on"  1 -- run edit 42 --depends-on @N@
+W57_SKIP_EMPTY=1 w57_route "run add --project"      0 -- run add w57-title --project @N@
+# 従来から厳密だった経路（回帰確認）
+w57_route "run show"      1 -- run show @N@
+w57_route "run bulk done" 0 -- run bulk done @N@
+w57_route "run bulk move" 0 -- run bulk move @N@ next
+# api 層
+for _w57_sub in view-issue view-issue-detail list-comments edit-issue close-issue done-issue reopen-issue add-labels remove-labels create-comment; do
+  w57_route "api $_w57_sub" 0 -- api "$_w57_sub" @N@
+done
+w57_route "api move-gtd" 0 -- api move-gtd @N@ next
+
+# 先頭が数字でも後ろにゴミがあれば閉じない（Issue の再現例: 21O4 は #21 を閉じていた）
+w57_run run done 21O4
+assert_eq "W57-A 再現例 done 21O4: 書き込み 0 件" "0" "$(w57_write_count "$W57_LOG")"
+assert_exit_fail "W57-A 再現例 done 21O4: exit≠0" "$W57_EC"
+# 先頭ゼロは数字だけで構成されているので従来どおり受け付ける（042 は 42）
+w57_run run done 042
+assert_contains "W57-B 先頭ゼロ 042 は 42 として受け付ける（issues.get の issue_number が 42）" '"issue_number":42' "$(log_lines_for_method "$W57_LOG" issues.get)"
+rm -rf "$W57_HOME"
+
 echo ""
 echo "=========================================="
 W_TOTAL=$((PASS+FAIL))
