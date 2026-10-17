@@ -19,6 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+- `todo.sh` がコマンド実行のたびに `~/.claude/{inbox,next,waiting,someday,routine,projects,reference}-count` の7ファイルを更新する処理をやめた（Issue #2106）。この処理は実行後に毎回 `gh issue list --limit 500` を呼んでいたため、コマンド本体の所要時間に関係なく約1.2秒が上乗せされていた。7ファイルの読み手は本リポジトリ内にも既知の利用箇所にも存在せず、ステータスライン（`statusline-command.sh`）は別キャッシュ `~/.claude/gtd-counts-cache` を自前で取得して使うため影響を受けない。**ユーザーから見える変更**: `~/.claude/*-count` は更新されなくなった（既存ファイルは古い値のまま残る。不要なら削除してよい）。件数が必要な場合は `todo.sh counts` を使う（従来どおり GTD 7カテゴリの件数を出力する）。`counts` コマンドと `_todo_fetch_counts` 関数は変更していない
 - `todo-engine.js` を `require()` しても何も実行されないようにし、純粋関数・定数・run ハンドラを `module.exports` で公開した（Issue #2102 R1）。従来はファイル読み込みの途中でトップレベルの `switch` が `process.argv` を読んで走っていたため、読み込んだだけで `Unknown command` を出して終了していた。ディスパッチャを `main()` に包み、ファイル末尾の `if (require.main === module) main();` から呼ぶ。あわせて、ファイル後半の `const`（`ADD_USAGE` 等）が初期化される前にディスパッチャが走る TDZ（初期化前参照）の制約が解消した。コマンドラインからの実行（直接サブコマンド・`run` / `api`）の stdout / stderr / 終了コードは変わらない（例外: 入力不備でエンジンが未捕捉例外を出す場合のスタックトレースは、フレームに `main` が加わりパスも変わる）
 
 - `add --project N`（`next <title> --project N` 等を含む）の親検証を Issue 作成の前へ移した（Issue #2102）。親が `📁 project` でない場合、従来は Issue を作成したうえでエラー終了（exit 1）していたため孤児 Issue が残っていたが、今後は何も作らずに exit 1 する。親の取得失敗（ネットワーク断等）は従来どおり警告して作成を続行する。
