@@ -5395,19 +5395,43 @@ W42_11_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="{\"issues.list
 assert_exit_ok "W42-11 list --json: exit 0" "$W42_11_EC"
 assert_contains "W42-11: list --json の project も数値" '"project": 12,' "$W42_11_OUT"
 
-# W42-12 (c) 特性テスト: add --project の親が project でないとき、Issue は作成済みのまま
-# exit 1 する現行挙動を固定する。**これは仕様の追認ではない**（#2102 で「要判断」とされた
-# 挙動の現状記録）。親検証を作成前へ移す等の方針が決まったら、このテストを更新すること。
+# W42-12 (c) add --project の親検証は作成前（方針A、#2102c）。親が project でなければ
+# Issue を作らず・ラベルも作らず exit 1 する。
 W42_12_LOG=$(mktemp /tmp/todo-test-w42-12-XXXXXX)
 W42_12_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{},{}],"issues.create":[{"data":{"number":70060,"id":970060,"html_url":"https://example.invalid/70060"}}],"issues.get":[{"data":{"number":70061,"title":"NotProject","body":"","labels":[{"name":"🎯 next"}]}}]}'
 W42_12_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W42_12_RESP" OCTOKIT_STUB_LOG_ENV="$W42_12_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
   node "$ENGINE" run add next "child" --project 70061 2>&1); W42_12_EC=$?
-assert_exit_fail "W42-12 add --project 非project親(#2102c 特性): exit 1" "$W42_12_EC"
-assert_contains "W42-12: 作成完了メッセージは出る（Issue は作成済み）" "#70060" "$W42_12_OUT"
+assert_exit_fail "W42-12 add --project 非project親(#2102c): exit 1" "$W42_12_EC"
 assert_contains "W42-12: プロジェクトではないエラー" "はプロジェクトではありません" "$W42_12_OUT"
-assert_eq "W42-12: issues.create は1回呼ばれている（作成後に失敗する現行挙動）" "1" "$(log_count "$W42_12_LOG" issues.create)"
+assert_not_contains "W42-12【核心】作成完了メッセージは出ない" "#70060" "$W42_12_OUT"
+assert_eq "W42-12【核心】issues.create は呼ばれない（孤児 Issue を作らない）" "0" "$(log_count "$W42_12_LOG" issues.create)"
+assert_eq "W42-12: ラベル作成系の API も呼ばれない" "0" "$(log_count "$W42_12_LOG" 'GET /repos/{owner}/{repo}/labels/{name}')"
 rm -f "$W42_12_LOG"
+
+# W42-12b 親が project のとき: 従来どおり作成され sub-issue 登録される
+W42_12B_LOG=$(mktemp /tmp/todo-test-w42-12b-XXXXXX)
+W42_12B_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{}],"issues.create":[{"data":{"number":70062,"id":970062,"html_url":"https://example.invalid/70062"}}],"issues.get":[{"data":{"number":70063,"title":"Proj","body":"","labels":[{"name":"📁 project"}]}}],"POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues":[{"data":{}}]}'
+W42_12B_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W42_12B_RESP" OCTOKIT_STUB_LOG_ENV="$W42_12B_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run add next "child" --project 70063 2>&1); W42_12B_EC=$?
+assert_exit_ok "W42-12b add --project 正常な親: exit 0" "$W42_12B_EC"
+assert_contains "W42-12b: 作成完了" "#70062" "$W42_12B_OUT"
+assert_eq "W42-12b: issues.create 1回" "1" "$(log_count "$W42_12B_LOG" issues.create)"
+assert_eq "W42-12b: sub-issue 登録1回" "1" "$(log_count "$W42_12B_LOG" 'POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues')"
+rm -f "$W42_12B_LOG"
+
+# W42-12c 親の取得失敗（要件2: 現状維持）: 警告して作成は続行、sub-issue 登録は省く
+W42_12C_LOG=$(mktemp /tmp/todo-test-w42-12c-XXXXXX)
+W42_12C_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{}],"issues.create":[{"data":{"number":70064,"id":970064,"html_url":"https://example.invalid/70064"}}],"issues.get":[{"__throw":true,"status":500,"message":"boom"}]}'
+W42_12C_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W42_12C_RESP" OCTOKIT_STUB_LOG_ENV="$W42_12C_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run add next "child" --project 70065 2>&1); W42_12C_EC=$?
+assert_exit_ok "W42-12c add --project 親取得失敗: exit 0（従来どおり作成続行）" "$W42_12C_EC"
+assert_contains "W42-12c: 取得失敗の警告" "取得に失敗しました" "$W42_12C_OUT"
+assert_contains "W42-12c: 作成完了" "#70064" "$W42_12C_OUT"
+assert_eq "W42-12c: sub-issue 登録は呼ばれない" "0" "$(log_count "$W42_12C_LOG" 'POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues')"
+rm -f "$W42_12C_LOG"
 
 # ガード除去による回帰検出: tpl() の split/join を修正前の非グローバル replace に
 # 一時的に戻して実行し、W41-1(2アサーション: 核心needle・{n}残存チェック)・
