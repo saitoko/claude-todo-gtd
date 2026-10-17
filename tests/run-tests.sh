@@ -3537,7 +3537,7 @@ assert_eq "normalize-due: 12/31 → YYYY-MM-DD" "2026-12-31" "$(node "$ENGINE" n
 
 # 🟡-6: renderToday 関数が定義され、today_fn が存在しないこと
 RT_DEF=$(node -e "const s=require('fs').readFileSync('$ENGINE','utf8'); \
-  console.log(s.includes('function renderToday()') ? 'FOUND' : 'NOT_FOUND')")
+  console.log(s.includes('function renderToday(') ? 'FOUND' : 'NOT_FOUND')")
 assert_eq "renderToday 関数が定義されている" "FOUND" "$RT_DEF"
 TF_GONE=$(node -e "const s=require('fs').readFileSync('$ENGINE','utf8'); \
   console.log(s.includes('function today_fn()') ? 'FOUND' : 'NOT_FOUND')")
@@ -4850,6 +4850,162 @@ else
   printf "  ❌ §54-12 main() 定義位置の前提が崩れている (main=%s ADD_USAGE=%s)\n" "$_G54_MAINLINE" "$_G54_ADDUSAGE"; FAIL=$((FAIL+1))
 fi
 rm -f "$_G54_TMP" "$_G54_TMP.err"
+
+# ──────────────────────────────────────────
+# §55  表示層・テンプレート/ビュー I/O 層が process.env を読まない（Issue #2102 R4）
+# 旧構造は run 層が JSON 文字列を process.env.OPEN_ENV 等へ書き込み、引数なしの表示関数が
+# それを読んでいた。表示層は引数 ({ open, closed, today, ... }) を受け取る形にし、env を
+# 読んで引数へ変換するのは直接サブコマンドの薄いラッパ（envOpen 等）だけにした。
+# 回帰検出力: 旧エンジン（表示関数が env 読み）に対しては 55-1 以降が FAIL する
+# （listAll({...}) に対し旧版は引数を無視して env を読むため。実装時に旧版で確認済み）。
+# ──────────────────────────────────────────
+echo ""
+echo "§55  表示層が process.env を読まない（Issue #2102 R4）"
+
+_G55_TMP=$(mktemp /tmp/todo-test-r4-XXXXXX)
+cat > "$_G55_TMP" << 'R4_TEST_EOF'
+// 使い方: node <this> <engine>
+// 表示層関数を require() 経由で「引数のみ・*_ENV 未設定」で呼び、直接サブコマンド
+// （子プロセス、env で入力）と stdout が一致することを確認する。
+const { execFileSync } = require('child_process');
+const fs = require('fs'), os = require('os'), path = require('path');
+const enginePath = process.argv[2];
+for (const k of Object.keys(process.env)) if (/_ENV$/.test(k)) delete process.env[k];
+const L = (...n) => n.map(x => ({ name: x }));
+const today = '2026-09-02';
+const open = [
+  { number: 1, title: '期限切れ next', body: 'due: 2026-08-30\nestimate: 30\n', labels: L('🎯 next', '@PC', 'p1'), closedAt: null, updated_at: '2026-08-01T00:00:00Z' },
+  { number: 2, title: '今日 next', body: 'due: 2026-09-02\n', labels: L('🎯 next', '@会社', 'p2', 'tagA'), closedAt: null, updated_at: '2026-08-02T00:00:00Z' },
+  { number: 4, title: 'inbox', body: '', labels: L('📥 inbox'), closedAt: null, updated_at: '2026-08-04T00:00:00Z' },
+  { number: 5, title: 'waiting', body: 'due: 2026-09-20\n', labels: L('⏳ waiting', 'p2'), closedAt: null, updated_at: '2026-07-04T00:00:00Z' },
+];
+const closed = [
+  { number: 90, title: '完了今日', body: '', labels: L('🎯 next'), closedAt: '2026-09-02T01:00:00Z' },
+  { number: 91, title: '完了昨日', body: 'estimate: 60\nactual: 45\n', labels: L('🎯 next', 'p1'), closedAt: '2026-09-01T03:00:00Z' },
+];
+const baseEnv = { PATH: process.env.PATH };
+const cleanHome = () => {
+  const h = fs.mkdtempSync(path.join(os.tmpdir(), 'todo-r4-home-'));
+  fs.mkdirSync(path.join(h, '.claude'));
+  fs.writeFileSync(path.join(h, '.claude', 'todo-templates.json'), JSON.stringify({ weekly: { gtd: 'routine', context: ['@PC'], tags: ['#x'], priority: 'p2', recur: 'weekly:mon', desc: '週次' } }, null, 2));
+  fs.writeFileSync(path.join(h, '.claude', 'todo-views.json'), JSON.stringify({ work: { gtd: 'next', context: ['@PC'], priority: 'p1' } }, null, 2));
+  return h;
+};
+const e = require(enginePath);
+function capture(fn) {
+  const orig = process.stdout.write;
+  let buf = '';
+  process.stdout.write = (s) => { buf += s; return true; };
+  try { fn(); } finally { process.stdout.write = orig; }
+  return buf;
+}
+function direct(args, env, home) {
+  return execFileSync('node', [enginePath, ...args], { env: { ...baseEnv, HOME: home, ...env } }).toString();
+}
+const envSnapshotBefore = JSON.stringify(process.env);
+const r = {};
+const O = JSON.stringify(open), C = JSON.stringify(closed);
+const h0 = cleanHome();
+process.env.HOME = h0;
+const cases = [
+  ['listAll', ['list-all'], { OPEN_ENV: O, TODAY_ENV: today }, () => e.listAll({ open, today })],
+  ['listAllFilter', ['list-all'], { OPEN_ENV: O, TODAY_ENV: today, FILTER_GTD_ENV: 'next', FILTER_CTX_ENV: '@PC', FILTER_PRI_ENV: 'p1' }, () => e.listAll({ open, today, filters: { gtd: 'next', ctx: '@PC', pri: 'p1' } })],
+  ['listAllGroup', ['list-all'], { OPEN_ENV: O, TODAY_ENV: today, FILTER_GROUP_ENV: '1' }, () => e.listAll({ open, today, filters: { group: true } })],
+  ['listAllNoDue', ['list-all'], { OPEN_ENV: O, TODAY_ENV: today, FILTER_NO_DUE_ENV: '1', FILTER_NO_ESTIMATE_ENV: '1' }, () => e.listAll({ open, today, filters: { noDue: true, noEstimate: true } })],
+  ['listSummary', ['list-summary'], { OPEN_ENV: O, TODAY_ENV: today }, () => e.listSummary({ open, today })],
+  ['weeklySummary', ['weekly-summary'], { OPEN_ENV: O, TODAY_ENV: today }, () => e.weeklySummary({ open, today })],
+  ['stats', ['stats'], { OPEN_ENV: O, CLOSED_ENV: C, TODAY_ENV: today }, () => e.stats({ open, closed, today })],
+  ['today', ['today'], { OPEN_ENV: O, CLOSED_ENV: C, TODAY_ENV: today }, () => e.renderToday({ open, closed, today })],
+  ['eisenhower', ['eisenhower'], { OPEN_ENV: O, TODAY_ENV: today }, () => e.eisenhower({ open, today })],
+  ['dashboard', ['dashboard'], { OPEN_ENV: O, CLOSED_ENV: C, TODAY_ENV: today }, () => e.dashboard({ open, closed, today })],
+  ['report7', ['report'], { OPEN_ENV: O, CLOSED_ENV: C, TODAY_ENV: today }, () => e.report({ open, closed, today, days: 7 })],
+  ['report14', ['report'], { OPEN_ENV: O, CLOSED_ENV: C, TODAY_ENV: today, DAYS_ENV: '14' }, () => e.report({ open, closed, today, days: 14 })],
+  ['doneCount', ['done-count'], { CLOSED_ENV: C, TODAY_ENV: today }, () => e.doneCount({ closed, today })],
+];
+for (const [name, args, env, fn] of cases) {
+  const d = direct(args, env, h0);
+  const p = capture(fn);
+  r[name] = d === p && d.length > 0;
+}
+// テンプレート/ビュー I/O: stdout と、書き込まれたファイルの内容が一致すること
+const io = [
+  ['templateList', ['template', 'list'], {}, h => e.templateList()],
+  ['templateShow', ['template', 'show'], { TNAME_ENV: 'weekly' }, h => e.templateShow('weekly')],
+  ['templateUse', ['template', 'use'], { TNAME_ENV: 'weekly' }, h => e.templateUse('weekly')],
+  ['templateSave', ['template', 'save'], { TNAME_ENV: 'n1', GTD_ENV: 'next', CONTEXTS_ENV: '["@PC"]', TAGS_ENV: '["#x"]', DUE_OFFSET_ENV: '3', RECUR_ENV: 'weekly:mon', PROJECT_ENV: '10', PRIORITY_ENV: 'p1', DESC_ENV: '説明' },
+    h => e.templateSave('n1', { gtd: 'next', contexts: ['@PC'], tags: ['#x'], dueOffset: '3', recur: 'weekly:mon', project: '10', priority: 'p1', desc: '説明' })],
+  ['templateSaveFrom', ['template', 'save-from'], { TNAME_ENV: 'n2', GTD_ENV: 'waiting', CONTEXTS_ENV: '["@PC"]', DUE_ENV: '2026-10-01', PRIORITY_ENV: 'p2', ISSUE_NUM_ENV: '42' },
+    h => e.templateSaveFrom('n2', { gtd: 'waiting', contexts: ['@PC'], due: '2026-10-01', priority: 'p2' }, '42')],
+  ['templateDelete', ['template', 'delete'], { TNAME_ENV: 'weekly' }, h => e.templateDelete('weekly')],
+  ['viewList', ['view', 'list'], {}, h => e.viewList()],
+  ['viewUse', ['view', 'use'], { VNAME_ENV: 'work' }, h => e.viewUse('work')],
+  ['viewSave', ['view', 'save'], { VNAME_ENV: 'v1', GTD_ENV: 'next', CTX_ENV: '@PC @会社', PRI_ENV: 'p1' }, h => e.viewSave('v1', { gtd: 'next', ctx: '@PC @会社', pri: 'p1' })],
+  ['viewDelete', ['view', 'delete'], { VNAME_ENV: 'work' }, h => e.viewDelete('work')],
+];
+for (const [name, args, env, fn] of io) {
+  const hd = cleanHome(), hp = cleanHome();
+  const d = direct(args, env, hd);
+  process.env.HOME = hp;
+  const p = capture(fn);
+  const files = f => fs.readFileSync(path.join(f, '.claude', 'todo-templates.json'), 'utf8') + fs.readFileSync(path.join(f, '.claude', 'todo-views.json'), 'utf8');
+  r[name] = d === p && d.length > 0 && files(hd) === files(hp);
+}
+process.env.HOME = h0;
+// env を一切書き換えない（旧実装は run 層が OPEN_ENV 等を書いていた）
+r.envUntouched = JSON.stringify(process.env) === envSnapshotBefore.replace(/"HOME":"[^"]*"/, '"HOME":"' + h0 + '"') || (() => {
+  const a = { ...process.env }; delete a.HOME; const b = JSON.parse(envSnapshotBefore); delete b.HOME;
+  return JSON.stringify(a) === JSON.stringify(b);
+})();
+// env に別の値が入っていても引数だけが使われる（env 非依存）
+const clean = capture(() => e.listAll({ open, today }));
+process.env.OPEN_ENV = '[]'; process.env.TODAY_ENV = '1999-01-01';
+process.env.FILTER_GTD_ENV = 'waiting'; process.env.FILTER_PRI_ENV = 'p9'; process.env.FILTER_GROUP_ENV = '1';
+const dirty = capture(() => e.listAll({ open, today }));
+const dirtyDash = capture(() => e.dashboard({ open, closed, today }));
+for (const k of ['OPEN_ENV', 'TODAY_ENV', 'FILTER_GTD_ENV', 'FILTER_PRI_ENV', 'FILTER_GROUP_ENV']) delete process.env[k];
+const cleanDash = capture(() => e.dashboard({ open, closed, today }));
+r.envIndependentListAll = clean === dirty && clean.length > 0;
+r.envIndependentDashboard = cleanDash === dirtyDash && cleanDash.length > 0;
+// env → 引数 変換層
+process.env.OPEN_ENV = O; process.env.FILTER_GTD_ENV = 'next'; process.env.FILTER_NO_DUE_ENV = '1';
+const f = e.envListFilters();
+r.envListFilters = e.envOpen().length === open.length && f.gtd === 'next' && f.noDue === true && f.group === false && f.pri === '';
+process.stdout.write(JSON.stringify(r));
+R4_TEST_EOF
+
+_G55_OUT=$(node "$_G55_TMP" "$ENGINE" 2>"$_G55_TMP.err"); _G55_EC=$?
+assert_exit_ok "§55-1 表示層をプロセス内から呼ぶ検証が正常終了する" "$_G55_EC"
+for key in listAll listAllFilter listAllGroup listAllNoDue listSummary weeklySummary stats today eisenhower dashboard report7 report14 doneCount; do
+  assert_contains "§55-2 [$key] 引数のみ（env 未設定）の呼び出しが直接サブコマンドと同一出力" "\"$key\":true" "$_G55_OUT"
+done
+for key in templateList templateShow templateUse templateSave templateSaveFrom templateDelete viewList viewUse viewSave viewDelete; do
+  assert_contains "§55-3 [$key] 引数のみの呼び出しが直接サブコマンドと同一の出力・同一のファイル内容" "\"$key\":true" "$_G55_OUT"
+done
+for key in envUntouched envIndependentListAll envIndependentDashboard envListFilters; do
+  assert_contains "§55-4 [$key] 表示層は env を読まず書かない" "\"$key\":true" "$_G55_OUT"
+done
+rm -f "$_G55_TMP" "$_G55_TMP.err"
+
+# ソース走査: process.env への書き込みがファイル全体で 0 件、表示層・I/O 層の関数本体が process.env に触れない
+_G55_SCANJS=$(mktemp /tmp/todo-test-r4-scan-XXXXXX)
+cat > "$_G55_SCANJS" << 'R4_SCAN_EOF'
+const s = require('fs').readFileSync(process.argv[2], 'utf8');
+const writes = s.split('\n').filter(l => /process\.env(\.\w+|\[[^\]]+\])\s*=[^=]/.test(l) || /Object\.assign\(\s*process\.env/.test(l));
+const names = ['listAll','listSummary','weeklySummary','stats','renderToday','eisenhower','dashboard','report','doneCount',
+  'renderIssueList','listGroupedByDue','templateList','templateShow','templateSave','templateSaveFrom','templateUse',
+  'templateDelete','viewSave','viewUse','viewList','viewDelete','getTemplatePath','getViewPath','readJsonFile','writeJsonFile'];
+const touching = [];
+for (const n of names) {
+  const m = s.match(new RegExp('^function ' + n + '\\([\\s\\S]*?^\\}', 'm'));
+  if (!m) { touching.push(n + '(not found)'); continue; }
+  if (/process\.env/.test(m[0])) touching.push(n);
+}
+console.log(JSON.stringify({ writes: writes.length, touching }));
+R4_SCAN_EOF
+_G55_SCAN=$(node "$_G55_SCANJS" "$ENGINE" 2>&1)
+rm -f "$_G55_SCANJS"
+assert_contains "§55-5 process.env への書き込み（代入・Object.assign）がエンジン全体で 0 件" '"writes":0' "$_G55_SCAN"
+assert_contains "§55-6 表示層・テンプレート/ビュー I/O 層の関数本体が process.env に触れない" '"touching":\[\]' "$_G55_SCAN"
 
 # ──────────────────────────────────────────
 # 書き込み系ハンドラのスタブベーステスト（run-tests-write.sh、Issue #1648）

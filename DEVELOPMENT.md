@@ -56,11 +56,12 @@ cp todo.sh ~/.claude/todo.sh
 - トップレベルに `function` 宣言を追加したら `module.exports` にも追加する（`tests/run-tests.sh` §54 が export 漏れを検出する）
 - バリデータ・ガード・run ハンドラの多くは失敗時に `process.exit(1)` を直接呼ぶ。プロセス内から異常系を呼ぶテストはテストランナー自身を終了させるので、異常系は従来どおり子プロセスで検証する
 - `tests/run-tests.sh` の一部は `runMain` 以降のソース文字列を正規表現で抽出する（§49 / 1646）。ファイル末尾の export ブロックはその範囲に入るため、`switch` の case 句と同じ形の文字列を書かない
+- 表示層（`listAll` / `dashboard` / `renderToday` / `eisenhower` / `stats` / `report` / `listSummary` / `weeklySummary` / `doneCount`）とテンプレート・ビューの I/O 関数（`templateShow` / `templateSave` / `viewSave` 等）は **`process.env` を読まず、引数（`{ open, closed, today, ... }` 等）で受け取る**。`process.env` を読んで引数へ変換するのは、直接サブコマンド（`list-all` / `dashboard` / `template` / `view` 等。テストと外部ツールが env で入力を渡す）用の `envOpen()` / `envClosed()` / `envListFilters()` / `envTemplateFields()` / `envViewFilters()` だけ。run 層（`runList` / `runDashboard` / `runTemplate` / `runView` 等）は env に書かず、引数で直接渡す。`tests/run-tests.sh` §55 が「`process.env` への書き込みが 0 件」「表示層・I/O 層の関数本体が `process.env` に触れない」をソース走査で検出する
 
 ## テスト
 
 - テストランナー: `bash tests/run-tests.sh`（+ 書き込み系は `bash tests/run-tests-write.sh` として個別実行も可能。通常は `run-tests.sh` から自動的に呼び出される）
-- 自動テスト総件数: **2,256件**（read-only系 984 + 書き込み系 1,272。`bash tests/run-tests.sh` の最終行が出す実測値。2026-10-17 時点。全件PASSが目安）
+- 自動テスト総件数: **2,321件**（read-only系 1,033 + 書き込み系 1,288。`bash tests/run-tests.sh` の最終行が出す実測値。2026-10-17 時点。全件PASSが目安）
 - シナリオ一覧: `tests/scenarios.md`
 - 全件 PASS が Pull Request マージの必須条件
 - 件数を更新する際は README.md の記載も合わせて更新する
