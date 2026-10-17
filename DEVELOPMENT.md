@@ -57,6 +57,8 @@ cp todo.sh ~/.claude/todo.sh
 - バリデータ・ガード・run ハンドラの多くは失敗時に `process.exit(1)` を直接呼ぶ。プロセス内から異常系を呼ぶテストはテストランナー自身を終了させるので、異常系は従来どおり子プロセスで検証する
 - `tests/run-tests.sh` の一部は `runMain` 以降のソース文字列を正規表現で抽出する（§49 / 1646）。ファイル末尾の export ブロックはその範囲に入るため、`switch` の case 句と同じ形の文字列を書かない
 - 表示層（`listAll` / `dashboard` / `renderToday` / `eisenhower` / `stats` / `report` / `listSummary` / `weeklySummary` / `doneCount`）とテンプレート・ビューの I/O 関数（`templateShow` / `templateSave` / `viewSave` 等）は **`process.env` を読まず、引数（`{ open, closed, today, ... }` 等）で受け取る**。`process.env` を読んで引数へ変換するのは、直接サブコマンド（`list-all` / `dashboard` / `template` / `view` 等。テストと外部ツールが env で入力を渡す）用の `envOpen()` / `envClosed()` / `envListFilters()` / `envTemplateFields()` / `envViewFilters()` だけ。run 層（`runList` / `runDashboard` / `runTemplate` / `runView` 等）は env に書かず、引数で直接渡す。`tests/run-tests.sh` §55 が「`process.env` への書き込みが 0 件」「表示層・I/O 層の関数本体が `process.env` に触れない」をソース走査で検出する
+- `fetchAllOpen(octokit, owner, repo, opts)` は `opts.parallel`（1・2ページ目を同時に要求。先読みしたページは従来のループが要求するときだけ採用し、不採用ページの結果・エラーは捨てる。採用ページの失敗は例外にする）と `opts.labels`（サーバ側ラベル絞り込み。先読みは1ページ目のみ）を持つ（#2111）。読み取りコマンドだけが `parallel` を渡し、書き込み系は渡さない（リクエスト数を変えない）
+- `list <GTD>` は `fetchOpenByCategory()` でカテゴリの Issue だけを取得する。GTD ラベルの別名（絵文字付き・なし）は `labelNamesForCategory()` が `GTD_DISPLAY` / `normLabel` から導く。GitHub の `labels` パラメータは AND 条件で OR にできないため、名前ごとに別リクエストを出して番号で重複排除する（番号降順 = API 既定順で並べ直す）。`listAll` / `--json` のフィルタ経路は絞り込み後の `filtered` しか参照しないことを確認済み。**新しい表示経路を `list <GTD>` に足すときは、全件（`issues`）を参照していないか確認すること**（参照するなら全件取得に戻す）
 
 ## テスト
 
