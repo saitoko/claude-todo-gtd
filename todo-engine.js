@@ -4120,7 +4120,7 @@ async function runList(octokit, owner, repo, tokens) {
 
   // /todo list project N → sub-issue API + body メタ OR で子一覧表示（--json 非対応）
   if (listProjectNum) {
-    const allIssues = await fetchAllOpen(octokit, owner, repo);
+    const allIssues = await fetchAllOpen(octokit, owner, repo, { parallel: true });
     const parentNum = parseInt(listProjectNum);
 
     // sub-issue API から子番号を取得
@@ -4144,7 +4144,13 @@ async function runList(octokit, owner, repo, tokens) {
   }
 
   // API取得
-  const allIssues = await fetchAllOpen(octokit, owner, repo);
+  // #2111: GTD カテゴリ指定（next/waiting/…/project）は、そのカテゴリの Issue だけをサーバ側で絞り込んで取得する。
+  // 絞り込み後の処理（jsonMode のフィルタ・listAll の flat/--group/--no-due/--no-estimate 経路）は
+  // filtered しか参照しない（実装確認済み）。ctx/tag/pri は GTD 指定と併用されても部分集合のまま。
+  // GTD 指定なし（絞り込みなしの list、@ctx / #tag / pXのみ）は全件が必要なので全件を並行取得する。
+  const allIssues = filterGtd
+    ? await fetchOpenByCategory(octokit, owner, repo, filterGtd)
+    : await fetchAllOpen(octokit, owner, repo, { parallel: true });
 
   // --json モード: フィルタ後に JSON 配列を出力
   // #1846: 人間向けの list project は「休止中」（🌈 someday 併記）の project を除外するが、
@@ -4174,11 +4180,37 @@ async function runList(octokit, owner, repo, tokens) {
   });
 }
 
-async function fetchAllOpen(octokit, owner, repo) {
+// opts.parallel = true: 1・2ページ目を同時に要求する（#2111。labels 指定時は1ページ目のみ）。
+//   従来は逐次（1ページ目の応答後に2ページ目）で、open が100件を超えると往復が2回直列になっていた。
+//   ページ処理（PR除外・「issues が空なら終了」・「data が100件未満なら終了」・
+//   MAX_OPEN_ISSUES_LIMIT 到達判定）は従来と同じ順序で行う。先読みした2ページ目は
+//   従来のループが実際に要求するときだけ結果を採用し、要求しない場合（1ページ目が100件未満）は
+//   結果もエラーも捨てる（従来そのページは要求されなかったため、成否は出力に影響しない）。
+//   採用したページが失敗した場合は従来どおり例外を投げる（欠けた一覧を正常結果として返さない）。
+//   3ページ目以降は従来どおり逐次（PR が混在して200件に届かない場合のみ到達する）。
+// opts.labels: GitHub の labels パラメータ（単一ラベル名。サーバ側絞り込み）。
+// 書き込み系の呼び出し元は opts を渡さない（従来の逐次・全件取得のまま、リクエスト数も変えない）。
+async function fetchAllOpen(octokit, owner, repo, opts = {}) {
+  const { parallel = false, labels = null } = opts;
+  const fetchPage = (page) => octokit.issues.listForRepo(
+    { owner, repo, state: 'open', per_page: 100, page, ...(labels ? { labels } : {}) });
+  // 絞り込み取得（labels あり）は件数が100を超えることが稀なので先読みしない（無駄な要求を出さない）。
+  // 100件を超えた場合は2ページ目以降を逐次取得する（正しさは変わらず、並行化の効果だけ失われる）。
+  const PREFETCH_PAGES = labels ? 1 : 2;
+  const pre = parallel
+    ? Array.from({ length: PREFETCH_PAGES }, (_, k) => fetchPage(k + 1).then(r => ({ ok: true, r }), e => ({ ok: false, e })))
+    : [];
   const allIssues = [];
   let page = 1;
   while (allIssues.length < MAX_OPEN_ISSUES_LIMIT) {
-    const { data } = await octokit.issues.listForRepo({ owner, repo, state: 'open', per_page: 100, page });
+    let data;
+    if (page <= pre.length) {
+      const settled = await pre[page - 1];
+      if (!settled.ok) throw settled.e;
+      data = settled.r.data;
+    } else {
+      ({ data } = await fetchPage(page));
+    }
     const issues = data.filter(i => !i.pull_request);
     if (!issues.length) break;
     // #1879: id（database ID）を含める。sub-issue 登録（addSubIssue）が
@@ -4192,6 +4224,28 @@ async function fetchAllOpen(octokit, owner, repo) {
     process.stderr.write(tpl('warn.open_issue_limit', { limit: MAX_OPEN_ISSUES_LIMIT })+'\n');
   }
   return allIssues;
+}
+
+// normLabel() が category と同じカテゴリに正規化するラベル名の一覧（#2111）。
+// 絵文字付き表示名（GTD_DISPLAY）と絵文字なしの短縮名（'next' 等）の両方が実在しうる
+// （normLabel は表示名を短縮名へ寄せ、それ以外はそのまま返すため両者が同一カテゴリになる）。
+// 一覧はハードコードせず GTD_DISPLAY / normLabel の定義から導く。GitHub の labels パラメータは
+// AND 条件で OR 指定できないため、呼び出し側は名前ごとに別リクエストを出して合流させる。
+function labelNamesForCategory(category) {
+  const cands = [GTD_DISPLAY[category], category].filter(Boolean);
+  return [...new Set(cands)].filter(n => normLabel(n) === category);
+}
+
+// GTD カテゴリ（next 等・project）に属する open Issue だけをサーバ側絞り込みで取得する（#2111）。
+// 戻り値は fetchAllOpen の全件結果を normLabel でカテゴリ絞り込みしたものと同じ集合・同じ順序
+// （API 既定の created 降順 = 番号降順。複数名を合流させる場合は番号降順で並べ直す）。
+async function fetchOpenByCategory(octokit, owner, repo, category) {
+  const names = labelNamesForCategory(category);
+  const results = await Promise.all(names.map(n => fetchAllOpen(octokit, owner, repo, { parallel: true, labels: n })));
+  if (results.length === 1) return results[0];
+  const byNum = new Map();
+  for (const list of results) for (const i of list) if (!byNum.has(i.number)) byNum.set(i.number, i);
+  return [...byNum.values()].sort((a, b) => b.number - a.number);
 }
 
 async function fetchRecentClosed(octokit, owner, repo, limit, fields) {
@@ -5077,7 +5131,7 @@ async function runArchive(octokit, owner, repo, tokens) {
 async function runDashboard(octokit, owner, repo) {
   const today = getToday();
   const [open, closed] = await Promise.all([
-    fetchAllOpen(octokit, owner, repo),
+    fetchAllOpen(octokit, owner, repo, { parallel: true }),
     fetchRecentClosed(octokit, owner, repo, 30, ['closedAt','number'])
   ]);
   dashboard({ open, today, closed });
@@ -5086,7 +5140,7 @@ async function runDashboard(octokit, owner, repo) {
 async function runToday(octokit, owner, repo) {
   const today = getToday();
   const [open, closed] = await Promise.all([
-    fetchAllOpen(octokit, owner, repo),
+    fetchAllOpen(octokit, owner, repo, { parallel: true }),
     fetchRecentClosed(octokit, owner, repo, 30, ['closedAt','number'])
   ]);
   renderToday({ open, today, closed });
@@ -5095,14 +5149,14 @@ async function runToday(octokit, owner, repo) {
 async function runEisenhower(octokit, owner, repo) {
   // eisenhower() は完了実績を表示しないため closed は渡さない（runToday と異なる点）
   const today = getToday();
-  const open = await fetchAllOpen(octokit, owner, repo);
+  const open = await fetchAllOpen(octokit, owner, repo, { parallel: true });
   eisenhower({ open, today });
 }
 
 async function runStats(octokit, owner, repo) {
   const todayStr = getToday();
   const [open, closed] = await Promise.all([
-    fetchAllOpen(octokit, owner, repo),
+    fetchAllOpen(octokit, owner, repo, { parallel: true }),
     fetchRecentClosed(octokit, owner, repo, 50, ['closedAt'])
   ]);
   stats({ open, closed, today: todayStr });
@@ -5129,7 +5183,7 @@ async function runReport(octokit, owner, repo, tokens) {
     process.exit(1);
   }
   const [open, closed] = await Promise.all([
-    fetchAllOpen(octokit, owner, repo),
+    fetchAllOpen(octokit, owner, repo, { parallel: true }),
     fetchRecentClosed(octokit, owner, repo, 200, null)
   ]);
   report({ open, closed, today: todayStr, days });
@@ -6298,7 +6352,7 @@ module.exports = {
   findBracketedGtdLabel, guardBracketedGtdLabel, findUnsupportedFlagField, guardUnsupportedFlag,
   guardExtraPositional, parseArgs, getToday, toJstDateStr, ensureLabel, fetchAndParseIssue,
   addSubIssue, listSubIssues, removeSubIssue, updateIssueBody, runOut, runAdd, runList,
-  fetchAllOpen, fetchRecentClosed, createRecurIssue, postDoneProcessing, runDone, execMoveGtd,
+  fetchAllOpen, fetchOpenByCategory, labelNamesForCategory, fetchRecentClosed, createRecurIssue, postDoneProcessing, runDone, execMoveGtd,
   removeLabelIfPresent, execRemoveLabels, runMove, createCommentSanitized, runComment, runEdit,
   runDue, runDesc, runRecur, runLink, runRename, runPriority, normalizeTagTokens, renameCtxLabel,
   runTag, runUntag, runLabel, runSearch, runArchive, runDashboard, runToday, runEisenhower,

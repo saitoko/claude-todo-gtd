@@ -1736,7 +1736,7 @@ rm -f "$W1846_1_LOG"
 
 # W18-2: list project（フィルタのみ、番号なし）→ 休止中projectが除外され、除外件数が明示される
 W1846_2_LOG=$(mktemp /tmp/todo-test-w1846-2-XXXXXX)
-W1846_2_RESP="{\"issues.listForRepo\":[{\"data\":$W1846_LIST}]}"
+W1846_2_RESP="{\"issues.listForRepo\":[{\"data\":$W1846_LIST},{\"data\":[]}]}"
 W1846_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1846_2_RESP" OCTOKIT_STUB_LOG_ENV="$W1846_2_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
   node "$ENGINE" run list project 2>&1); W1846_2_EC=$?
@@ -1750,7 +1750,7 @@ rm -f "$W1846_2_LOG"
 # W18-3 リグレッション: list someday（通常のsomeday一覧）は従来どおり
 # project併記かどうかに関わらず someday タスクをすべて列挙する（除外対象外の確認）
 W1846_3_LOG=$(mktemp /tmp/todo-test-w1846-3-XXXXXX)
-W1846_3_RESP="{\"issues.listForRepo\":[{\"data\":$W1846_LIST}]}"
+W1846_3_RESP="{\"issues.listForRepo\":[{\"data\":$W1846_LIST},{\"data\":[]}]}"
 W1846_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1846_3_RESP" OCTOKIT_STUB_LOG_ENV="$W1846_3_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
   node "$ENGINE" run list someday 2>&1); W1846_3_EC=$?
@@ -1765,7 +1765,7 @@ rm -f "$W1846_3_LOG"
 # 行フォーマット「  #番号  タイトル」（⚠️を挟まない）と someday セクションの行フォーマット
 # 「  ⚠️#番号  タイトル」（⚠️を挟む）は区別できるため、not_containsで厳密に判定する。
 W1846_4_LOG=$(mktemp /tmp/todo-test-w1846-4-XXXXXX)
-W1846_4_RESP="{\"issues.listForRepo\":[{\"data\":$W1846_LIST}]}"
+W1846_4_RESP="{\"issues.listForRepo\":[{\"data\":$W1846_LIST},{\"data\":[]}]}"
 W1846_4_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1846_4_RESP" OCTOKIT_STUB_LOG_ENV="$W1846_4_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
   node "$ENGINE" run list 2>&1); W1846_4_EC=$?
@@ -1787,7 +1787,7 @@ W1846_5_LIST='[
   {"number":30101,"title":"Active Project","updated_at":"2026-04-01T00:00:00Z","body":"","labels":[{"name":"📁 project"}]},
   {"number":30103,"title":"Paused Project","updated_at":"2026-04-01T00:00:00Z","body":"","labels":[{"name":"📁 project"},{"name":"🌈 someday"}]}
 ]'
-W1846_5_RESP="{\"issues.listForRepo\":[{\"data\":$W1846_5_LIST}]}"
+W1846_5_RESP="{\"issues.listForRepo\":[{\"data\":$W1846_5_LIST},{\"data\":[]}]}"
 W1846_5_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1846_5_RESP" OCTOKIT_STUB_LOG_ENV="$W1846_5_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
   node "$ENGINE" run list project --json 2>&1); W1846_5_EC=$?
@@ -1813,7 +1813,7 @@ W1854_1_LIST='[
   {"number":40103,"title":"est-60","updated_at":"2026-04-01T00:00:00Z","body":"estimate: 60","labels":[{"name":"🎯 next"}]},
   {"number":40104,"title":"est-invalid","updated_at":"2026-04-01T00:00:00Z","body":"estimate: abc","labels":[{"name":"🎯 next"}]}
 ]'
-W1854_1_RESP="{\"issues.listForRepo\":[{\"data\":$W1854_1_LIST}]}"
+W1854_1_RESP="{\"issues.listForRepo\":[{\"data\":$W1854_1_LIST},{\"data\":[]}]}"
 W1854_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W1854_1_RESP" OCTOKIT_STUB_LOG_ENV="$W1854_1_LOG" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
   node "$ENGINE" run list next --json 2>&1); W1854_1_EC=$?
@@ -2046,7 +2046,7 @@ TIMING_LINE_RE='\[timing\] total [0-9]+ms \(github [0-9]+ms / parse [0-9]+ms\)'
 
 # W25-1 基本フォーマット確認 + github<=total（逐次1回呼び出し: run list next → fetchAllOpen 1回）
 W25_1_ERR=$(mktemp /tmp/todo-test-1455-1-err-XXXXXX)
-W25_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV='{"issues.listForRepo":[{"data":[]}]}' \
+W25_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV='{"issues.listForRepo":[{"data":[]},{"data":[]}]}' \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODO_TIMING=1 \
   node "$ENGINE" run list next 2>"$W25_1_ERR"); W25_1_EC=$?
 W25_1_ERRTEXT=$(cat "$W25_1_ERR" 2>/dev/null); rm -f "$W25_1_ERR"
@@ -2063,7 +2063,7 @@ assert_le "W25-1: github <= total（区間統合の不変条件）" "$W25_1_GITH
 # 自己申告リスク「区間統合と単純合計の区別力が低い」への対処: 遅延なしでは
 # 検証できないため、本テストでは意図的にスタブへ人工遅延を仕込む）。
 W25_2_ERR=$(mktemp /tmp/todo-test-1455-2-err-XXXXXX)
-W25_2_RESP='{"issues.listForRepo":[{"__delayMs":60,"data":[]},{"__delayMs":60,"data":[]}]}'
+W25_2_RESP='{"issues.listForRepo":[{"__delayMs":60,"data":[]},{"__delayMs":60,"data":[]},{"__delayMs":60,"data":[]}]}'
 W25_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W25_2_RESP" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODO_TIMING=1 TODAY=2026-08-29 \
   node "$ENGINE" run today 2>"$W25_2_ERR"); W25_2_EC=$?
@@ -2712,7 +2712,7 @@ echo ""
 echo "§W28  パターンB・C — 11ハンドラが未知フラグを黙って捨てない（Issue #1921 第2弾）"
 
 # 各ハンドラの正常系スタブ応答（同じものを異常系でも使い回す。上記規約2）
-W28_LIST_RESP='{"issues.listForRepo":[{"data":[]}]}'
+W28_LIST_RESP='{"issues.listForRepo":[{"data":[]},{"data":[]}]}'
 W28_MOVE_RESP='{"issues.get":[{"data":{"number":42,"id":942,"title":"元のタイトル","body":"","labels":[{"name":"📥 inbox"}]}}],"issues.removeLabel":[{}],"issues.addLabels":[{}],"issues.createComment":[{"data":{"id":1}}]}'
 W28_DONE_RESP='{"issues.get":[{"data":{"number":42,"id":942,"title":"T","body":"","labels":[{"name":"🎯 next"}]}}],"issues.update":[{},{}],"issues.listForRepo":[{"data":[]}],"issues.createComment":[{"data":{"id":1}}]}'
 W28_EDIT_RESP='{"issues.get":[{"data":{"number":42,"id":942,"title":"T","body":"","labels":[{"name":"p3"}]}}],"issues.removeLabel":[{}],"GET /repos/{owner}/{repo}/labels/{name}":[{}],"issues.addLabels":[{}],"issues.update":[{}]}'
@@ -2753,7 +2753,7 @@ w28_run() {
 W28_LOG=$(mktemp /tmp/todo-test-w28-1-XXXXXX); W28_RESP_CUR="$W28_LIST_RESP"
 W28_1_OUT=$(w28_run list next --group); W28_1_EC=$?
 assert_exit_ok "W28-1【許可リスト】list next --group: exit 0" "$W28_1_EC"
-assert_eq "W28-1: issues.listForRepo が呼ばれる（フィルタが実行された）" "1" "$(log_count "$W28_LOG" issues.listForRepo)"
+assert_eq "W28-1: issues.listForRepo が呼ばれる（フィルタが実行された。#2111: GTD別名ラベル2種で各1回=2）" "2" "$(log_count "$W28_LOG" issues.listForRepo)"
 rm -f "$W28_LOG"
 
 # W28-2【許可リスト】--no-due
@@ -2776,7 +2776,7 @@ W28_LOG=$(mktemp /tmp/todo-test-w28-3b-XXXXXX); W28_RESP_CUR="$W28_LIST_RESP"
 W28_3B_OUT=$(w28_run list next --json --group); W28_3B_EC=$?
 assert_exit_ok "W28-3b【複合形】list next --json --group: exit 0" "$W28_3B_EC"
 assert_not_contains "W28-3b: 未知フラグ扱いされていない" "不明なフラグ" "$W28_3B_OUT"
-assert_eq "W28-3b: issues.listForRepo が呼ばれる" "1" "$(log_count "$W28_LOG" issues.listForRepo)"
+assert_eq "W28-3b: issues.listForRepo が呼ばれる（#2111: GTD別名ラベル2種で各1回=2）" "2" "$(log_count "$W28_LOG" issues.listForRepo)"
 rm -f "$W28_LOG"
 
 W28_LOG=$(mktemp /tmp/todo-test-w28-3c-XXXXXX); W28_RESP_CUR="$W28_LIST_RESP"
@@ -4432,17 +4432,17 @@ assert_eq "W34-51【副作用ゼロ】API呼び出しログが0行" "0" "$(wc -l
 rm -f "$W34_51_LOG"
 
 # W34-52【正常系・リグレッション】引数なし（デフォルトweekly相当）は引き続き通る
-W34_52_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV='{"issues.listForRepo":[{"data":[]},{"data":[]}]}' \
+W34_52_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV='{"issues.listForRepo":[{"data":[]},{"data":[]},{"data":[]}]}' \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
   node "$ENGINE" run report 2>&1); W34_52_EC=$?
 assert_exit_ok "W34-52【正常系・リグレッション】report（引数なし）: exit 0" "$W34_52_EC"
 
 # W34-53【正常系・リグレッション】weekly/monthly/Nd はいずれも引き続き通る
-W34_53_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV='{"issues.listForRepo":[{"data":[]},{"data":[]}]}' \
+W34_53_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV='{"issues.listForRepo":[{"data":[]},{"data":[]},{"data":[]}]}' \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
   node "$ENGINE" run report monthly 2>&1); W34_53_EC=$?
 assert_exit_ok "W34-53【正常系・リグレッション】report monthly: exit 0" "$W34_53_EC"
-W34_54_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV='{"issues.listForRepo":[{"data":[]},{"data":[]}]}' \
+W34_54_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV='{"issues.listForRepo":[{"data":[]},{"data":[]},{"data":[]}]}' \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
   node "$ENGINE" run report 3d 2>&1); W34_54_EC=$?
 assert_exit_ok "W34-54【正常系・リグレッション】report 3d: exit 0" "$W34_54_EC"
@@ -5389,7 +5389,7 @@ assert_exit_ok "W42-10 show --json 値なし: exit 0" "$W42_10_EC"
 assert_contains "W42-10: project は null" '"project": null' "$W42_10_OUT"
 assert_contains "W42-10: dependsOn は null" '"dependsOn": null' "$W42_10_OUT"
 # W42-11 show --json と list --json で project / dependsOn の型が一致する
-W42_11_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="{\"issues.listForRepo\":[{\"data\":[$W42_9_ISSUE]}]}" \
+W42_11_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="{\"issues.listForRepo\":[{\"data\":[$W42_9_ISSUE]},{\"data\":[]}]}" \
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
   node "$ENGINE" run list next --json 2>&1); W42_11_EC=$?
 assert_exit_ok "W42-11 list --json: exit 0" "$W42_11_EC"
@@ -5466,6 +5466,75 @@ W55_DBASE=$(w55_run node "$ENGINE" run dashboard)
 W55_DDIRTY=$(w55_run env OPEN_ENV='[]' CLOSED_ENV='[]' TODAY_ENV=1999-01-01 node "$ENGINE" run dashboard)
 assert_eq "W55-3 run dashboard: 継承された OPEN_ENV/CLOSED_ENV/TODAY_ENV は出力に影響しない" "$W55_DBASE" "$W55_DDIRTY"
 rm -rf "$W55_HOME"
+
+# ── #2111 サーバ側ラベル絞り込み・ページ並行取得 ──
+W2111_RUN() { # $1=RESP $2=LOG、残り=engine 引数
+  local resp="$1" log="$2"; shift 2
+  OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$resp" OCTOKIT_STUB_LOG_ENV="$log" \
+    TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 node "$ENGINE" run "$@" 2>&1
+}
+# 別名ラベル: 絵文字付き「📎 reference」と絵文字なし「reference」の両方を取りに行き、番号で重複排除して合流する
+W2111_1_LOG=$(mktemp /tmp/todo-test-w2111-1-XXXXXX)
+W2111_1_RESP='{"issues.listForRepo":[{"data":[{"number":12,"title":"Emoji ref B","body":"","labels":[{"name":"📎 reference"}],"updated_at":""},{"number":10,"title":"Both names C","body":"","labels":[{"name":"📎 reference"},{"name":"reference"}],"updated_at":""}]},{"data":[{"number":11,"title":"Bare ref A","body":"","labels":[{"name":"reference"}],"updated_at":""},{"number":10,"title":"Both names C","body":"","labels":[{"name":"📎 reference"},{"name":"reference"}],"updated_at":""}]}]}'
+W2111_1_OUT=$(W2111_RUN "$W2111_1_RESP" "$W2111_1_LOG" list reference); W2111_1_EC=$?
+assert_exit_ok "W2111-1 list reference(別名ラベル): exit 0" "$W2111_1_EC"
+assert_contains "W2111-1: 絵文字付きラベルのみの Issue が出る" "Emoji ref B" "$W2111_1_OUT"
+assert_contains "W2111-1: 絵文字なしラベルのみの Issue が出る" "Bare ref A" "$W2111_1_OUT"
+assert_eq "W2111-1: 両方のラベルを持つ Issue は1回だけ出る（番号で重複排除）" "1" "$(printf '%s\n' "$W2111_1_OUT" | grep -c 'Both names C')"
+assert_eq "W2111-1: issues.listForRepo は2回（別名ごとに1回、labels パラメータ付き）" "2" "$(log_count "$W2111_1_LOG" issues.listForRepo)"
+assert_contains "W2111-1: labels=📎 reference を要求" '"labels":"📎 reference"' "$(log_lines_for_method "$W2111_1_LOG" issues.listForRepo)"
+assert_contains "W2111-1: labels=reference を要求" '"labels":"reference"' "$(log_lines_for_method "$W2111_1_LOG" issues.listForRepo)"
+rm -f "$W2111_1_LOG"
+
+# 別名ラベルの一覧は GTD_DISPLAY / normLabel から導く（next/routine/reference は2種、他は1種）
+W2111_2_OUT=$(node -e '
+const E=require(process.argv[1]);
+const r={};
+for (const k of [...E.GTD_LABELS, E.PROJECT_LABEL]) r[k]=E.labelNamesForCategory(k);
+process.stdout.write(JSON.stringify(r));' "$ENGINE")
+assert_eq "W2111-2 labelNamesForCategory: 別名一覧" '{"next":["🎯 next","next"],"routine":["🔁 routine","routine"],"inbox":["📥 inbox","inbox"],"waiting":["⏳ waiting","waiting"],"someday":["🌈 someday","someday"],"reference":["📎 reference","reference"],"project":["📁 project","project"]}' "$W2111_2_OUT"
+
+# どちらかの絞り込み取得が失敗したら、欠けた一覧を正常結果として返さずエラーにする
+W2111_3_LOG=$(mktemp /tmp/todo-test-w2111-3-XXXXXX)
+W2111_3_RESP='{"issues.listForRepo":[{"data":[{"number":20,"title":"Visible N","body":"","labels":[{"name":"🎯 next"}],"updated_at":""}]},{"__throw":true,"status":500,"message":"boom"}]}'
+W2111_3_OUT=$(W2111_RUN "$W2111_3_RESP" "$W2111_3_LOG" list next); W2111_3_EC=$?
+assert_exit_fail "W2111-3 別名側の取得失敗: エラー終了する" "$W2111_3_EC"
+assert_not_contains "W2111-3: 欠けた一覧を正常結果として表示しない" "Visible N" "$W2111_3_OUT"
+rm -f "$W2111_3_LOG"
+
+# 100件満杯の1ページ目 + 2ページ目: dashboard は1・2ページ目を同時に要求し、2ページ目の失敗はエラーにする
+W2111_PAGE=$(node -e 'const a=[];for(let i=300;i>200;i--)a.push({number:i,title:"P"+i,body:"",labels:[{name:"🎯 next"}],updated_at:""});process.stdout.write(JSON.stringify(a))')
+W2111_4_LOG=$(mktemp /tmp/todo-test-w2111-4-XXXXXX)
+W2111_4_RESP="{\"issues.listForRepo\":[{\"data\":$W2111_PAGE},{\"data\":[{\"number\":150,\"title\":\"Second page item\",\"body\":\"\",\"labels\":[{\"name\":\"🎯 next\"}],\"updated_at\":\"\"}]},{\"data\":[]}]}"
+W2111_4_OUT=$(W2111_RUN "$W2111_4_RESP" "$W2111_4_LOG" list); W2111_4_EC=$?
+assert_exit_ok "W2111-4 list(絞り込みなし・101件): exit 0" "$W2111_4_EC"
+assert_contains "W2111-4: 2ページ目の Issue も表示される" "Second page item" "$W2111_4_OUT"
+assert_eq "W2111-4: 1・2ページ目の2回を要求（3ページ目なし）" "2" "$(log_count "$W2111_4_LOG" issues.listForRepo)"
+assert_not_contains "W2111-4: 絞り込みなしは labels パラメータを付けない" '"labels"' "$(log_lines_for_method "$W2111_4_LOG" issues.listForRepo)"
+rm -f "$W2111_4_LOG"
+
+W2111_5_LOG=$(mktemp /tmp/todo-test-w2111-5-XXXXXX)
+W2111_5_RESP="{\"issues.listForRepo\":[{\"data\":$W2111_PAGE},{\"__throw\":true,\"status\":502,\"message\":\"bad gateway\"},{\"data\":[]}]}"
+W2111_5_OUT=$(W2111_RUN "$W2111_5_RESP" "$W2111_5_LOG" dashboard); W2111_5_EC=$?
+assert_exit_fail "W2111-5 dashboard: 満杯の1ページ目 + 2ページ目失敗はエラー終了" "$W2111_5_EC"
+rm -f "$W2111_5_LOG"
+
+# 1ページ目が100件未満なら2ページ目は不要: 先読みの2ページ目が失敗しても無関係（従来も要求しなかったページ）
+W2111_6_LOG=$(mktemp /tmp/todo-test-w2111-6-XXXXXX)
+W2111_6_RESP='{"issues.listForRepo":[{"data":[{"number":5,"title":"Only item","body":"","labels":[{"name":"🎯 next"}],"updated_at":""}]},{"__throw":true,"status":502,"message":"unused page"}]}'
+W2111_6_OUT=$(W2111_RUN "$W2111_6_RESP" "$W2111_6_LOG" list); W2111_6_EC=$?
+assert_exit_ok "W2111-6 list: 1ページ目が100件未満なら先読み2ページ目の失敗は無関係" "$W2111_6_EC"
+assert_contains "W2111-6: 1ページ目の内容が表示される" "Only item" "$W2111_6_OUT"
+rm -f "$W2111_6_LOG"
+
+# 絞り込み併用（@ctx + GTD）でも GTD 側でサーバ絞り込みされ、ctx は手元で絞られる
+W2111_7_LOG=$(mktemp /tmp/todo-test-w2111-7-XXXXXX)
+W2111_7_RESP='{"issues.listForRepo":[{"data":[{"number":31,"title":"Has ctx","body":"","labels":[{"name":"🎯 next"},{"name":"@PC"}],"updated_at":""},{"number":30,"title":"No ctx","body":"","labels":[{"name":"🎯 next"}],"updated_at":""}]},{"data":[]}]}'
+W2111_7_OUT=$(W2111_RUN "$W2111_7_RESP" "$W2111_7_LOG" list next @PC); W2111_7_EC=$?
+assert_exit_ok "W2111-7 list next @PC: exit 0" "$W2111_7_EC"
+assert_contains "W2111-7: ctx 一致は出る" "Has ctx" "$W2111_7_OUT"
+assert_not_contains "W2111-7: ctx 不一致は出ない" "No ctx" "$W2111_7_OUT"
+rm -f "$W2111_7_LOG"
 
 echo ""
 echo "=========================================="
