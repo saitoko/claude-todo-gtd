@@ -3578,7 +3578,10 @@ const ADD_USAGE = 'Usage: /todo add [GTD] <title> [@ctx...] [#tag...] [--due <da
 //
 // run 系コマンドの仕様を1か所に集める。FLAG_SUPPORTED_BY と RESERVED_TITLE_GUARD_COMMANDS は
 // この表から導出する（手で同期する表を作らない）。ハンドラの中の処理（ガードを呼ぶ位置・
-// 引数の出どころ・メッセージ）は変えない。表は「何を宣言するか」だけを持つ。
+// 引数の出どころ・メッセージ）は変えない。表は「何を宣言するか」だけを持ち、各ハンドラの
+// ガード呼び出しがこの宣言どおりに配線されているかは、適合テスト（tests/run-tests-write.sh §W56）が
+// 子プロセスで毎回検査する（ガード呼び出しの側は表を引かず、許可フラグ・ヒントを自前で持つ。
+// 両者の一致をテストが保証する）。
 //
 // 【この表の並び順は FLAG_SUPPORTED_BY のヒント文の順序になる。並べ替えるとエラーメッセージが変わる】
 // runMain の switch の並びに合わせてある。ヒント文は「add / edit / template save」のように
@@ -3587,87 +3590,197 @@ const ADD_USAGE = 'Usage: /todo add [GTD] <title> [@ctx...] [#tag...] [--due <da
 //
 // キー: トップレベルは 'due' / 'promote-project'、サブコマンドは '<親> <sub>'（空白区切り）。
 // 「キーに空白を含まない = トップレベル」。FLAG_SUPPORTED_BY の文字列には、このキーがそのまま出る。
+//
 // フィールド:
 //   aliases         : トップレベルのみ。同じハンドラへ振り分ける別名（予約語集合には載るが help の個別行はない）
 //   helpKey         : トップレベルのみ。help() の 'help.<helpKey>' メッセージキー（文字列または配列）
 //   supportedFields : guardUnsupportedFlag を呼ぶ spec だけ。ハンドラが実際に読む FLAG_FIELD_MAP のキー
+//   allowedFlags    : guardUnknownFlag の許可リスト（ハンドラが extra から自前で解釈するフラグ）。省略時は空
+//   unknownFlag     : 【必須】未知フラグ（guardUnknownFlag）の方針。次のどれか1つ:
+//       { slots: { <slot名>: <ヒントのメッセージキー> } }
+//           ガードがある。検査するトークン範囲（スロット）ごとに、実際に渡しているヒントを宣言する。
+//           スロット名は spec ごとの自由な文字列
+//       { exempt: '<理由>' }     意図的にガードしない（過去の設計で決定済み。理由は必須）
+//       { unguarded: '<理由>' }  ガードを持たない現状（挙動を変えないために残している。理由は必須）
+//     この3種類以外の値は足さない（適合テストの分岐が増えて検査が弱くなるため）
+//   extraPositional : guardExtraPositional を呼ぶ spec だけ。{ hint, when? }。when は条件付きのときの説明
+//   note            : 配線の特殊事情・過去の判断
+//
+// 新しいコマンド・サブコマンド・フラグを足すときは、ここに spec を足し、適合テストのプローブ表
+// （tests/run-tests-write.sh §W56）にも足す。プローブの書き忘れはテストが FAIL にする。
 //
 // 【制約】表と導出の初期化式から t() / tpl() を呼ばない（LANG 依存の文字列を入れない）。
-// 表のコメントや文字列に switch の case ラベルと同じ形の文字列を書かない
-// （run-tests.sh の runMain 抽出が拾うのは runMain 以降だが、念のため）。
+// 表のコメントや文字列に switch の case ラベルと同じ形の文字列を書かない。
+const HINT_TITLE = 'error.unknown_flag_hint';          // 自由記述のタイトルを持つ（add / rename / template use のタイトル）
+const HINT_BODY = 'error.unknown_flag_hint_body';      // 自由記述の本文を持つ（comment / desc）
+const HINT_OPTIONS = 'error.unknown_flag_hint_options'; // 上記以外
+const EXTRA_QUOTE = 'error.extra_positional_hint_quote';   // 値が空白を含みうる（due / recur / activate / --outcome）
+const EXTRA_SINGLE = 'error.extra_positional_hint_single'; // 値が単一トークン（link / priority / view save）
+const NO_ARGS_NOTE = 'runMain がトークンを渡さないため、引数は黙って無視される。塞ぐと挙動が変わるので R2 では残した';
+const TAG_EXEMPT_NOTE = 'normalizeTagTokens が - 始まりを error.option_like_token で弾く（#1686）。ガードを足すと文言が変わる（#1921 第2弾の決定）';
+const VIEW_NAME_NOTE = '名前の後ろのトークンを見ない（#1938 は view save だけを検査する）。塞ぐと挙動が変わるので R2 では残した';
+const PARENT_NOTE = '親 spec。トークンの検査はサブコマンドの spec が持つ（親は不正なサブコマンドの Usage だけを出す）';
 const COMMAND_SPECS = {
+  // GTD ラベル暗黙経路（next <title> 等）と、先頭が非英字の default 経路も同じハンドラ。
+  // 装飾GTDラベル誤爆ガード（guardBracketedGtdLabel、#1928）はタイトル構成トークンに対する別のガード。
   'add': {
     helpKey: ['add', 'add_explicit'],
     supportedFields: ['due','desc','recur','project','priority','estimate','resumeCondition',
       'before','activate','body','bodyFile','dependsOn','labels','contexts','tags'],
+    unknownFlag: { slots: { extra: HINT_TITLE } },
   },
-  'list': { helpKey: 'list', supportedFields: ['contexts', 'tags'] },
-  'done': { aliases: ['close'], helpKey: 'done', supportedFields: ['actual', 'note'] },
-  'move': { helpKey: 'move', supportedFields: ['note'] },
+  // cmd なし（/todo だけ）も同じハンドラ。--json は runList 冒頭で先に除去するので許可リストに入れない。
+  'list': {
+    helpKey: 'list', supportedFields: ['contexts', 'tags'],
+    allowedFlags: ['--group', '--no-due', '--no-estimate'],
+    unknownFlag: { slots: { extra: HINT_OPTIONS } },
+  },
+  'done': {
+    aliases: ['close'], helpKey: 'done', supportedFields: ['actual', 'note'],
+    unknownFlag: { slots: { extra: HINT_OPTIONS } },
+  },
+  'move': {
+    helpKey: 'move', supportedFields: ['note'],
+    unknownFlag: { slots: { extra: HINT_OPTIONS } },
+  },
   'edit': {
     helpKey: 'edit',
     supportedFields: ['due','recur','project','desc','estimate','before',
       'activate','dependsOn','resumeCondition','priority'],
+    unknownFlag: { slots: { extra: HINT_OPTIONS } },
   },
-  'due': { helpKey: 'due' },
-  'desc': { helpKey: 'desc' },
-  'recur': { helpKey: 'recur' },
-  'link': { helpKey: 'link' },
-  'rename': { helpKey: 'rename' },
-  'priority': { helpKey: 'priority' },
-  'tag': { helpKey: 'tag' },
-  'tag rename': {},
-  'untag': { helpKey: 'untag' },
-  'label': { helpKey: 'label' },
-  'label list': {},
-  'label add': { supportedFields: ['color'] },
-  'label delete': {},
-  'label rename': {},
-  'search': { helpKey: 'search' },
-  'archive': { helpKey: 'archive' },
-  'archive list': {},
-  'archive search': {},
-  'archive reopen': {},
-  'dashboard': { aliases: ['dash'], helpKey: 'dashboard' },
-  'today': { helpKey: 'today' },
-  'eisenhower': { helpKey: 'eisenhower' },
-  'stats': { helpKey: 'stats' },
-  'report': { helpKey: 'report' },
-  'help': { helpKey: 'help' },
-  'template': { helpKey: 'template' },
-  'template list': {},
-  'template show': {},
-  'template save from': {},
+  'due': {
+    helpKey: 'due', unknownFlag: { slots: { rest: HINT_OPTIONS } },
+    extraPositional: { hint: EXTRA_QUOTE },
+  },
+  'desc': { helpKey: 'desc', unknownFlag: { slots: { rest: HINT_BODY } } },
+  'recur': {
+    helpKey: 'recur', unknownFlag: { slots: { rest: HINT_OPTIONS } },
+    extraPositional: { hint: EXTRA_QUOTE },
+  },
+  'link': {
+    helpKey: 'link', unknownFlag: { slots: { rest: HINT_OPTIONS } },
+    extraPositional: { hint: EXTRA_SINGLE },
+  },
+  'rename': { helpKey: 'rename', unknownFlag: { slots: { rest: HINT_TITLE } } },
+  'priority': {
+    helpKey: 'priority', unknownFlag: { slots: { rest: HINT_OPTIONS } },
+    extraPositional: { hint: EXTRA_SINGLE },
+  },
+  'tag': {
+    helpKey: 'tag',
+    unknownFlag: { exempt: TAG_EXEMPT_NOTE },
+  },
+  // tag rename は label rename と共用の renameCtxLabel が old / new の位置だけを検査する。
+  // 3語目以降の余剰トークンは検査しない（label rename は slice(1) で検査しているので非対称）
+  'tag rename': { unknownFlag: { slots: { names: HINT_OPTIONS } } },
+  'untag': {
+    helpKey: 'untag',
+    unknownFlag: { exempt: TAG_EXEMPT_NOTE },
+  },
+  'label': { helpKey: 'label', unknownFlag: { exempt: PARENT_NOTE } },
+  'label list': { unknownFlag: { slots: { rest: HINT_OPTIONS } } },
+  'label add': {
+    supportedFields: ['color'],
+    unknownFlag: { slots: { name: HINT_OPTIONS, extra: HINT_OPTIONS } },
+  },
+  'label delete': { unknownFlag: { slots: { rest: HINT_OPTIONS } } },
+  // renameCtxLabel 内の検査（old / new）は、同じトークンを先に検査するこちらの slice(1) が
+  // 先に発火するため、label rename の経路では到達しない（tag rename の経路で発火する）
+  'label rename': { unknownFlag: { slots: { rest: HINT_OPTIONS } } },
+  // --json は先に除去してから検査する（許可リストには入れない）
+  'search': { helpKey: 'search', unknownFlag: { slots: { tokens: HINT_OPTIONS } } },
+  'archive': { helpKey: 'archive', unknownFlag: { exempt: PARENT_NOTE } },
+  'archive list': {
+    unknownFlag: { unguarded: 'サブコマンド省略時も同じ。tokens[1] が GTD でも @ctx でもなければフィルタなしで全件表示し、2語目以降も見ない。塞ぐと挙動が変わるので R2 では残した' },
+  },
+  'archive search': { unknownFlag: { slots: { rest: HINT_OPTIONS } } },
+  'archive reopen': { unknownFlag: { unguarded: 'tokens[2..] を見ない。塞ぐと挙動が変わるので R2 では残した' } },
+  'dashboard': { aliases: ['dash'], helpKey: 'dashboard', unknownFlag: { unguarded: NO_ARGS_NOTE } },
+  'today': { helpKey: 'today', unknownFlag: { unguarded: NO_ARGS_NOTE } },
+  'eisenhower': { helpKey: 'eisenhower', unknownFlag: { unguarded: NO_ARGS_NOTE } },
+  'stats': { helpKey: 'stats', unknownFlag: { unguarded: NO_ARGS_NOTE } },
+  'report': {
+    helpKey: 'report',
+    unknownFlag: { unguarded: 'tokens[1..] を見ない（#1938 は sub の値だけを検査する）。塞ぐと挙動が変わるので R2 では残した' },
+  },
+  'help': { helpKey: 'help', unknownFlag: { unguarded: NO_ARGS_NOTE } },
+  'template': { helpKey: 'template', unknownFlag: { exempt: PARENT_NOTE } },
+  'template list': { unknownFlag: { slots: { rest: HINT_OPTIONS } } },
+  'template show': { unknownFlag: { slots: { rest: HINT_OPTIONS } } },
+  // name スロットは save-from 形式・インライン形式の両方に効く共有の検査（分岐より前）
+  'template save from': { unknownFlag: { slots: { name: HINT_OPTIONS, rest: HINT_OPTIONS } } },
   // #1934 パート1.5 / #1936: @ctx・#tag はいずれも add / list / template save
   // （インライン形式・save-from 形式の両方）で読まれる。旧実装は #tag だけ
   // template save から読んでいなかった非対称があったが #1936 で解消済み。
   // 'template save' はインライン形式を指す（FLAG_SUPPORTED_BY の文字列もこのキー）。
-  'template save': { supportedFields: ['due','recur','project','desc','dueOffset','priority','contexts','tags'] },
-  'template use': {},
-  'template delete': {},
-  'schema': { helpKey: 'schema' },
-  'show': { helpKey: 'show' },
-  'view': { helpKey: 'view' },
-  'view list': {},
-  'view save': {},
-  'view delete': {},
-  'view use': {},
-  'bulk': { helpKey: 'bulk' },
-  'bulk done': { supportedFields: ['actual'] },
-  'bulk move': {},
-  'bulk tag': {},
-  'bulk untag': {},
-  'bulk priority': {},
-  'promote': { helpKey: 'promote' },
-  'promote-project': { helpKey: 'promote_project' },
-  'unlink': { helpKey: 'unlink' },
-  'review-someday': { helpKey: 'review_someday' },
-  'weekly-project-audit': { helpKey: 'weekly_project_audit' },
-  'migrate': { helpKey: 'migrate' },
-  'migrate sub-issue': {},
-  'activate': { helpKey: 'activate_cmd' },
-  'comment': { helpKey: 'comment' },
-  'api': { helpKey: 'api' },
+  'template save': {
+    supportedFields: ['due','recur','project','desc','dueOffset','priority','contexts','tags'],
+    unknownFlag: { slots: { name: HINT_OPTIONS, extra: HINT_OPTIONS } },
+  },
+  // title スロットはテンプレートの上書きタイトル（自由記述）なのでタイトル向けヒント
+  'template use': { unknownFlag: { slots: { name: HINT_OPTIONS, title: HINT_TITLE } } },
+  'template delete': { unknownFlag: { slots: { rest: HINT_OPTIONS } } },
+  'schema': { helpKey: 'schema', unknownFlag: { unguarded: NO_ARGS_NOTE } },
+  'show': {
+    helpKey: 'show', allowedFlags: ['--json'],
+    unknownFlag: { slots: { tokens: HINT_OPTIONS } },
+  },
+  'view': { helpKey: 'view', unknownFlag: { exempt: PARENT_NOTE } },
+  'view list': { unknownFlag: { unguarded: VIEW_NAME_NOTE } },
+  // GTD / 優先度 / @ctx のいずれにも合わないトークン（unmatched）が検査対象
+  'view save': {
+    unknownFlag: { slots: { unmatched: HINT_OPTIONS } },
+    extraPositional: { hint: EXTRA_SINGLE },
+  },
+  'view delete': { unknownFlag: { unguarded: VIEW_NAME_NOTE } },
+  // view <name>（use を省略した形）も同じ経路
+  'view use': { unknownFlag: { unguarded: VIEW_NAME_NOTE } },
+  'bulk': { helpKey: 'bulk', unknownFlag: { exempt: PARENT_NOTE } },
+  'bulk done': {
+    supportedFields: ['actual'],
+    unknownFlag: { slots: { extra: HINT_OPTIONS } },
+  },
+  'bulk move': { unknownFlag: { slots: { rest: HINT_OPTIONS } } },
+  'bulk tag': {
+    unknownFlag: { exempt: TAG_EXEMPT_NOTE },
+  },
+  'bulk untag': {
+    unknownFlag: { exempt: TAG_EXEMPT_NOTE },
+  },
+  'bulk priority': { unknownFlag: { slots: { rest: HINT_OPTIONS } } },
+  'promote': { helpKey: 'promote', unknownFlag: { unguarded: NO_ARGS_NOTE } },
+  'promote-project': {
+    helpKey: 'promote_project', allowedFlags: ['--outcome'],
+    unknownFlag: { slots: { rest: HINT_OPTIONS } },
+    extraPositional: { hint: EXTRA_QUOTE, when: '--outcome を指定したときだけ（--outcome の値より後ろの余剰を検査する）' },
+  },
+  'unlink': {
+    helpKey: 'unlink', allowedFlags: ['--force'],
+    unknownFlag: { slots: { rest: HINT_OPTIONS } },
+  },
+  'review-someday': { helpKey: 'review_someday', unknownFlag: { slots: { rest: HINT_OPTIONS } } },
+  'weekly-project-audit': { helpKey: 'weekly_project_audit', unknownFlag: { unguarded: NO_ARGS_NOTE } },
+  'migrate': { helpKey: 'migrate', unknownFlag: { exempt: PARENT_NOTE } },
+  'migrate sub-issue': {
+    allowedFlags: ['--dry-run'],
+    unknownFlag: { slots: { tokens: HINT_OPTIONS } },
+  },
+  // runMain 内に直書きのショートカット。edit へ合成引数 [番号, '--activate', 日付] で委譲するので、
+  // edit 側のガードは発火しない（#1937）。そのため委譲前にここで検査する。
+  'activate': {
+    helpKey: 'activate_cmd',
+    unknownFlag: { slots: { rest: HINT_OPTIONS } },
+    extraPositional: { hint: EXTRA_QUOTE },
+  },
+  // 本文の検査は --body / --body-file を拾うループの中で、フラグ字面のトークンを1つずつ
+  // 単一要素配列で渡す。rest 全体 + 許可リストにしてはいけない: 値が欠落した末尾の
+  // --body-file が許可リストを通り、W26-5b（値欠落のエラー化）が壊れる
+  'comment': { helpKey: 'comment', unknownFlag: { slots: { token: HINT_BODY } } },
+  'api': {
+    helpKey: 'api',
+    unknownFlag: { exempt: '外部インターフェース（apiMain 側が英語固定で処理する。対象外）' },
+  },
 };
 
 // FLAG_SUPPORTED_BY を COMMAND_SPECS から導出する。キーは fieldMap（FLAG_FIELD_MAP）の定義順、

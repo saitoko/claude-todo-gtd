@@ -5536,6 +5536,357 @@ assert_contains "W2111-7: ctx 一致は出る" "Has ctx" "$W2111_7_OUT"
 assert_not_contains "W2111-7: ctx 不一致は出ない" "No ctx" "$W2111_7_OUT"
 rm -f "$W2111_7_LOG"
 
+# ── §W56 コマンド仕様の宣言表 COMMAND_SPECS と各ガードの配線の適合テスト（Issue #2102 R2 段階2） ──
+# 表（todo-engine.js の COMMAND_SPECS）が「どのコマンドのどの位置で未知フラグ・未サポートフラグ・
+# 余剰引数を検査するか」を宣言している。その宣言どおりにハンドラのガードが配線されていることを、
+# 子プロセスで実際にコマンドを実行して確かめる。ガードの呼び忘れ・取り違え（#1919 / #1921 /
+# #1934 / #1937 / #1938 の型）はここで検出される。
+# 新しいコマンド・スロットを COMMAND_SPECS に足したのにプローブ表（下の PROBES 等）へ足し忘れると、
+# C-2 が FAIL になる。
+# 安全条件: 全ケースで HOME を新規の一時ディレクトリに隔離し、OCTOKIT_STUB_ENV でスタブを指定し、
+# スタブの応答は空（ガードを抜けたら最初の API 呼び出しで決まった例外になる）。GH_TOKEN 等の
+# 環境変数は渡さない。ガードのない経路（view delete 等）は処理まで進むため、これを外すと実データの
+# 削除や GitHub への書き込みが起きる。
+echo ""
+echo "§W56  COMMAND_SPECS の宣言と各ガード配線の適合テスト（Issue #2102 R2）"
+
+_W56_TMP=$(mktemp /tmp/todo-test-w56-XXXXXX)
+cat > "$_W56_TMP" << 'W56_CONFORMANCE_EOF'
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { spawn } = require('child_process');
+const ENGINE = process.argv[2], STUB = process.argv[3];
+const E = require(ENGINE);
+const specs = E.COMMAND_SPECS;
+const keys = Object.keys(specs);
+const out = [];
+const ok = (id, desc) => out.push(['ok', id + ' ' + desc].join('\t'));
+const ng = (id, desc, detail) => out.push(['ng', id + ' ' + desc, String(detail).replace(/\n/g, '\\n')].join('\t'));
+const check = (id, desc, cond, detail) => (cond ? ok(id, desc) : ng(id, desc, detail));
+const info = (desc) => out.push(['info', desc].join('\t'));
+
+const TMPROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'w56-'));
+const PROBE = '--zz-probe';
+
+// ── 子プロセス実行（HOME 隔離 + スタブ指定 + 応答なし）。失敗の読み落としを PASS 扱いにしないため、
+//    実行結果は常に { code, stdout, stderr, log } を返し、判定側が値を確認する
+function run(argv, lang) {
+  return new Promise((resolve) => {
+    const home = fs.mkdtempSync(path.join(TMPROOT, 'h-'));
+    fs.mkdirSync(path.join(home, '.claude'));
+    const log = path.join(home, 'stub.log');
+    const env = {
+      PATH: process.env.PATH, HOME: home,
+      OCTOKIT_STUB_ENV: STUB, OCTOKIT_STUB_RESPONSES_ENV: '{}', OCTOKIT_STUB_LOG_ENV: log,
+      TODO_REPO_OWNER: 'test', TODO_REPO_NAME: 'test', TODAY: '2026-10-17',
+    };
+    if (lang === 'en') env.LANG_ENV = 'en';
+    const p = spawn(process.execPath, [ENGINE, 'run', ...argv], { env, cwd: home, stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '', stderr = '';
+    p.stdout.on('data', d => stdout += d); p.stderr.on('data', d => stderr += d);
+    p.stdin.end();
+    const timer = setTimeout(() => p.kill('SIGKILL'), 20000);
+    p.on('close', (code) => {
+      clearTimeout(timer);
+      let logLines = null; // null = ログを読めなかった（「API 未呼び出し」とは区別する）
+      try { logLines = fs.readFileSync(log, 'utf8').split('\n').filter(Boolean); } catch (e) { logLines = e.code === 'ENOENT' ? [] : null; }
+      fs.rmSync(home, { recursive: true, force: true });
+      resolve({ code, stdout, stderr, log: logLines });
+    });
+  });
+}
+async function pool(items, n, fn) {
+  const res = new Array(items.length); let i = 0;
+  await Promise.all(Array.from({ length: n }, async () => { while (i < items.length) { const k = i++; res[k] = await fn(items[k], k); } }));
+  return res;
+}
+const withProbe = (argv, tok) => argv.map(a => (a === '@@' ? tok : a));
+const msg = (lang, key, vars) => E.MESSAGES[lang][key].replace(/\{(\w+)\}/g, (m, k) => (vars && k in vars ? vars[k] : m));
+
+// ── プローブ表（テスト側）: spec キー → スロット名 → argv（'@@' の位置にフラグ字面を入れる）
+const PROBES = {
+  'add': { extra: ['add', 'foo', '@@'] },
+  'list': { extra: ['list', '@@'] },
+  'done': { extra: ['done', '42', '@@'] },
+  'move': { extra: ['move', '42', 'next', '@@'] },
+  'edit': { extra: ['edit', '42', '@@'] },
+  'due': { rest: ['due', '42', '2026-10-20', '@@'] },
+  'desc': { rest: ['desc', '42', '@@'] },
+  'recur': { rest: ['recur', '42', 'weekly', '@@'] },
+  'link': { rest: ['link', '42', '43', '@@'] },
+  'rename': { rest: ['rename', '42', '@@'] },
+  'priority': { rest: ['priority', '42', 'p1', '@@'] },
+  'tag rename': { names: ['tag', 'rename', 'old', '@@'] },
+  'label list': { rest: ['label', 'list', '@@'] },
+  'label add': { name: ['label', 'add', '@@'], extra: ['label', 'add', 'foo', '@@'] },
+  'label delete': { rest: ['label', 'delete', '@@'] },
+  'label rename': { rest: ['label', 'rename', 'a', '@@'] },
+  'search': { tokens: ['search', '@@'] },
+  'archive search': { rest: ['archive', 'search', '@@'] },
+  'template list': { rest: ['template', 'list', '@@'] },
+  'template show': { rest: ['template', 'show', '@@'] },
+  'template save from': { name: ['template', 'save', '@@'], rest: ['template', 'save', 'tn', 'from', '42', '@@'] },
+  'template save': { name: ['template', 'save', '@@'], extra: ['template', 'save', 'tn', '@@'] },
+  'template use': { name: ['template', 'use', '@@'], title: ['template', 'use', 'tn', '@@'] },
+  'template delete': { rest: ['template', 'delete', '@@'] },
+  'show': { tokens: ['show', '42', '@@'] },
+  'view save': { unmatched: ['view', 'save', 'vn', '@@'] },
+  'bulk done': { extra: ['bulk', 'done', '42', '@@'] },
+  'bulk move': { rest: ['bulk', 'move', '42', 'next', '@@'] },
+  'bulk priority': { rest: ['bulk', 'priority', '42', 'p1', '@@'] },
+  'promote-project': { rest: ['promote-project', '42', '@@'] },
+  'unlink': { rest: ['unlink', '42', '@@'] },
+  'review-someday': { rest: ['review-someday', '42', '@@'] },
+  'migrate sub-issue': { tokens: ['migrate', 'sub-issue', '@@'] },
+  'activate': { rest: ['activate', '42', '2026-10-20', '@@'] },
+  'comment': { token: ['comment', '42', '@@'] },
+};
+// guardUnsupportedFlag を持つ spec の基底 argv（未サポート／サポートのフィールドを1つずつ足して渡す）
+const S_BASES = {
+  'add': ['add', 'foo'], 'list': ['list'], 'done': ['done', '42'], 'move': ['move', '42', 'next'],
+  'edit': ['edit', '42'], 'label add': ['label', 'add', 'foo'], 'template save': ['template', 'save', 'tn'],
+  'bulk done': ['bulk', 'done', '42'],
+};
+const FIELD_FLAGS = {
+  due: ['--due', '2026-10-20'], desc: ['--desc', 'x'], recur: ['--recur', 'weekly'], project: ['--project', '5'],
+  priority: ['--priority', 'p1'], estimate: ['--estimate', '30m'], actual: ['--actual', '10m'],
+  dueOffset: ['--due-offset', '3'], color: ['--color', 'ff0000'], activate: ['--activate', '2026-10-20'],
+  before: ['--before', '1d'], dependsOn: ['--depends-on', '3'], resumeCondition: ['--resume-condition', 'x'],
+  note: ['--note', 'x'], body: ['--body', 'x'], bodyFile: ['--body-file', '/nonexistent/w56'],
+  labels: ['--label', 'x'], contexts: ['@ctx1'], tags: ['#tag1'],
+};
+// guardExtraPositional を持つ spec: 非フラグの余剰語1つを渡す argv と、渡さなければ発火しない argv
+const X_PROBES = {
+  'due': { fire: ['due', '42', '2026-10-20', 'extraword'] },
+  'recur': { fire: ['recur', '42', 'weekly', 'extraword'] },
+  'link': { fire: ['link', '42', '43', 'extraword'] },
+  'priority': { fire: ['priority', '42', 'p1', 'extraword'] },
+  'view save': { fire: ['view', 'save', 'vn', 'extraword'] },
+  'promote-project': { fire: ['promote-project', '42', '--outcome', 'title', 'extraword'], quiet: ['promote-project', '42', 'extraword'] },
+  'activate': { fire: ['activate', '42', '2026-10-20', 'extraword'] },
+};
+// exempt / unguarded の spec: フラグ字面を渡しても「不明なフラグ」で止まらない（現状の固定）argv。
+// expectMsgKey があるものは、その文言で止まることまで確認する
+const NOGUARD_PROBES = {
+  'tag': { argv: ['tag', '42', PROBE], expectMsgKey: 'error.option_like_token' },
+  'untag': { argv: ['untag', '42', PROBE], expectMsgKey: 'error.option_like_token' },
+  'bulk tag': { argv: ['bulk', 'tag', '42', PROBE], expectMsgKey: 'error.option_like_token' },
+  'bulk untag': { argv: ['bulk', 'untag', '42', PROBE], expectMsgKey: 'error.option_like_token' },
+  'label': { argv: ['label', PROBE] }, 'archive': { argv: ['archive', PROBE] },
+  'template': { argv: ['template', PROBE] }, 'view': { argv: ['view', PROBE] },
+  'bulk': { argv: ['bulk', PROBE] }, 'migrate': { argv: ['migrate', PROBE] },
+  'archive list': { argv: ['archive', 'list', PROBE] }, 'archive reopen': { argv: ['archive', 'reopen', '42', PROBE] },
+  'dashboard': { argv: ['dashboard', PROBE] }, 'today': { argv: ['today', PROBE] },
+  'eisenhower': { argv: ['eisenhower', PROBE] }, 'stats': { argv: ['stats', PROBE] },
+  'report': { argv: ['report', 'weekly', PROBE] }, 'help': { argv: ['help', PROBE] },
+  'schema': { argv: ['schema', PROBE] }, 'view list': { argv: ['view', 'list', PROBE] },
+  'view delete': { argv: ['view', 'delete', 'vn', PROBE] }, 'view use': { argv: ['view', 'use', 'vn', PROBE] },
+  'promote': { argv: ['promote', PROBE] }, 'weekly-project-audit': { argv: ['weekly-project-audit', PROBE] },
+  'api': { argv: ['api', PROBE] },
+};
+
+(async () => {
+  const unknownText = (lang, flag) => msg(lang, 'error.unknown_flag', { flag });
+
+  // ── C-1: 宣言の網羅（unknownFlag 必須・3 種類のどれか1つ・理由は空文字不可）
+  const c1 = [];
+  for (const k of keys) {
+    const u = specs[k].unknownFlag;
+    if (!u || typeof u !== 'object') { c1.push(k + ': unknownFlag なし'); continue; }
+    const kinds = ['slots', 'exempt', 'unguarded'].filter(x => x in u);
+    if (kinds.length !== 1 || Object.keys(u).length !== 1) { c1.push(k + ': 3種類のどれか1つだけを持つこと'); continue; }
+    if (kinds[0] === 'slots') {
+      const sl = u.slots;
+      if (!sl || typeof sl !== 'object' || Object.keys(sl).length === 0) c1.push(k + ': slots が空');
+      else for (const [slot, hk] of Object.entries(sl)) {
+        if (!/^error\.unknown_flag_hint(_body|_options)?$/.test(hk) || !E.MESSAGES.ja[hk] || !E.MESSAGES.en[hk]) c1.push(k + '.' + slot + ': ヒントのキーが不正 ' + hk);
+      }
+    } else if (typeof u[kinds[0]] !== 'string' || !u[kinds[0]].trim()) c1.push(k + ': ' + kinds[0] + ' の理由が空');
+    const af = specs[k].allowedFlags;
+    if (af !== undefined && (!Array.isArray(af) || af.some(f => !/^--[a-z][a-z-]*$/.test(f)))) c1.push(k + ': allowedFlags の形が不正');
+    const xp = specs[k].extraPositional;
+    if (xp !== undefined && !/^error\.extra_positional_hint_(quote|single)$/.test(xp.hint || '')) c1.push(k + ': extraPositional.hint が不正');
+  }
+  check('C-1', '全 spec が unknownFlag を宣言している（slots / exempt / unguarded のどれか1つ。理由は空でない）', c1.length === 0, c1.join(' / '));
+
+  // ── C-2: プローブの網羅（宣言とプローブ表の過不足がない）
+  const c2 = [];
+  for (const k of keys) {
+    const u = specs[k].unknownFlag;
+    if (u && u.slots) {
+      for (const slot of Object.keys(u.slots)) if (!(PROBES[k] && PROBES[k][slot])) c2.push('プローブなし(slot): ' + k + '.' + slot);
+    } else if (!NOGUARD_PROBES[k]) c2.push('プローブなし(exempt/unguarded): ' + k);
+    if (specs[k].supportedFields && !S_BASES[k]) c2.push('プローブなし(supportedFields): ' + k);
+    if (specs[k].extraPositional && !X_PROBES[k]) c2.push('プローブなし(extraPositional): ' + k);
+  }
+  for (const k of Object.keys(PROBES)) {
+    if (!specs[k] || !specs[k].unknownFlag.slots) c2.push('余分なプローブ(spec/slots なし): ' + k);
+    else for (const slot of Object.keys(PROBES[k])) if (!(slot in specs[k].unknownFlag.slots)) c2.push('余分なプローブ(slot): ' + k + '.' + slot);
+  }
+  for (const k of Object.keys(S_BASES)) if (!specs[k] || !specs[k].supportedFields) c2.push('余分なプローブ(S): ' + k);
+  for (const k of Object.keys(X_PROBES)) if (!specs[k] || !specs[k].extraPositional) c2.push('余分なプローブ(X): ' + k);
+  for (const k of Object.keys(NOGUARD_PROBES)) if (!specs[k] || specs[k].unknownFlag.slots) c2.push('余分なプローブ(exempt/unguarded): ' + k);
+  check('C-2', 'プローブ表が COMMAND_SPECS の宣言を過不足なく覆っている（足し忘れ・取り残しは FAIL）', c2.length === 0, c2.join(' / '));
+
+  // ── C-3: U の発火（スロットごと）。stderr がちょうど「Usage 行 / 不明なフラグ / ヒント」の3行で、
+  //    ヒントは spec の宣言どおり。exit 1。スタブログが「空として読めた」こと（読めなかったら FAIL）
+  const u3 = [];
+  for (const k of keys) {
+    const sl = specs[k].unknownFlag.slots; if (!sl) continue;
+    for (const slot of Object.keys(sl)) if (PROBES[k] && PROBES[k][slot]) u3.push({ k, slot, argv: withProbe(PROBES[k][slot], PROBE), hint: sl[slot] });
+  }
+  const r3 = await pool(u3, 8, c => run(c.argv, 'ja'));
+  r3.forEach((r, i) => {
+    const c = u3[i];
+    const lines = r.stderr.split('\n');
+    const exact = lines.length === 4 && lines[0].startsWith('Usage: ') && lines[1] === unknownText('ja', PROBE) && lines[2] === msg('ja', c.hint) && lines[3] === '';
+    check('C-3', c.k + '[' + c.slot + '] フラグ字面で止まる（宣言のヒント ' + c.hint.replace('error.unknown_flag_hint', '…') + '）',
+      r.code === 1 && exact && Array.isArray(r.log) && r.log.length === 0,
+      'argv=' + JSON.stringify(c.argv) + ' code=' + r.code + ' log=' + JSON.stringify(r.log) + ' stderr=' + JSON.stringify(r.stderr).slice(0, 400));
+  });
+  // 許可フラグ: allowedFlags の各フラグを各スロットに置いても「不明なフラグ」で止まらない
+  const a3 = [];
+  for (const k of keys) {
+    const sl = specs[k].unknownFlag.slots; if (!sl) continue;
+    for (const f of (specs[k].allowedFlags || [])) for (const slot of Object.keys(sl)) if (PROBES[k] && PROBES[k][slot]) a3.push({ k, slot, f, argv: withProbe(PROBES[k][slot], f) });
+  }
+  const ra = await pool(a3, 8, c => run(c.argv, 'ja'));
+  ra.forEach((r, i) => {
+    const c = a3[i];
+    check('C-3', c.k + '[' + c.slot + '] 許可フラグ ' + c.f + ' は「不明なフラグ」にならない',
+      !r.stderr.includes(unknownText('ja', c.f)) && Array.isArray(r.log),
+      'argv=' + JSON.stringify(c.argv) + ' stderr=' + JSON.stringify(r.stderr).slice(0, 300));
+  });
+
+  // ── C-4: S の発火。未サポートの全フィールド（8 spec × 未サポート分）で「使えません」+ ヒント（導出結果から組み立てる）。
+  //    サポート対象のフィールドでは「使えません」が出ない
+  const fieldNames = Object.keys(E.FLAG_FIELD_MAP);
+  const c4 = [];
+  for (const k of Object.keys(S_BASES)) for (const f of fieldNames) {
+    c4.push({ k, f, supported: specs[k].supportedFields.indexOf(f) >= 0, argv: [...S_BASES[k], ...FIELD_FLAGS[f]] });
+  }
+  const r4 = await pool(c4, 8, c => run(c.argv, 'ja'));
+  const perSpec = {};
+  r4.forEach((r, i) => {
+    const c = c4[i];
+    const flag = E.FLAG_FIELD_MAP[c.f];
+    const commands = E.FLAG_SUPPORTED_BY[c.f].map(x => '/todo ' + x).join(' / ');
+    const lines = r.stderr.split('\n');
+    let good;
+    if (c.supported) good = !r.stderr.includes(msg('ja', 'error.flag_not_supported', { flag })) && Array.isArray(r.log);
+    else good = r.code === 1 && lines.length === 4 && lines[0].startsWith('Usage: ') && lines[1] === msg('ja', 'error.flag_not_supported', { flag })
+      && lines[2] === msg('ja', 'error.flag_not_supported_hint', { flag, commands }) && lines[3] === '' && Array.isArray(r.log) && r.log.length === 0;
+    const p = perSpec[c.k] = perSpec[c.k] || { n: 0, bad: [] };
+    p.n++; if (!good) p.bad.push(c.f + ' argv=' + JSON.stringify(c.argv) + ' code=' + r.code + ' stderr=' + JSON.stringify(r.stderr).slice(0, 200));
+  });
+  for (const k of Object.keys(S_BASES)) {
+    const p = perSpec[k];
+    check('C-4', k + ': 未サポート ' + (fieldNames.length - specs[k].supportedFields.length) + ' フィールドで宣言どおりに止まり、サポート ' + specs[k].supportedFields.length + ' フィールドでは止まらない（計 ' + p.n + ' ケース）', p.bad.length === 0, p.bad.join(' / '));
+  }
+
+  // ── C-5: X の発火。非フラグの余剰語1つで「余分な引数」+ 宣言どおりのヒント。条件付き spec は条件なしでは発火しない
+  const c5 = [];
+  for (const k of Object.keys(X_PROBES)) {
+    c5.push({ k, kind: 'fire', argv: X_PROBES[k].fire });
+    if (X_PROBES[k].quiet) c5.push({ k, kind: 'quiet', argv: X_PROBES[k].quiet });
+  }
+  const r5 = await pool(c5, 8, c => run(c.argv, 'ja'));
+  r5.forEach((r, i) => {
+    const c = c5[i];
+    const hintPrefix = msg('ja', specs[c.k].extraPositional.hint).split('{example}')[0];
+    const lines = r.stderr.split('\n');
+    if (c.kind === 'fire') {
+      check('C-5', c.k + ': 余剰語で止まる（ヒント ' + specs[c.k].extraPositional.hint.replace('error.extra_positional_hint_', '') + '）',
+        r.code === 1 && lines.length === 4 && lines[0].startsWith('Usage: ') && lines[1].startsWith(msg('ja', 'error.extra_positional').split('{extra}')[0]) && lines[1].includes('extraword')
+        && lines[2].startsWith(hintPrefix) && lines[3] === '' && Array.isArray(r.log) && r.log.length === 0,
+        'argv=' + JSON.stringify(c.argv) + ' code=' + r.code + ' stderr=' + JSON.stringify(r.stderr).slice(0, 300));
+    } else {
+      check('C-5', c.k + ': 条件（' + specs[c.k].extraPositional.when + '）を満たさなければ発火しない',
+        !r.stderr.includes(msg('ja', 'error.extra_positional').split('{extra}')[0]) && Array.isArray(r.log), 'argv=' + JSON.stringify(c.argv) + ' stderr=' + JSON.stringify(r.stderr).slice(0, 300));
+    }
+  });
+
+  // ── C-6: exempt / unguarded の固定（現状の挙動）。フラグ字面で「不明なフラグ」では止まらない。
+  //    tag 系は option_like_token で止まる。unguarded / exempt の一覧は情報として表示する（失敗要因にしない）
+  const c6 = Object.keys(NOGUARD_PROBES).filter(k => specs[k]);
+  const r6 = await pool(c6, 8, k => run(NOGUARD_PROBES[k].argv, 'ja'));
+  r6.forEach((r, i) => {
+    const k = c6[i], pr = NOGUARD_PROBES[k];
+    const noUnknown = !r.stderr.includes(unknownText('ja', PROBE)) && r.log !== null;
+    if (pr.expectMsgKey) {
+      const m = msg('ja', pr.expectMsgKey, { token: PROBE });
+      check('C-6', k + ' (' + Object.keys(specs[k].unknownFlag)[0] + '): 不明なフラグでは止まらず、' + pr.expectMsgKey + ' で止まる',
+        noUnknown && r.code === 1 && r.stderr.includes(m), 'argv=' + JSON.stringify(pr.argv) + ' code=' + r.code + ' stderr=' + JSON.stringify(r.stderr).slice(0, 300));
+    } else {
+      check('C-6', k + ' (' + Object.keys(specs[k].unknownFlag)[0] + '): フラグ字面を「不明なフラグ」では止めない（現状の固定）',
+        noUnknown, 'argv=' + JSON.stringify(pr.argv) + ' code=' + r.code + ' stderr=' + JSON.stringify(r.stderr).slice(0, 300));
+    }
+  });
+
+  // ── C-7: 固定プローブ
+  const fixed = [
+    { id: 'comment 42 --body-file（値欠落、W26-5b と同型）で止まる', argv: ['comment', '42', '--body-file'], want: 'fire', flag: '--body-file', hint: 'error.unknown_flag_hint_body' },
+    { id: 'list next --json --group は止まらない（--json は先に除去、--group は許可）', argv: ['list', 'next', '--json', '--group'], want: 'quiet', flag: '--group' },
+    { id: 'list --json --zz-probe は止まる（--json の併用でも検査される）', argv: ['list', '--json', PROBE], want: 'fire', flag: PROBE, hint: 'error.unknown_flag_hint_options' },
+    { id: 'show 42 --json は止まらない（許可フラグ）', argv: ['show', '42', '--json'], want: 'quiet', flag: '--json' },
+    { id: 'add foo --body-file（値欠落の既知フラグ）は未知フラグとして止まる', argv: ['add', 'foo', '--body-file'], want: 'fire', flag: '--body-file', hint: 'error.unknown_flag_hint' },
+  ];
+  const r7 = await pool(fixed, 8, c => run(c.argv, 'ja'));
+  r7.forEach((r, i) => {
+    const c = fixed[i];
+    const has = r.stderr.includes(unknownText('ja', c.flag));
+    if (c.want === 'fire') check('C-7', c.id, has && r.code === 1 && r.stderr.split('\n')[2] === msg('ja', c.hint), 'argv=' + JSON.stringify(c.argv) + ' stderr=' + JSON.stringify(r.stderr).slice(0, 300));
+    else check('C-7', c.id, !has && Array.isArray(r.log), 'argv=' + JSON.stringify(c.argv) + ' stderr=' + JSON.stringify(r.stderr).slice(0, 300));
+  });
+
+  // ── C-8: i18n（各ガード種別から1ケースずつ。LANG_ENV=en で英語の本文とヒントが出る）
+  const en = [
+    { id: 'U (due)', argv: ['due', '42', '2026-10-20', PROBE], lines: (r) => r.stderr.split('\n')[1] === unknownText('en', PROBE) && r.stderr.split('\n')[2] === msg('en', 'error.unknown_flag_hint_options') },
+    { id: 'S (add --actual)', argv: ['add', 'foo', '--actual', '10m'], lines: (r) => r.stderr.split('\n')[1] === msg('en', 'error.flag_not_supported', { flag: '--actual' }) && r.stderr.split('\n')[2] === msg('en', 'error.flag_not_supported_hint', { flag: '--actual', commands: E.FLAG_SUPPORTED_BY.actual.map(x => '/todo ' + x).join(' / ') }) },
+    { id: 'X (due)', argv: ['due', '42', '2026-10-20', 'extraword'], lines: (r) => r.stderr.split('\n')[1] === msg('en', 'error.extra_positional', { extra: 'extraword' }) && r.stderr.split('\n')[2].startsWith(msg('en', 'error.extra_positional_hint_quote').split('{example}')[0]) },
+  ];
+  const r8 = await pool(en, 8, c => run(c.argv, 'en'));
+  r8.forEach((r, i) => check('C-8', 'LANG_ENV=en: ' + en[i].id + ' の本文とヒントが英語で出る', r.code === 1 && en[i].lines(r) && !/[぀-ヿ一-鿿]/.test(r.stderr), 'stderr=' + JSON.stringify(r.stderr).slice(0, 300)));
+
+  // ── 情報表示: ガードを宣言していない（exempt / unguarded）spec の一覧。失敗要因にはしない。
+  //    塞ぐか仕様として残すかを1件ずつ決める判断材料（R2 は挙動を変えないので塞がない）
+  const ung = keys.filter(k => specs[k].unknownFlag.unguarded);
+  const exm = keys.filter(k => specs[k].unknownFlag.exempt);
+  info('unguarded（ガード未配線のまま残している）' + ung.length + ' 件: ' + ung.join(', '));
+  info('exempt（意図的にガードしない）' + exm.length + ' 件: ' + exm.join(', '));
+  const noExtra = keys.filter(k => specs[k].unknownFlag.slots && !specs[k].extraPositional);
+  info('guardExtraPositional を宣言していない slots あり spec ' + noExtra.length + ' 件（非フラグの余剰語を黙って捨てる経路を含む）: ' + noExtra.join(', '));
+
+  // 実行したアサーション数が、宣言から数えた期待数と一致すること（途中で飛ばされた検査を黙って PASS にしない）
+  const expected = 2 + u3.length + a3.length + Object.keys(S_BASES).length + c5.length + c6.length + fixed.length + en.length;
+  const done = out.filter(l => l.startsWith('ok\t') || l.startsWith('ng\t')).length;
+  check('C-0', 'アサーション数が宣言から数えた期待数と一致する（期待 ' + expected + ' 件）', done === expected, '実行 ' + done + ' 件 / 期待 ' + expected + ' 件');
+  process.stdout.write(out.join('\n') + '\n');
+  fs.rmSync(TMPROOT, { recursive: true, force: true });
+})().catch((e) => { console.error(e && e.stack || e); process.exit(2); });
+W56_CONFORMANCE_EOF
+
+_W56_OUT=$(node "$_W56_TMP" "$ENGINE" "$STUB" 2>"$_W56_TMP.err"); _W56_EC=$?
+if [ "$_W56_EC" -ne 0 ]; then
+  printf "  ❌ §W56 適合テストの実行失敗 (exit %s): %s\n" "$_W56_EC" "$(head -c 600 "$_W56_TMP.err" 2>/dev/null)"; FAIL=$((FAIL+1))
+else
+  _W56_N=0
+  while IFS=$'\t' read -r _st _desc _detail; do
+    [ -z "$_st" ] && continue
+    case "$_st" in
+      ok) printf "  ✅ §W56 %s\n" "$_desc"; PASS=$((PASS+1)); _W56_N=$((_W56_N+1)) ;;
+      info) printf "  ℹ️  §W56 %s\n" "$_desc" ;;
+      *) printf "  ❌ §W56 %s\n     %s\n" "$_desc" "$_detail"; FAIL=$((FAIL+1)); _W56_N=$((_W56_N+1)) ;;
+    esac
+  done <<< "$_W56_OUT"
+  # 出力が空・極端に少ないときは検査が空振りしている（読めなかった場合の既定値を「問題なし」にしない）
+  if [ "$_W56_N" -lt 50 ]; then
+    printf "  ❌ §W56 適合テストのアサーション数が少なすぎる (%s 件。50 件未満は検査の空振りとみなす)\n" "$_W56_N"; FAIL=$((FAIL+1))
+  fi
+fi
+rm -f "$_W56_TMP" "$_W56_TMP.err"
+
 echo ""
 echo "=========================================="
 W_TOTAL=$((PASS+FAIL))
