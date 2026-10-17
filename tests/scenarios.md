@@ -2270,3 +2270,50 @@ bash ~/.claude/todo.sh search --keywrd foo
 既存のテストスイート全件が本変更後も引き続き PASS することで確認する（`bash tests/run-tests.sh`）。
 `due`/`recur`/`link`/`priority` の余剰なし呼び出し、`search`/`archive search` のフラグなしキーワードが従来どおり通ることは
 §W16-5・§W28-20b/21b/22a・§W31-7・§W32-2/4 で自動検証済み。
+
+## 50. 差分ハーネスと固定テスト（Issue #2102 R3 PR-0）
+
+エンジンの内部整理（挙動を変えない抽出）の前に、現状を固定する。自動テスト（`tests/run-tests-write.sh` §W58）と差分ハーネスで確認する。実 GitHub・実 HOME には触れない（HOME は一時ディレクトリ、API はスタブ）。
+
+### 50-1. 親 project の確認に失敗したとき（T-e1 / T-e2 / T-e3）
+
+- `template use`（テンプレートに project 番号あり）: 親が project でない / 親の取得に失敗 → 警告を stderr に出し、Issue は作成済みのまま exit 0。sub-issue は登録しない
+- `migrate sub-issue`: 親の取得失敗は errors、親が project でないものは skipped に数える。sub-issue は登録しない
+- `link <#> <project#>`: 親の取得に失敗 → `Failed to fetch project` で exit 1。Issue は更新しない
+
+### 50-2. 絵文字なしの GTD ラベルを持つ Issue（T-b1）
+
+- `move <#> next`（ラベルが `next` のみ）: `next` を外して `🎯 next` を付ける
+- `promote`: ラベルが `next` の Issue は昇格対象から外れ、`someday` の Issue は昇格する
+- `done`: 完了した Issue を `depends_on` にしている Issue のうち、`next` のものは昇格せず `someday` のものだけが昇格する
+
+### 50-3. API 呼び出しの順序（T-b2 / T-c1）
+
+- `promote-project`: 旧 GTD ラベルの削除 → ラベル存在確認 → 付与
+- `priority` / `edit --priority`: 旧優先度の削除 → ラベル存在確認 → 付与（`edit` はその後に本文を更新）。`bulk priority` はラベル存在確認を最初に1回だけ行う
+
+### 50-4. ラベル作成時の色（T-d1）
+
+- ctx（`@`）は `FBCA04`、tag（`#`）は `0075CA`。`template use` では `context` の要素が `#` で始まっていても ctx の色。`--label` の追加ラベルは `EDEDED`
+
+### 50-5. `--body-file` に読めないパス（T-f1）
+
+- `add` / `comment` にディレクトリを渡す → `Failed to read --body-file` で exit 1。Issue もコメントも作られない
+
+### 50-6. `bulk` の番号列に数字でない語が混ざったとき・`--actual` の不正値（T-a1）
+
+- `bulk done 42 43abc 44` は #42 だけを処理して exit 0（`43abc` と `44` は黙って無視される）。`bulk tag 42 43abc @x` は `43abc` を `@43abc` ラベルとして作る。`bulk move` / `bulk priority` は不正な引数としてエラーにする。これらは現状の固定であり、数字でない語が混ざったら何も処理せずエラーにする変更の前提になる
+- `bulk done 43 44 --actual xyz` は actual を書かずに2件を閉じて exit 0（単体の `done --actual xyz` は exit 1）
+
+### 50-7. `show --json` / `list --json` の出力全体（T-i1）
+
+- 絵文字付きラベルと絵文字なしラベルの Issue を、`show --json`（`state` / `closedAt` を含み、`labels` は生の名前）と `list --json`（`labels` は正規化済み）で出力し、全文を固定する
+
+### 50-8. 差分ハーネス
+
+```
+git show <変更前のコミット>:todo-engine.js > /tmp/engine-old.js
+node tests/tools/engine-diff-harness.js --old /tmp/engine-old.js --new todo-engine.js
+```
+
+期待: 全ケースで変更前のエンジンの marker が現れ（到達）、新旧の stdout / stderr / 終了コード / スタブログ / HOME 配下のファイルが一致して `RESULT: OK`。意図的にずれを入れたエンジンのコピーでは不一致が報告される。隔離が効いていない（HOME が一時ディレクトリ配下でない・スタブが効かない）ときは1件も実行せず exit 2。

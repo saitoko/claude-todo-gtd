@@ -6017,6 +6017,392 @@ w57_run run done 042
 assert_contains "W57-B 先頭ゼロ 042 は 42 として受け付ける（issues.get の issue_number が 42）" '"issue_number":42' "$(log_lines_for_method "$W57_LOG" issues.get)"
 rm -rf "$W57_HOME"
 
+# ── §W58 R3 PR-0: 既存テストが届いていなかった分岐の現状固定（Issue #2102 R3） ──
+# R3（ドメインヘルパの抽出）で内部を整理する前に、「いま何が起きるか」を固定しておくテスト群。
+# 差分ハーネス（tests/tools/engine-diff-harness.js）は「前後で同じか」を見るもので、現状の挙動そのものは
+# 固定しない。ここで固定するのは、既存テストが届いていなかった次の分岐:
+#   T-e1/e2/e3 親 project の確認（template use / migrate / link の失敗分岐）
+#   T-b1       絵文字なしの GTD ラベルを持つ Issue の move / promote / done の昇格
+#   T-b2       promote-project の API 呼び出し順
+#   T-c1       優先度ラベル付け替えの API 呼び出し順（priority / edit / bulk）
+#   T-d1       ctx / tag ラベル作成時の色（add / template use / tag / bulk tag）
+#   T-f1       --body-file に読めないパス（ディレクトリ）を渡したとき
+#   T-a1       bulk の番号列に数字でない語が混ざったときの現状 と bulk done --actual 不正値の現状
+#   T-i1       show --json / list --json の出力全体
+# 挙動を意図して変える変更（「揃える」と決めたもの）では、該当アサーションの期待値を書き換える。
+# 安全条件: HOME を一時ディレクトリに隔離し、OCTOKIT_STUB_ENV でスタブを指定する（w58_run が両方を強制する）。
+echo ""
+echo "§W58  R3 PR-0 固定テスト（Issue #2102 R3）"
+
+W58_P0=$PASS
+W58_HOME=$(mktemp -d /tmp/todo-test-w58-XXXXXX)
+W58_LOG="$W58_HOME/stub.jsonl"
+W58_L='GET /repos/{owner}/{repo}/labels/{name}'
+W58_SUB='POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues'
+W58_E404='{"__throw":true,"status":404,"message":"Not Found"}'
+W58_E500='{"__throw":true,"status":500,"message":"boom"}'
+
+# w58_run <responses-json> <args...>: 隔離 HOME・スタブ指定・ログ初期化を強制して実行する。
+# W58_OUT=stdout / W58_ERR=stderr / W58_EC=終了コード。隔離 HOME が作れていなければ実行しない（実 HOME を触らない）。
+w58_run() {
+  case "$W58_HOME" in
+    /tmp/todo-test-w58-??????) : ;;
+    *) printf "  ❌ W58 隔離 HOME を作れていないため実行しない (%s)\n" "$W58_HOME"; FAIL=$((FAIL+1)); W58_OUT=""; W58_ERR=""; W58_EC=99; return 1 ;;
+  esac
+  [ -d "$W58_HOME" ] || { printf "  ❌ W58 隔離 HOME が存在しない\n"; FAIL=$((FAIL+1)); W58_OUT=""; W58_ERR=""; W58_EC=99; return 1; }
+  : > "$W58_LOG"
+  local resp="$1"; shift
+  W58_OUT=$(HOME="$W58_HOME" LANG_ENV=en OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$resp" OCTOKIT_STUB_LOG_ENV="$W58_LOG" \
+    TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-10-18 \
+    node "$ENGINE" "$@" 2>"$W58_HOME/stderr"); W58_EC=$?
+  W58_ERR=$(cat "$W58_HOME/stderr")
+}
+
+# スタブログの呼び出し順を ' > ' でつないで返す（ラベル存在確認と sub-issue 登録は短縮名）。
+# ログが読めないときは ERR を返す（「読めない」を「呼び出しなし」にしない）。
+w58_seq() {
+  LOGFILE="$1" node -e "
+    const fs=require('fs'); const f=process.env.LOGFILE;
+    if(!fs.existsSync(f)){process.stdout.write('ERR');process.exit(0);}
+    const short={'GET /repos/{owner}/{repo}/labels/{name}':'LABEL?','POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues':'SUB+'};
+    const out=[];
+    for(const l of fs.readFileSync(f,'utf8').split('\n').filter(Boolean)){try{const m=JSON.parse(l).method;out.push(short[m]||m);}catch(e){process.stdout.write('ERR');process.exit(0);}}
+    process.stdout.write(out.join(' > '));"
+}
+
+# createLabel の呼び出しを name=color の列にして返す
+w58_colors() {
+  LOGFILE="$1" node -e "
+    const fs=require('fs'); const f=process.env.LOGFILE;
+    if(!fs.existsSync(f)){process.stdout.write('ERR');process.exit(0);}
+    const out=[];
+    for(const l of fs.readFileSync(f,'utf8').split('\n').filter(Boolean)){try{const j=JSON.parse(l);if(j.method==='issues.createLabel')out.push(j.args.name+'='+j.args.color);}catch(e){process.stdout.write('ERR');process.exit(0);}}
+    process.stdout.write(out.join(','));"
+}
+
+# w58_issue <番号> <ラベルをカンマ区切り> [body]: issues.get 用の Issue JSON を返す
+w58_issue() {
+  local n="$1" labels="$2" body="${3:-}" ljson="" l
+  local IFS=','
+  for l in $labels; do ljson="$ljson{\"name\":\"$l\"},"; done
+  ljson="${ljson%,}"
+  printf '{"number":%s,"id":9%s,"title":"W58 issue %s","body":"%s","labels":[%s],"state":"open"}' "$n" "$n" "$n" "$body" "$ljson"
+}
+# w58_open <番号> <ラベル> [body]: issues.listForRepo 用の Issue JSON を返す
+w58_open() {
+  local n="$1" labels="$2" body="${3:-}" ljson="" l
+  local IFS=','
+  for l in $labels; do ljson="$ljson{\"name\":\"$l\"},"; done
+  ljson="${ljson%,}"
+  printf '{"number":%s,"id":9%s,"title":"W58 open %s","body":"%s","labels":[%s],"updated_at":"2026-10-01T00:00:00Z"}' "$n" "$n" "$n" "$body" "$ljson"
+}
+
+# ── T-e1: template use の親 project 確認（Issue 作成の「後」に確認し、失敗分岐は警告して exit 0） ──
+mkdir -p "$W58_HOME/.claude"
+printf '%s' '{"w58tpl":{"gtd":"next","project":710}}' > "$W58_HOME/.claude/todo-templates.json"
+W58_CREATE='"issues.create":[{"data":{"number":71001,"id":971001,"html_url":"https://example.invalid/71001"}}]'
+
+w58_run "{\"$W58_L\":[{}],$W58_CREATE,\"issues.get\":[{\"data\":$(w58_issue 710 '📁 project')}],\"$W58_SUB\":[{\"data\":{}}]}" run template use w58tpl
+assert_exit_ok "W58 T-e1【対照】親が project: exit 0" "$W58_EC"
+assert_eq "W58 T-e1【対照】親が project: 作成 → 親取得 → sub-issue 登録の順" "LABEL? > issues.create > issues.get > SUB+" "$(w58_seq "$W58_LOG")"
+assert_not_contains "W58 T-e1【対照】警告は出ない" "is not a project" "$W58_ERR"
+
+w58_run "{\"$W58_L\":[{}],$W58_CREATE,\"issues.get\":[{\"data\":$(w58_issue 710 '🎯 next')}]}" run template use w58tpl
+assert_exit_ok "W58 T-e1 親が project でない: exit 0（警告して終わる）" "$W58_EC"
+assert_contains "W58 T-e1 親が project でない: warn.not_a_project" "⚠️ #710 is not a project" "$W58_ERR"
+assert_eq "W58 T-e1 親が project でない: Issue は作成済み・sub-issue 登録なし" "LABEL? > issues.create > issues.get" "$(w58_seq "$W58_LOG")"
+assert_contains "W58 T-e1 親が project でない: 作成完了メッセージは出ている" "Created Issue #71001" "$W58_OUT"
+
+w58_run "{\"$W58_L\":[{}],$W58_CREATE,\"issues.get\":[$W58_E500]}" run template use w58tpl
+assert_exit_ok "W58 T-e1 親の取得失敗: exit 0（警告して終わる）" "$W58_EC"
+assert_contains "W58 T-e1 親の取得失敗: warn.project_fetch_failed" "⚠️ Failed to fetch project #710: boom" "$W58_ERR"
+assert_eq "W58 T-e1 親の取得失敗: Issue は作成済み・sub-issue 登録なし" "LABEL? > issues.create > issues.get" "$(w58_seq "$W58_LOG")"
+
+# ── T-e2: migrate sub-issue の親確認（取得失敗 → errors / project でない → skipped） ──
+W58_MIG_LIST="\"issues.listForRepo\":[{\"data\":[$(w58_open 721 '🎯 next' 'project: #720\n')]}]"
+w58_run "{$W58_MIG_LIST,\"issues.get\":[{\"data\":$(w58_issue 720 '📁 project')}],\"$W58_SUB\":[{\"data\":{}}]}" run migrate sub-issue
+assert_contains "W58 T-e2【対照】親が project: 1 registered / 0 skipped / 0 errors" "1 registered / 0 skipped / 0 errors" "$W58_OUT"
+w58_run "{$W58_MIG_LIST,\"issues.get\":[$W58_E500]}" run migrate sub-issue
+assert_contains "W58 T-e2 親の取得失敗: errors に数える" "0 registered / 0 skipped / 1 errors" "$W58_OUT"
+assert_contains "W58 T-e2 親の取得失敗: warn.parent_fetch_failed" "⚠️ Failed to fetch parent #720: boom" "$W58_ERR"
+assert_eq "W58 T-e2 親の取得失敗: sub-issue 登録なし" "issues.listForRepo > issues.get" "$(w58_seq "$W58_LOG")"
+w58_run "{$W58_MIG_LIST,\"issues.get\":[{\"data\":$(w58_issue 720 '🎯 next')}]}" run migrate sub-issue
+assert_contains "W58 T-e2 親が project でない: skipped に数える" "0 registered / 1 skipped / 0 errors" "$W58_OUT"
+assert_contains "W58 T-e2 親が project でない: warn.parent_no_project_label" "does not have the 📁 project label → skipped (#721)" "$W58_ERR"
+assert_eq "W58 T-e2 親が project でない: sub-issue 登録なし" "issues.listForRepo > issues.get" "$(w58_seq "$W58_LOG")"
+
+# ── T-e3: link の親確認（取得失敗は exit 1。書き込みなし） ──
+w58_run "{\"issues.get\":[{\"data\":$(w58_issue 730 '🎯 next')},$W58_E500]}" run link 730 731
+assert_exit_fail "W58 T-e3 親の取得失敗: exit 1" "$W58_EC"
+assert_contains "W58 T-e3 親の取得失敗: error.project_fetch_failed" "Error: Failed to fetch project #731: boom" "$W58_ERR"
+assert_eq "W58 T-e3 親の取得失敗: issues.update 0 回" "0" "$(log_count "$W58_LOG" issues.update)"
+assert_eq "W58 T-e3 親の取得失敗: 子 → 親の取得だけで止まる（sub-issue 登録なし）" "issues.get > issues.get" "$(w58_seq "$W58_LOG")"
+w58_run "{\"issues.get\":[{\"data\":$(w58_issue 730 '🎯 next')},{\"data\":$(w58_issue 731 '📁 project')}],\"issues.update\":[{}],\"$W58_SUB\":[{\"data\":{}}]}" run link 730 731
+assert_exit_ok "W58 T-e3【対照】親が project: exit 0" "$W58_EC"
+assert_eq "W58 T-e3【対照】親が project: 更新 → sub-issue 登録" "issues.get > issues.get > issues.update > SUB+" "$(w58_seq "$W58_LOG")"
+
+# ── T-b1: 絵文字なしの GTD ラベルを持つ Issue ──
+# move は旧ラベル（'next'）と新ラベル（'🎯 next'）が文字列として違うので、削除してから付け直す。
+w58_run "{\"issues.get\":[{\"data\":$(w58_issue 740 'next')}],\"issues.removeLabel\":[{}],\"issues.addLabels\":[{}]}" run move 740 next
+assert_eq "W58 T-b1 move: 絵文字なし next → next は remove + add になる" "issues.get > issues.removeLabel > issues.addLabels" "$(w58_seq "$W58_LOG")"
+assert_contains "W58 T-b1 move: 外すのは 'next'" '"name":"next"' "$(log_lines_for_method "$W58_LOG" issues.removeLabel)"
+assert_contains "W58 T-b1 move: 付けるのは '🎯 next'" '"labels":["🎯 next"]' "$(log_lines_for_method "$W58_LOG" issues.addLabels)"
+w58_run "{\"issues.get\":[{\"data\":$(w58_issue 741 '🎯 next')}],\"issues.addLabels\":[{}]}" run move 741 next
+assert_eq "W58 T-b1【対照】move: 絵文字付き next → next は remove しない" "issues.get > issues.addLabels" "$(w58_seq "$W58_LOG")"
+# promote は normLabel で比較するので、絵文字なしの next も「すでに next」として飛ばす。
+w58_run "{\"issues.listForRepo\":[{\"data\":[$(w58_open 742 'next' 'activate: 2026-10-01\n')]}]}" run promote
+assert_eq "W58 T-b1 promote: 絵文字なし next は昇格対象から外れる（書き込みなし）" "issues.listForRepo" "$(w58_seq "$W58_LOG")"
+w58_run "{\"issues.listForRepo\":[{\"data\":[$(w58_open 743 'someday' 'activate: 2026-10-01\n')]}],\"issues.removeLabel\":[{}],\"issues.addLabels\":[{}]}" run promote
+assert_eq "W58 T-b1【対照】promote: 絵文字なし someday は昇格する" "issues.listForRepo > issues.removeLabel > issues.addLabels" "$(w58_seq "$W58_LOG")"
+assert_contains "W58 T-b1【対照】promote: 外すのは 'someday'" '"name":"someday"' "$(log_lines_for_method "$W58_LOG" issues.removeLabel)"
+# done の depends_on 昇格（postDoneProcessing）も normLabel で比較する。
+W58_DEP_LIST="\"issues.listForRepo\":[{\"data\":[$(w58_open 751 'next' 'depends_on: #750\n'),$(w58_open 752 'someday' 'depends_on: #750\n')]}]"
+w58_run "{\"issues.get\":[{\"data\":$(w58_issue 750 '🎯 next')}],\"issues.update\":[{}],$W58_DEP_LIST,\"issues.removeLabel\":[{}],\"issues.addLabels\":[{}]}" run done 750
+assert_eq "W58 T-b1 done: 絵文字なし next の #751 は昇格しない・絵文字なし someday の #752 だけ昇格する" "issues.get > issues.update > issues.listForRepo > issues.removeLabel > issues.addLabels" "$(w58_seq "$W58_LOG")"
+assert_contains "W58 T-b1 done: 昇格したのは #752" '"issue_number":752' "$(log_lines_for_method "$W58_LOG" issues.addLabels)"
+
+# ── T-b2: promote-project の API 呼び出し順（旧 GTD ラベルの削除 → ラベル存在確認 → 付与） ──
+w58_run "{\"issues.get\":[{\"data\":$(w58_issue 760 '🎯 next')}],\"issues.removeLabel\":[{}],\"$W58_L\":[{}],\"issues.addLabels\":[{}]}" run promote-project 760
+assert_exit_ok "W58 T-b2 promote-project: exit 0" "$W58_EC"
+assert_eq "W58 T-b2 呼び出し順: get → 旧 GTD 削除 → ラベル確認 → 付与" "issues.get > issues.removeLabel > LABEL? > issues.addLabels" "$(w58_seq "$W58_LOG")"
+w58_run "{\"issues.get\":[{\"data\":$(w58_issue 761 '🎯 next')}],\"issues.removeLabel\":[{}],\"$W58_L\":[$W58_E404],\"issues.createLabel\":[{}],\"issues.addLabels\":[{}]}" run promote-project 761
+assert_eq "W58 T-b2 ラベルが無いとき: 削除 → 確認 → 作成 → 付与" "issues.get > issues.removeLabel > LABEL? > issues.createLabel > issues.addLabels" "$(w58_seq "$W58_LOG")"
+assert_eq "W58 T-b2 作成するラベルの色" "📁 project=0052CC" "$(w58_colors "$W58_LOG")"
+w58_run "{\"issues.get\":[{\"data\":$(w58_issue 762 '🎯 next')}],\"issues.removeLabel\":[{}],\"$W58_L\":[$W58_E500]}" run promote-project 762
+assert_exit_fail "W58 T-b2 ラベル確認の失敗: exit 1" "$W58_EC"
+assert_eq "W58 T-b2 ラベル確認が失敗しても旧 GTD ラベルは先に外れている（現状）" "issues.get > issues.removeLabel > LABEL?" "$(w58_seq "$W58_LOG")"
+
+# ── T-c1: 優先度ラベル付け替えの API 呼び出し順 ──
+w58_run "{\"issues.get\":[{\"data\":$(w58_issue 770 '🎯 next,p3')}],\"issues.removeLabel\":[{}],\"$W58_L\":[{}],\"issues.addLabels\":[{}]}" run priority 770 p1
+assert_eq "W58 T-c1 priority: get → 旧優先度削除 → ラベル確認 → 付与" "issues.get > issues.removeLabel > LABEL? > issues.addLabels" "$(w58_seq "$W58_LOG")"
+w58_run "{\"issues.get\":[{\"data\":$(w58_issue 771 '🎯 next,p2')}],\"issues.removeLabel\":[{}],\"$W58_L\":[{}],\"issues.addLabels\":[{}]}" run priority 771 p2
+assert_eq "W58 T-c1 priority p2 → p2: 一度削除して付け直す" "issues.get > issues.removeLabel > LABEL? > issues.addLabels" "$(w58_seq "$W58_LOG")"
+w58_run "{\"issues.get\":[{\"data\":$(w58_issue 772 '🎯 next,p2')}],\"issues.removeLabel\":[{}]}" run priority 772 clear
+assert_eq "W58 T-c1 priority clear: 削除だけ" "issues.get > issues.removeLabel" "$(w58_seq "$W58_LOG")"
+w58_run "{\"issues.get\":[{\"data\":$(w58_issue 773 '🎯 next,p3')}],\"issues.removeLabel\":[{}],\"$W58_L\":[$W58_E500]}" run priority 773 p1
+assert_exit_fail "W58 T-c1 priority: ラベル確認の失敗は exit 1" "$W58_EC"
+assert_eq "W58 T-c1 priority: ラベル確認が失敗しても旧優先度は先に外れている（現状）" "issues.get > issues.removeLabel > LABEL?" "$(w58_seq "$W58_LOG")"
+w58_run "{\"issues.get\":[{\"data\":$(w58_issue 774 '🎯 next,p3')}],\"issues.removeLabel\":[{}],\"$W58_L\":[{}],\"issues.addLabels\":[{}],\"issues.update\":[{}]}" run edit 774 --priority p2
+assert_eq "W58 T-c1 edit --priority: 旧優先度削除 → ラベル確認 → 付与 → 本文更新" "issues.get > issues.removeLabel > LABEL? > issues.addLabels > issues.update" "$(w58_seq "$W58_LOG")"
+w58_run "{\"issues.get\":[{\"data\":$(w58_issue 775 '🎯 next,p3')}],\"issues.removeLabel\":[{}],\"$W58_L\":[$W58_E500]}" run edit 775 --priority p2
+assert_exit_fail "W58 T-c1 edit --priority: ラベル確認の失敗は exit 1" "$W58_EC"
+assert_eq "W58 T-c1 edit --priority: 失敗すると旧優先度だけ外れ、本文は更新されない（現状）" "issues.get > issues.removeLabel > LABEL?" "$(w58_seq "$W58_LOG")"
+# bulk priority は、ラベル確認をループの外で1回だけ・最初の削除より前に行う
+w58_run "{\"$W58_L\":[{}],\"issues.get\":[{\"data\":$(w58_issue 776 '🎯 next,p3')},{\"data\":$(w58_issue 777 '🎯 next')}],\"issues.removeLabel\":[{}],\"issues.addLabels\":[{},{}]}" run bulk priority 776 777 p2
+assert_eq "W58 T-c1 bulk priority: ラベル確認は最初に1回だけ" "LABEL? > issues.get > issues.removeLabel > issues.addLabels > issues.get > issues.addLabels" "$(w58_seq "$W58_LOG")"
+w58_run "{\"$W58_L\":[$W58_E500]}" run bulk priority 778 p1
+assert_exit_fail "W58 T-c1 bulk priority: ラベル確認の失敗は exit 1" "$W58_EC"
+assert_eq "W58 T-c1 bulk priority: ラベル確認が失敗したら Issue には何もしない" "LABEL?" "$(w58_seq "$W58_LOG")"
+w58_run "{\"issues.get\":[{\"data\":$(w58_issue 779 '🎯 next,p1')}],\"issues.removeLabel\":[{}]}" run bulk priority 779 clear
+assert_eq "W58 T-c1 bulk priority clear: ラベル確認なし・削除だけ" "issues.get > issues.removeLabel" "$(w58_seq "$W58_LOG")"
+
+# ── T-d1: ctx / tag ラベル作成時の色（ctx = FBCA04 / tag = 0075CA）。色の取り違えを検出する ──
+w58_run "{\"$W58_L\":[$W58_E404,$W58_E404,{}],\"issues.createLabel\":[{},{}],\"issues.create\":[{\"data\":{\"number\":78001,\"id\":978001,\"html_url\":\"x\"}}]}" run add next w58-task @w58a '#w58b'
+assert_exit_ok "W58 T-d1 add @ctx #tag: exit 0" "$W58_EC"
+assert_eq "W58 T-d1 add: ctx は FBCA04・tag は 0075CA" "@w58a=FBCA04,#w58b=0075CA" "$(w58_colors "$W58_LOG")"
+printf '%s' '{"w58ctx":{"gtd":"next","context":["@w58c","#w58hash"],"tags":["#w58t"],"priority":"p2"}}' > "$W58_HOME/.claude/todo-templates.json"
+w58_run "{\"$W58_L\":[$W58_E404,$W58_E404,$W58_E404,{}],\"issues.createLabel\":[{},{},{}],\"issues.create\":[{\"data\":{\"number\":78002,\"id\":978002,\"html_url\":\"x\"}}]}" run template use w58ctx
+assert_exit_ok "W58 T-d1 template use: exit 0" "$W58_EC"
+assert_eq "W58 T-d1 template use: context の要素は '#' で始まっていても ctx の色 FBCA04、tags は 0075CA" "@w58c=FBCA04,#w58hash=FBCA04,#w58t=0075CA" "$(w58_colors "$W58_LOG")"
+w58_run "{\"$W58_L\":[$W58_E404,$W58_E404],\"issues.createLabel\":[{},{}],\"issues.addLabels\":[{}]}" run tag 78003 '#w58tg' @w58cx
+assert_eq "W58 T-d1 tag: 指定順に作成・色は '#' なら 0075CA / '@' なら FBCA04" "#w58tg=0075CA,@w58cx=FBCA04" "$(w58_colors "$W58_LOG")"
+w58_run "{\"$W58_L\":[$W58_E404,$W58_E404],\"issues.createLabel\":[{},{}],\"issues.addLabels\":[{},{}]}" run bulk tag 78004 78005 @w58bx '#w58bt'
+assert_eq "W58 T-d1 bulk tag: ctx は FBCA04・tag は 0075CA" "@w58bx=FBCA04,#w58bt=0075CA" "$(w58_colors "$W58_LOG")"
+w58_run "{\"$W58_L\":[{},$W58_E404],\"issues.createLabel\":[{}],\"issues.create\":[{\"data\":{\"number\":78006,\"id\":978006,\"html_url\":\"x\"}}]}" run add next w58-extra --label w58extra
+assert_eq "W58 T-d1 add --label: 追加ラベルは EDEDED" "w58extra=EDEDED" "$(w58_colors "$W58_LOG")"
+
+# ── T-f1: --body-file に読めないパス（ディレクトリ）を渡す ──
+mkdir -p "$W58_HOME/adir"
+w58_run "{\"$W58_L\":[{}]}" run add next w58-bf --body-file "$W58_HOME/adir"
+assert_exit_fail "W58 T-f1 add --body-file ディレクトリ: exit 1" "$W58_EC"
+assert_contains "W58 T-f1 add: error.body_file_read_failed" "Error: Failed to read --body-file:" "$W58_ERR"
+assert_eq "W58 T-f1 add: issues.create は呼ばれない" "0" "$(log_count "$W58_LOG" issues.create)"
+w58_run "{}" run comment 78010 --body-file "$W58_HOME/adir"
+assert_exit_fail "W58 T-f1 comment --body-file ディレクトリ: exit 1" "$W58_EC"
+assert_contains "W58 T-f1 comment: error.body_file_read_failed" "Error: Failed to read --body-file:" "$W58_ERR"
+assert_eq "W58 T-f1 comment: API 呼び出しなし" "" "$(w58_seq "$W58_LOG")"
+printf 'from file' > "$W58_HOME/ok.txt"
+w58_run "{\"issues.createComment\":[{\"data\":{\"html_url\":\"x\"}}]}" run comment 78011 --body-file "$W58_HOME/ok.txt"
+assert_exit_ok "W58 T-f1【対照】comment --body-file 実ファイル: exit 0" "$W58_EC"
+assert_contains "W58 T-f1【対照】本文はファイルの中身" '"body":"from file"' "$(log_lines_for_method "$W58_LOG" issues.createComment)"
+
+# ── T-a1: bulk の番号列に数字でない語が混ざったときの現状（Issue #2102 R3 の判断 J12 で将来変える） ──
+# 現状: 番号は先頭から「数字だけのトークン」を集め、最初の数字でない語から後ろは操作ごとの引数として読む。
+W58_B42="\"issues.get\":[{\"data\":$(w58_issue 42 '🎯 next')}],\"issues.update\":[{}],\"issues.listForRepo\":[{\"data\":[]}]"
+w58_run "{$W58_B42}" run bulk done 42 43abc 44
+assert_exit_ok "W58 T-a1 bulk done 42 43abc 44: exit 0（現状）" "$W58_EC"
+assert_contains "W58 T-a1 bulk done 42 43abc 44: #42 だけ完了（1 completed）" "✅ 1 completed" "$W58_OUT"
+assert_eq "W58 T-a1 bulk done 42 43abc 44: 処理されるのは #42 だけ。'43abc' と 44 は黙って無視される" "issues.get > issues.update > issues.listForRepo" "$(w58_seq "$W58_LOG")"
+assert_contains "W58 T-a1: 閉じたのは #42" '"issue_number":42' "$(log_lines_for_method "$W58_LOG" issues.update)"
+w58_run "{$W58_B42}" run bulk done 43abc 42
+assert_exit_fail "W58 T-a1 bulk done 43abc 42: 先頭が数字でないと番号なしで exit 1" "$W58_EC"
+assert_contains "W58 T-a1: error.no_issue_numbers" "No issue numbers specified." "$W58_ERR"
+assert_eq "W58 T-a1 bulk done 43abc 42: API 呼び出しなし" "" "$(w58_seq "$W58_LOG")"
+# bulk tag は '43abc' を ctx 名として読み、'@43abc' というラベルを作って付ける（番号のつもりの語が別物になる）
+w58_run "{\"$W58_L\":[$W58_E404,$W58_E404],\"issues.createLabel\":[{},{}],\"issues.addLabels\":[{}]}" run bulk tag 42 43abc @w58x
+assert_exit_ok "W58 T-a1 bulk tag 42 43abc @w58x: exit 0（現状）" "$W58_EC"
+assert_eq "W58 T-a1 bulk tag: '43abc' が '@43abc' ラベルとして作られる（現状）" "@43abc=FBCA04,@w58x=FBCA04" "$(w58_colors "$W58_LOG")"
+assert_contains "W58 T-a1 bulk tag: #42 に @43abc @w58x が付く" '"labels":["@43abc","@w58x"]' "$(log_lines_for_method "$W58_LOG" issues.addLabels)"
+# bulk move / priority は '43abc' を引数として読み、不正値としてエラーにする（書き込みなし）
+w58_run "{$W58_B42}" run bulk move 42 43abc 44 next
+assert_exit_fail "W58 T-a1 bulk move 42 43abc 44 next: exit 1（移動先が 43abc と読まれて不正）" "$W58_EC"
+assert_eq "W58 T-a1 bulk move: API 呼び出しなし" "" "$(w58_seq "$W58_LOG")"
+w58_run "{$W58_B42}" run bulk priority 42 43abc p1
+assert_exit_fail "W58 T-a1 bulk priority 42 43abc p1: exit 1（優先度が 43abc と読まれて不正）" "$W58_EC"
+assert_eq "W58 T-a1 bulk priority: API 呼び出しなし" "" "$(w58_seq "$W58_LOG")"
+# bulk done --actual <不正値>: 値を黙って捨て、Issue は閉じる（現状。J1 で変える）
+w58_run "{\"issues.get\":[{\"data\":$(w58_issue 43 '🎯 next')},{\"data\":$(w58_issue 44 '🎯 next')}],\"issues.update\":[{},{}],\"issues.listForRepo\":[{\"data\":[]},{\"data\":[]}]}" run bulk done 43 44 --actual xyz
+assert_exit_ok "W58 T-a1 bulk done --actual xyz: exit 0（現状）" "$W58_EC"
+assert_contains "W58 T-a1 bulk done --actual xyz: 2件とも完了扱い" "✅ 2 completed" "$W58_OUT"
+assert_eq "W58 T-a1 bulk done --actual xyz: 本文更新なし・close だけ（actual は書かれない）" "2" "$(log_count "$W58_LOG" issues.update)"
+assert_not_contains "W58 T-a1 bulk done --actual xyz: actual は本文に書かれない" "actual:" "$(log_lines_for_method "$W58_LOG" issues.update)"
+w58_run "{\"issues.get\":[{\"data\":$(w58_issue 45 '🎯 next')}],\"issues.update\":[{},{}],\"issues.listForRepo\":[{\"data\":[]}]}" run bulk done 45 --actual 30m
+assert_contains "W58 T-a1【対照】bulk done --actual 30m: actual が本文に書かれる" "actual: 30" "$(log_lines_for_method "$W58_LOG" issues.update)"
+w58_run "{\"issues.get\":[{\"data\":$(w58_issue 46 '🎯 next')}]}" run done 46 --actual xyz
+assert_exit_fail "W58 T-a1【対照】単体 done --actual xyz は exit 1（bulk と違い検証する）" "$W58_EC"
+assert_contains "W58 T-a1【対照】単体 done: error.time_format" "Time must be in" "$W58_ERR"
+
+# ── T-i1: show --json / list --json の出力全体（絵文字付きラベル1件・絵文字なしラベル1件） ──
+W58_EMOJI=$(w58_open 51 '🎯 next,@home,p1,#tagA,@claude' 'due: 2026-10-20\nestimate: 1h\nproject: #12\n')
+W58_PLAIN=$(w58_open 52 'next,@office,p2,#tagB,project')
+w58_run "{\"issues.get\":[{\"data\":${W58_EMOJI}}]}" run show 51 --json
+W58_I_EMOJI_EXPECT='{
+  "number": 51,
+  "title": "W58 open 51",
+  "state": "open",
+  "closedAt": null,
+  "gtd": "next",
+  "priority": "p1",
+  "due": "2026-10-20",
+  "estimate": "1h",
+  "estimateFormatted": "1h",
+  "context": [
+    "@home"
+  ],
+  "claude": true,
+  "tags": [
+    "#tagA"
+  ],
+  "recur": null,
+  "project": 12,
+  "activate": null,
+  "dependsOn": null,
+  "resumeCondition": null,
+  "desc": null,
+  "labels": [
+    "🎯 next",
+    "@home",
+    "p1",
+    "#tagA",
+    "@claude"
+  ]
+}'
+assert_eq "W58 T-i1 show --json（絵文字付きラベル）の出力全体" "$W58_I_EMOJI_EXPECT" "$W58_OUT"
+w58_run "{\"issues.get\":[{\"data\":${W58_PLAIN}}]}" run show 52 --json
+W58_I_PLAIN_EXPECT='{
+  "number": 52,
+  "title": "W58 open 52",
+  "state": "open",
+  "closedAt": null,
+  "gtd": null,
+  "priority": "p2",
+  "due": null,
+  "estimate": null,
+  "estimateFormatted": null,
+  "context": [
+    "@office"
+  ],
+  "claude": false,
+  "tags": [
+    "next",
+    "#tagB",
+    "project"
+  ],
+  "recur": null,
+  "project": null,
+  "activate": null,
+  "dependsOn": null,
+  "resumeCondition": null,
+  "desc": null,
+  "labels": [
+    "next",
+    "@office",
+    "p2",
+    "#tagB",
+    "project"
+  ]
+}'
+assert_eq "W58 T-i1 show --json（絵文字なしラベル）の出力全体。gtd は null・tags に 'next' / 'project' が残る（現状）" "$W58_I_PLAIN_EXPECT" "$W58_OUT"
+w58_run "{\"issues.listForRepo\":[{\"data\":[${W58_EMOJI}]},{\"data\":[${W58_PLAIN}]}]}" run list next --json
+W58_I_LIST_EXPECT='[
+  {
+    "number": 51,
+    "title": "W58 open 51",
+    "gtd": "next",
+    "priority": "p1",
+    "due": "2026-10-20",
+    "estimate": "1h",
+    "estimateFormatted": "1h",
+    "context": [
+      "@home"
+    ],
+    "claude": true,
+    "tags": [
+      "#tagA"
+    ],
+    "recur": null,
+    "project": 12,
+    "activate": null,
+    "dependsOn": null,
+    "resumeCondition": null,
+    "desc": null,
+    "labels": [
+      "next",
+      "@home",
+      "p1",
+      "#tagA",
+      "@claude"
+    ]
+  },
+  {
+    "number": 52,
+    "title": "W58 open 52",
+    "gtd": "next",
+    "priority": "p2",
+    "due": null,
+    "estimate": null,
+    "estimateFormatted": null,
+    "context": [
+      "@office"
+    ],
+    "claude": false,
+    "tags": [
+      "#tagB"
+    ],
+    "recur": null,
+    "project": null,
+    "activate": null,
+    "dependsOn": null,
+    "resumeCondition": null,
+    "desc": null,
+    "labels": [
+      "next",
+      "@office",
+      "p2",
+      "#tagB",
+      "project"
+    ]
+  }
+]'
+assert_eq "W58 T-i1 list next --json の出力全体（絵文字付き・絵文字なしの2件。labels は正規化済み）" "$W58_I_LIST_EXPECT" "$W58_OUT"
+
+# 検査の空振り防止: アサーション数が想定より少ないときは失敗にする（読めなかった場合の既定値を「問題なし」にしない）
+W58_N=$((PASS-W58_P0))
+if [ "$W58_N" -lt 80 ]; then
+  printf "  ❌ §W58 アサーション数が少なすぎる (%s 件。80 件未満は検査の空振りとみなす)\n" "$W58_N"; FAIL=$((FAIL+1))
+fi
+rm -rf "$W58_HOME"
+
 echo ""
 echo "=========================================="
 W_TOTAL=$((PASS+FAIL))
