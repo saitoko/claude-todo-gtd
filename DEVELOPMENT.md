@@ -61,7 +61,7 @@ cp todo.sh ~/.claude/todo.sh
 ## テスト
 
 - テストランナー: `bash tests/run-tests.sh`（+ 書き込み系は `bash tests/run-tests-write.sh` として個別実行も可能。通常は `run-tests.sh` から自動的に呼び出される）
-- 自動テスト総件数: **2,321件**（read-only系 1,033 + 書き込み系 1,288。`bash tests/run-tests.sh` の最終行が出す実測値。2026-10-17 時点。全件PASSが目安）
+- 自動テスト総件数: `bash tests/run-tests.sh` の最終行（`結果: N / N テスト通過`）を参照する。件数はテスト追加のたびに変わるため、このファイルには書かない。全件PASSが目安
 - シナリオ一覧: `tests/scenarios.md`
 - 全件 PASS が Pull Request マージの必須条件
 - 件数を更新する際は README.md の記載も合わせて更新する
