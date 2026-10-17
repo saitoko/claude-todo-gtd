@@ -48,6 +48,15 @@ cp todo-engine.js ~/.claude/todo-engine.js
 cp todo.sh ~/.claude/todo.sh
 ```
 
+## エンジンの構造（エントリポイントと export）
+
+`todo-engine.js` はコマンドラインから直接実行されたときだけ `main()` を呼ぶ（ファイル末尾の `if (require.main === module) main();`）。`require()` しても何も実行されず、純粋関数・定数・run ハンドラは `module.exports` から使える。
+
+- `main()` の**呼び出しはファイル末尾に置く**。ファイル後半の `const`（`ADD_USAGE` / `RESERVED_TITLE_GUARD_COMMANDS` 等）が初期化される前にディスパッチャを呼ぶと TDZ で落ちる
+- トップレベルに `function` 宣言を追加したら `module.exports` にも追加する（`tests/run-tests.sh` §54 が export 漏れを検出する）
+- バリデータ・ガード・run ハンドラの多くは失敗時に `process.exit(1)` を直接呼ぶ。プロセス内から異常系を呼ぶテストはテストランナー自身を終了させるので、異常系は従来どおり子プロセスで検証する
+- `tests/run-tests.sh` の一部は `runMain` 以降のソース文字列を正規表現で抽出する（§49 / 1646）。ファイル末尾の export ブロックはその範囲に入るため、`switch` の case 句と同じ形の文字列を書かない
+
 ## テスト
 
 - テストランナー: `bash tests/run-tests.sh`（+ 書き込み系は `bash tests/run-tests-write.sh` として個別実行も可能。通常は `run-tests.sh` から自動的に呼び出される）
