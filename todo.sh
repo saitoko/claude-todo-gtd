@@ -158,27 +158,4 @@ APPLESCRIPT
   fi
 fi
 
-# Inbox・Next件数キャッシュ更新（ステータスライン用）
-# _todo_fetch_counts で1回の API コールで7カテゴリを一括更新する
-# コマンド成功・失敗にかかわらず更新（件数は常に最新状態を反映）
-# エラー時はサイレントに失敗してステータスラインに影響させない
-if [ -n "$TODO_REPO_OWNER" ] && [ -n "$TODO_REPO_NAME" ]; then
-  _COUNTS=$(_todo_fetch_counts)
-  if [ -n "$_COUNTS" ]; then
-    for _PAIR in $_COUNTS; do
-      _CAT="${_PAIR%%:*}"
-      _CNT="${_PAIR##*:}"
-      case "$_CAT" in
-        inbox)     printf '%s' "$_CNT" > "$HOME/.claude/inbox-count"     2>/dev/null || true ;;
-        next)      printf '%s' "$_CNT" > "$HOME/.claude/next-count"      2>/dev/null || true ;;
-        waiting)   printf '%s' "$_CNT" > "$HOME/.claude/waiting-count"   2>/dev/null || true ;;
-        someday)   printf '%s' "$_CNT" > "$HOME/.claude/someday-count"   2>/dev/null || true ;;
-        routine)   printf '%s' "$_CNT" > "$HOME/.claude/routine-count"   2>/dev/null || true ;;
-        project)   printf '%s' "$_CNT" > "$HOME/.claude/projects-count"  2>/dev/null || true ;;
-        reference) printf '%s' "$_CNT" > "$HOME/.claude/reference-count" 2>/dev/null || true ;;
-      esac
-    done
-  fi
-fi
-
 exit $_TODO_EXIT
