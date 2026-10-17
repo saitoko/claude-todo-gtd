@@ -3893,6 +3893,28 @@ async function runAdd(octokit, owner, repo, tokens) {
     dueAutoDerived = true;
   }
   if (parsed.project) validateNumber(parsed.project);
+// Issue #2102(c): --project N の親検証は Issue 作成（issues.create）・ラベル作成より前に行う。
+  // 親が project でなければ何も作らずに exit 1 する（旧実装は作成後に検証していたため、
+  // エラー終了なのに孤児 Issue が残った）。
+  // 取得失敗（ネットワーク断・404 等）は従来どおり警告して作成を続行する: body に
+  // `project: #N` を書くため body メタ経由の親子関係は保たれ、sub-issue 登録だけが省かれる。
+  let parentVerified = false;
+  if (parsed.project) {
+    const parentNum = parseInt(parsed.project);
+    let parentIssue = null;
+    try {
+      parentIssue = await fetchAndParseIssue(octokit, owner, repo, parentNum);
+    } catch (e) {
+      process.stderr.write(tpl('warn.project_fetch_failed', { num: parentNum, msg: e.message })+'\n');
+    }
+    if (parentIssue) {
+      if (!parentIssue.labels.some(l => normLabel(l) === PROJECT_LABEL)) {
+        process.stderr.write(tpl('error.not_a_project', { num: parentNum })+'\n');
+        process.exit(1);
+      }
+      parentVerified = true;
+    }
+  }
   for (const ctx of parsed.contexts) validateCtx(ctx.slice(1));
   for (const tag of parsed.tags) validateTag(tag.slice(1));
   const priority = parsed.priority || 'p3';
@@ -4007,22 +4029,9 @@ async function runAdd(octokit, owner, repo, tokens) {
   createdMsg += '\n' + tpl('add.url_line', { url: data.html_url });
   runOut(createdMsg);
 
-  // sub-issue 登録（--project N 指定時）
-  if (parsed.project) {
-    const parentNum = parseInt(parsed.project);
-    let parentIssue;
-    try {
-      parentIssue = await fetchAndParseIssue(octokit, owner, repo, parentNum);
-    } catch (e) {
-      process.stderr.write(tpl('warn.project_fetch_failed', { num: parentNum, msg: e.message })+'\n');
-      return;
-    }
-    const isProject = parentIssue.labels.some(l => normLabel(l) === PROJECT_LABEL);
-    if (!isProject) {
-      process.stderr.write(tpl('error.not_a_project', { num: parentNum })+'\n');
-      process.exit(1);
-    }
-    await addSubIssue(octokit, owner, repo, parentNum, data.id);
+  // sub-issue 登録（--project N 指定時。親は作成前に検証済み。取得失敗時は登録を省く）
+  if (parentVerified) {
+    await addSubIssue(octokit, owner, repo, parseInt(parsed.project), data.id);
   }
 }
 
