@@ -3893,7 +3893,7 @@ async function runAdd(octokit, owner, repo, tokens) {
     dueAutoDerived = true;
   }
   if (parsed.project) validateNumber(parsed.project);
-// Issue #2102(c): --project N の親検証は Issue 作成（issues.create）・ラベル作成より前に行う。
+  // Issue #2102(c): --project N の親検証は Issue 作成（issues.create）・ラベル作成より前に行う。
   // 親が project でなければ何も作らずに exit 1 する（旧実装は作成後に検証していたため、
   // エラー終了なのに孤児 Issue が残った）。
   // 取得失敗（ネットワーク断・404 等）は従来どおり警告して作成を続行する: body に
