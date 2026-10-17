@@ -76,33 +76,12 @@ const FLAG_FIELD_MAP = {
   contexts: '@ctx', tags: '#tag',
 };
 
-// フィールド名 → それを実際に読むコマンドの一覧（エラーメッセージのヒント用）。
-// 「/todo <cmd>」の <cmd> 部分の文字列のみを保持する（コマンド行の組み立ては呼び出し側）。
-// 本設計の「ハンドラ別 実測表」と1対1で対応する。表を更新したら必ずこちらも更新すること。
-const FLAG_SUPPORTED_BY = {
-  due: ['add', 'edit', 'template save'],
-  desc: ['add', 'edit', 'template save'],
-  recur: ['add', 'edit', 'template save'],
-  project: ['add', 'edit', 'template save'],
-  priority: ['add', 'edit', 'template save'],
-  estimate: ['add', 'edit'],
-  actual: ['done', 'bulk done'],
-  dueOffset: ['template save'],
-  color: ['label add'],
-  activate: ['add', 'edit'],
-  before: ['add', 'edit'],
-  dependsOn: ['add', 'edit'],
-  resumeCondition: ['add', 'edit'],
-  note: ['done', 'move'],
-  body: ['add'],
-  bodyFile: ['add'],
-  labels: ['add'],
-  // #1934 パート1.5 / #1936: @ctx・#tag はいずれも add / list / template save
-  // （インライン形式・save-from 形式の両方）で読まれる。旧実装は #tag だけ
-  // template save から読んでいなかった非対称があったが #1936 で解消済み。
-  contexts: ['add', 'list', 'template save'],
-  tags: ['add', 'list', 'template save'],
-};
+// FLAG_SUPPORTED_BY（フィールド名 → それを実際に読むコマンドの一覧。エラーメッセージのヒント用）は、
+// コマンド仕様の宣言表 COMMAND_SPECS（parseArgs 定義の直前）から導出する（Issue #2102 R2）。
+// 手で更新する表ではない。ヒント文のコマンド並びは COMMAND_SPECS の並び順で決まる。
+// 【この定数ブロックに置かない理由】導出元の COMMAND_SPECS は ADD_USAGE の後ろで定義する。
+// 参照するのは guardUnsupportedFlag の本体（実行時）と module.exports（末尾）だけなので、
+// モジュール評価の途中で読むコードはない。
 
 // ─── i18n ───
 const LANG = process.env.LANG_ENV || 'ja';
@@ -3595,6 +3574,242 @@ const ADD_USAGE = 'Usage: /todo add [GTD] <title> [@ctx...] [#tag...] [--due <da
                 + '[--priority p1|p2|p3] [--p1|--p2|--p3] [--estimate <time>] [--label <name>] [--activate <date>] '
                 + '[--before <duration>] [--depends-on <#>] [--resume-condition <text>]  (see: /todo help)';
 
+// ─── コマンド仕様の宣言表 COMMAND_SPECS（Issue #2102 R2）───
+//
+// run 系コマンドの仕様を1か所に集める。FLAG_SUPPORTED_BY と RESERVED_TITLE_GUARD_COMMANDS は
+// この表から導出する（手で同期する表を作らない）。ハンドラの中の処理（ガードを呼ぶ位置・
+// 引数の出どころ・メッセージ）は変えない。表は「何を宣言するか」だけを持ち、各ハンドラの
+// ガード呼び出しがこの宣言どおりに配線されているかは、適合テスト（tests/run-tests-write.sh §W56）が
+// 子プロセスで毎回検査する（ガード呼び出しの側は表を引かず、許可フラグ・ヒントを自前で持つ。
+// 両者の一致をテストが保証する）。
+//
+// 【この表の並び順は FLAG_SUPPORTED_BY のヒント文の順序になる。並べ替えるとエラーメッセージが変わる】
+// runMain の switch の並びに合わせてある。ヒント文は「add / edit / template save」のように
+// 表の挿入順でコマンド名を並べるため、add < list < done < move < edit < label add <
+// template save < bulk done の前後関係を保つこと。
+//
+// キー: トップレベルは 'due' / 'promote-project'、サブコマンドは '<親> <sub>'（空白区切り）。
+// 「キーに空白を含まない = トップレベル」。FLAG_SUPPORTED_BY の文字列には、このキーがそのまま出る。
+//
+// フィールド:
+//   aliases         : トップレベルのみ。同じハンドラへ振り分ける別名（予約語集合には載るが help の個別行はない）
+//   helpKey         : トップレベルのみ。help() の 'help.<helpKey>' メッセージキー（文字列または配列）
+//   supportedFields : guardUnsupportedFlag を呼ぶ spec だけ。ハンドラが実際に読む FLAG_FIELD_MAP のキー
+//   allowedFlags    : guardUnknownFlag の許可リスト（ハンドラが extra から自前で解釈するフラグ）。省略時は空
+//   unknownFlag     : 【必須】未知フラグ（guardUnknownFlag）の方針。次のどれか1つ:
+//       { slots: { <slot名>: <ヒントのメッセージキー> } }
+//           ガードがある。検査するトークン範囲（スロット）ごとに、実際に渡しているヒントを宣言する。
+//           スロット名は spec ごとの自由な文字列
+//       { exempt: '<理由>' }     意図的にガードしない（過去の設計で決定済み。理由は必須）
+//       { unguarded: '<理由>' }  ガードを持たない現状（挙動を変えないために残している。理由は必須）
+//     この3種類以外の値は足さない（適合テストの分岐が増えて検査が弱くなるため）
+//   extraPositional : guardExtraPositional を呼ぶ spec だけ。{ hint, when? }。when は条件付きのときの説明
+//   note            : 配線の特殊事情・過去の判断
+//
+// 新しいコマンド・サブコマンド・フラグを足すときは、ここに spec を足し、適合テストのプローブ表
+// （tests/run-tests-write.sh §W56）にも足す。プローブの書き忘れはテストが FAIL にする。
+//
+// 【制約】表と導出の初期化式から t() / tpl() を呼ばない（LANG 依存の文字列を入れない）。
+// 表のコメントや文字列に switch の case ラベルと同じ形の文字列を書かない。
+const HINT_TITLE = 'error.unknown_flag_hint';          // 自由記述のタイトルを持つ（add / rename / template use のタイトル）
+const HINT_BODY = 'error.unknown_flag_hint_body';      // 自由記述の本文を持つ（comment / desc）
+const HINT_OPTIONS = 'error.unknown_flag_hint_options'; // 上記以外
+const EXTRA_QUOTE = 'error.extra_positional_hint_quote';   // 値が空白を含みうる（due / recur / activate / --outcome）
+const EXTRA_SINGLE = 'error.extra_positional_hint_single'; // 値が単一トークン（link / priority / view save）
+const NO_ARGS_NOTE = 'runMain がトークンを渡さないため、引数は黙って無視される。塞ぐと挙動が変わるので R2 では残した';
+const TAG_EXEMPT_NOTE = 'normalizeTagTokens が - 始まりを error.option_like_token で弾く（#1686）。ガードを足すと文言が変わる（#1921 第2弾の決定）';
+const VIEW_NAME_NOTE = '名前の後ろのトークンを見ない（#1938 は view save だけを検査する）。塞ぐと挙動が変わるので R2 では残した';
+const PARENT_NOTE = '親 spec。トークンの検査はサブコマンドの spec が持つ（親は不正なサブコマンドの Usage だけを出す）';
+const COMMAND_SPECS = {
+  // GTD ラベル暗黙経路（next <title> 等）と、先頭が非英字の default 経路も同じハンドラ。
+  // 装飾GTDラベル誤爆ガード（guardBracketedGtdLabel、#1928）はタイトル構成トークンに対する別のガード。
+  'add': {
+    helpKey: ['add', 'add_explicit'],
+    supportedFields: ['due','desc','recur','project','priority','estimate','resumeCondition',
+      'before','activate','body','bodyFile','dependsOn','labels','contexts','tags'],
+    unknownFlag: { slots: { extra: HINT_TITLE } },
+  },
+  // cmd なし（/todo だけ）も同じハンドラ。--json は runList 冒頭で先に除去するので許可リストに入れない。
+  'list': {
+    helpKey: 'list', supportedFields: ['contexts', 'tags'],
+    allowedFlags: ['--group', '--no-due', '--no-estimate'],
+    unknownFlag: { slots: { extra: HINT_OPTIONS } },
+  },
+  'done': {
+    aliases: ['close'], helpKey: 'done', supportedFields: ['actual', 'note'],
+    unknownFlag: { slots: { extra: HINT_OPTIONS } },
+  },
+  'move': {
+    helpKey: 'move', supportedFields: ['note'],
+    unknownFlag: { slots: { extra: HINT_OPTIONS } },
+  },
+  'edit': {
+    helpKey: 'edit',
+    supportedFields: ['due','recur','project','desc','estimate','before',
+      'activate','dependsOn','resumeCondition','priority'],
+    unknownFlag: { slots: { extra: HINT_OPTIONS } },
+  },
+  'due': {
+    helpKey: 'due', unknownFlag: { slots: { rest: HINT_OPTIONS } },
+    extraPositional: { hint: EXTRA_QUOTE },
+  },
+  'desc': { helpKey: 'desc', unknownFlag: { slots: { rest: HINT_BODY } } },
+  'recur': {
+    helpKey: 'recur', unknownFlag: { slots: { rest: HINT_OPTIONS } },
+    extraPositional: { hint: EXTRA_QUOTE },
+  },
+  'link': {
+    helpKey: 'link', unknownFlag: { slots: { rest: HINT_OPTIONS } },
+    extraPositional: { hint: EXTRA_SINGLE },
+  },
+  'rename': { helpKey: 'rename', unknownFlag: { slots: { rest: HINT_TITLE } } },
+  'priority': {
+    helpKey: 'priority', unknownFlag: { slots: { rest: HINT_OPTIONS } },
+    extraPositional: { hint: EXTRA_SINGLE },
+  },
+  'tag': {
+    helpKey: 'tag',
+    unknownFlag: { exempt: TAG_EXEMPT_NOTE },
+  },
+  // tag rename は label rename と共用の renameCtxLabel が old / new の位置だけを検査する。
+  // 3語目以降の余剰トークンは検査しない（label rename は slice(1) で検査しているので非対称）
+  'tag rename': { unknownFlag: { slots: { names: HINT_OPTIONS } } },
+  'untag': {
+    helpKey: 'untag',
+    unknownFlag: { exempt: TAG_EXEMPT_NOTE },
+  },
+  'label': { helpKey: 'label', unknownFlag: { exempt: PARENT_NOTE } },
+  'label list': { unknownFlag: { slots: { rest: HINT_OPTIONS } } },
+  'label add': {
+    supportedFields: ['color'],
+    unknownFlag: { slots: { name: HINT_OPTIONS, extra: HINT_OPTIONS } },
+  },
+  'label delete': { unknownFlag: { slots: { rest: HINT_OPTIONS } } },
+  // renameCtxLabel 内の検査（old / new）は、同じトークンを先に検査するこちらの slice(1) が
+  // 先に発火するため、label rename の経路では到達しない（tag rename の経路で発火する）
+  'label rename': { unknownFlag: { slots: { rest: HINT_OPTIONS } } },
+  // --json は先に除去してから検査する（許可リストには入れない）
+  'search': { helpKey: 'search', unknownFlag: { slots: { tokens: HINT_OPTIONS } } },
+  'archive': { helpKey: 'archive', unknownFlag: { exempt: PARENT_NOTE } },
+  'archive list': {
+    unknownFlag: { unguarded: 'サブコマンド省略時も同じ。tokens[1] が GTD でも @ctx でもなければフィルタなしで全件表示し、2語目以降も見ない。塞ぐと挙動が変わるので R2 では残した' },
+  },
+  'archive search': { unknownFlag: { slots: { rest: HINT_OPTIONS } } },
+  'archive reopen': { unknownFlag: { unguarded: 'tokens[2..] を見ない。塞ぐと挙動が変わるので R2 では残した' } },
+  'dashboard': { aliases: ['dash'], helpKey: 'dashboard', unknownFlag: { unguarded: NO_ARGS_NOTE } },
+  'today': { helpKey: 'today', unknownFlag: { unguarded: NO_ARGS_NOTE } },
+  'eisenhower': { helpKey: 'eisenhower', unknownFlag: { unguarded: NO_ARGS_NOTE } },
+  'stats': { helpKey: 'stats', unknownFlag: { unguarded: NO_ARGS_NOTE } },
+  'report': {
+    helpKey: 'report',
+    unknownFlag: { unguarded: 'tokens[1..] を見ない（#1938 は sub の値だけを検査する）。塞ぐと挙動が変わるので R2 では残した' },
+  },
+  'help': { helpKey: 'help', unknownFlag: { unguarded: NO_ARGS_NOTE } },
+  'template': { helpKey: 'template', unknownFlag: { exempt: PARENT_NOTE } },
+  'template list': { unknownFlag: { slots: { rest: HINT_OPTIONS } } },
+  'template show': { unknownFlag: { slots: { rest: HINT_OPTIONS } } },
+  // name スロットは save-from 形式・インライン形式の両方に効く共有の検査（分岐より前）
+  'template save from': { unknownFlag: { slots: { name: HINT_OPTIONS, rest: HINT_OPTIONS } } },
+  // #1934 パート1.5 / #1936: @ctx・#tag はいずれも add / list / template save
+  // （インライン形式・save-from 形式の両方）で読まれる。旧実装は #tag だけ
+  // template save から読んでいなかった非対称があったが #1936 で解消済み。
+  // 'template save' はインライン形式を指す（FLAG_SUPPORTED_BY の文字列もこのキー）。
+  'template save': {
+    supportedFields: ['due','recur','project','desc','dueOffset','priority','contexts','tags'],
+    unknownFlag: { slots: { name: HINT_OPTIONS, extra: HINT_OPTIONS } },
+  },
+  // title スロットはテンプレートの上書きタイトル（自由記述）なのでタイトル向けヒント
+  'template use': { unknownFlag: { slots: { name: HINT_OPTIONS, title: HINT_TITLE } } },
+  'template delete': { unknownFlag: { slots: { rest: HINT_OPTIONS } } },
+  'schema': { helpKey: 'schema', unknownFlag: { unguarded: NO_ARGS_NOTE } },
+  'show': {
+    helpKey: 'show', allowedFlags: ['--json'],
+    unknownFlag: { slots: { tokens: HINT_OPTIONS } },
+  },
+  'view': { helpKey: 'view', unknownFlag: { exempt: PARENT_NOTE } },
+  'view list': { unknownFlag: { unguarded: VIEW_NAME_NOTE } },
+  // GTD / 優先度 / @ctx のいずれにも合わないトークン（unmatched）が検査対象
+  'view save': {
+    unknownFlag: { slots: { unmatched: HINT_OPTIONS } },
+    extraPositional: { hint: EXTRA_SINGLE },
+  },
+  'view delete': { unknownFlag: { unguarded: VIEW_NAME_NOTE } },
+  // view <name>（use を省略した形）も同じ経路
+  'view use': { unknownFlag: { unguarded: VIEW_NAME_NOTE } },
+  'bulk': { helpKey: 'bulk', unknownFlag: { exempt: PARENT_NOTE } },
+  'bulk done': {
+    supportedFields: ['actual'],
+    unknownFlag: { slots: { extra: HINT_OPTIONS } },
+  },
+  'bulk move': { unknownFlag: { slots: { rest: HINT_OPTIONS } } },
+  'bulk tag': {
+    unknownFlag: { exempt: TAG_EXEMPT_NOTE },
+  },
+  'bulk untag': {
+    unknownFlag: { exempt: TAG_EXEMPT_NOTE },
+  },
+  'bulk priority': { unknownFlag: { slots: { rest: HINT_OPTIONS } } },
+  'promote': { helpKey: 'promote', unknownFlag: { unguarded: NO_ARGS_NOTE } },
+  'promote-project': {
+    helpKey: 'promote_project', allowedFlags: ['--outcome'],
+    unknownFlag: { slots: { rest: HINT_OPTIONS } },
+    extraPositional: { hint: EXTRA_QUOTE, when: '--outcome を指定したときだけ（--outcome の値より後ろの余剰を検査する）' },
+  },
+  'unlink': {
+    helpKey: 'unlink', allowedFlags: ['--force'],
+    unknownFlag: { slots: { rest: HINT_OPTIONS } },
+  },
+  'review-someday': { helpKey: 'review_someday', unknownFlag: { slots: { rest: HINT_OPTIONS } } },
+  'weekly-project-audit': { helpKey: 'weekly_project_audit', unknownFlag: { unguarded: NO_ARGS_NOTE } },
+  'migrate': { helpKey: 'migrate', unknownFlag: { exempt: PARENT_NOTE } },
+  'migrate sub-issue': {
+    allowedFlags: ['--dry-run'],
+    unknownFlag: { slots: { tokens: HINT_OPTIONS } },
+  },
+  // runMain 内に直書きのショートカット。edit へ合成引数 [番号, '--activate', 日付] で委譲するので、
+  // edit 側のガードは発火しない（#1937）。そのため委譲前にここで検査する。
+  'activate': {
+    helpKey: 'activate_cmd',
+    unknownFlag: { slots: { rest: HINT_OPTIONS } },
+    extraPositional: { hint: EXTRA_QUOTE },
+  },
+  // 本文の検査は --body / --body-file を拾うループの中で、フラグ字面のトークンを1つずつ
+  // 単一要素配列で渡す。rest 全体 + 許可リストにしてはいけない: 値が欠落した末尾の
+  // --body-file が許可リストを通り、W26-5b（値欠落のエラー化）が壊れる
+  'comment': { helpKey: 'comment', unknownFlag: { slots: { token: HINT_BODY } } },
+  'api': {
+    helpKey: 'api',
+    unknownFlag: { exempt: '外部インターフェース（apiMain 側が英語固定で処理する。対象外）' },
+  },
+};
+
+// FLAG_SUPPORTED_BY を COMMAND_SPECS から導出する。キーは fieldMap（FLAG_FIELD_MAP）の定義順、
+// 値は specs の挿入順（= ヒント文の並び順）。どの spec も読まないフィールドは空配列になる
+// （検査はテスト側。ロード時に throw しない: 表の誤りで全コマンドが起動不能になるのを避ける）。
+// 関数宣言で書くこと（ファイル冒頭 UNKNOWN_FLAG_RE のコメントと同じ理由。module.exports にも載せる）。
+function deriveFlagSupportedBy(specs, fieldMap) {
+  const result = {};
+  for (const field of Object.keys(fieldMap)) {
+    result[field] = Object.keys(specs).filter(key => (specs[key].supportedFields || []).indexOf(field) >= 0);
+  }
+  return result;
+}
+
+// 予約語集合（Issue #1646）を COMMAND_SPECS から導出する: トップレベルのキー ∪ aliases ∪ extra。
+// サブコマンド（キーに空白を含む spec）は予約語の対象外。
+function deriveReservedCommands(specs, extra) {
+  const set = new Set();
+  for (const key of Object.keys(specs)) {
+    if (key.indexOf(' ') >= 0) continue;
+    set.add(key);
+    for (const alias of (specs[key].aliases || [])) set.add(alias);
+  }
+  for (const word of extra) set.add(word);
+  return set;
+}
+
+const FLAG_SUPPORTED_BY = deriveFlagSupportedBy(COMMAND_SPECS, FLAG_FIELD_MAP);
+
 // 汎用引数パーサー
 // tokens: string[]
 // 戻り値: { gtd, title, contexts, due, desc, recur, project, priority, estimate, actual, dueOffset, color, activate, before, dependsOn, note, extra }
@@ -3854,9 +4069,7 @@ async function runAdd(octokit, owner, repo, tokens) {
   // body/bodyFile/dependsOn/labels）。
   // #1934 パート1.5: @ctx/#tag も同じ枠組みで検出する（3631-3632/3645-3653行で
   // parsed.contexts/parsed.tags を実際に読んでいることを配線直前に再確認済み）。
-  guardUnsupportedFlag(parsed, ['due','desc','recur','project','priority','estimate',
-    'resumeCondition','before','activate','body','bodyFile','dependsOn','labels',
-    'contexts','tags'], ADD_USAGE);
+  guardUnsupportedFlag(parsed, COMMAND_SPECS['add'].supportedFields, ADD_USAGE);
 
   // タイトル: 残りトークンを連結
   const titleTokens = parsed.extra.filter(s => s.trim());
@@ -4072,12 +4285,21 @@ async function runList(octokit, owner, repo, tokens) {
 
   // #1921 パターンB: extra に残った未知フラグを黙って無視しない（`list next --no-duee` は
   // 従来どおりだと全件表示されてしまい、フィルタが効いていないことに気づけない）。
-  // LIST_ALLOWED_FLAGS は runList が extra から自前に解釈するフラグ。**下の for ループの
-  // `tok === '--group' / '--no-due' / '--no-estimate'` 判定と必ず同じ字面・同じ順序に保つこと**
-  // （片方だけ増やすと、許可したのにフィルタが効かない/フィルタはあるのにエラーになる）。
+  // LIST_ALLOWED_FLAGS は runList が extra から自前に解釈するフラグ。#2102 R2: 許可リストと
+  // 下の for ループの判定を、1つの対応表 listOwnFlags（フラグ字面 → 立てる真偽値）にまとめた。
+  // 許可リストはその表のキーから作るので、「許可したのにフィルタが効かない/フィルタはあるのに
+  // エラーになる」手同期のずれは構造上起きない。
   // `--json` はここに入れない: runList 冒頭の `tokens.filter(t => t !== '--json')` で
   // parseArgs より前に除去済みのため extra に届かない（行番号は変動するので書かない）。
-  const LIST_ALLOWED_FLAGS = ['--group', '--no-due', '--no-estimate'];
+  let groupByDue = false;
+  let noDue = false;
+  let noEstimate = false;
+  const listOwnFlags = {
+    '--group': () => { groupByDue = true; },
+    '--no-due': () => { noDue = true; },
+    '--no-estimate': () => { noEstimate = true; },
+  };
+  const LIST_ALLOWED_FLAGS = Object.keys(listOwnFlags);
   const LIST_USAGE = 'Usage: /todo list [GTD] [@ctx] [#tag] [p1|p2|p3] [project <#>] [--group] [--no-due] [--no-estimate] [--json]';
   guardUnknownFlag(extra, LIST_ALLOWED_FLAGS, LIST_USAGE, 'error.unknown_flag_hint_options');
   // #1934 パート1: runList は17フラグ由来フィールドを一切読まない（配線直前に上記の実装
@@ -4085,19 +4307,14 @@ async function runList(octokit, owner, repo, tokens) {
   // #1934 パート1.5: parsed.contexts/parsed.tags はこの関数の下方（フィルタ判定の for ループ
   // 直後）で実際に読んでいる（フィルタとして使う）ため supportedFields に含める
   // （行番号は変動するので書かない）。
-  guardUnsupportedFlag(parsed, ['contexts', 'tags'], LIST_USAGE);
+  guardUnsupportedFlag(parsed, COMMAND_SPECS['list'].supportedFields, LIST_USAGE);
 
   // フィルタ判定
   let filterGtd = '', filterCtx = '', filterTag = '', filterPri = '', filterProj = '';
-  let groupByDue = false;
-  let noDue = false;
-  let noEstimate = false;
   let listProjectNum = '';  // /todo list project N の N
   for (let i = 0; i < extra.length; i++) {
     const tok = extra[i];
-    if (tok === '--group') { groupByDue = true; continue; }
-    if (tok === '--no-due') { noDue = true; continue; }
-    if (tok === '--no-estimate') { noEstimate = true; continue; }
+    if (Object.prototype.hasOwnProperty.call(listOwnFlags, tok)) { listOwnFlags[tok](); continue; }
     if (GTD_LABELS.includes(tok)) filterGtd = tok;
     else if (/^p[123]$/.test(tok)) filterPri = tok;
     // #1934 パート3: `@` 始まりのトークンを判定する分岐はここに置いていたが削除した。
@@ -4419,7 +4636,7 @@ async function runDone(octokit, owner, repo, tokens) {
   const DONE_USAGE = 'Usage: /todo done <#> [--actual <time>] [--note "text"]';
   guardUnknownFlag(parsed.extra, [], DONE_USAGE, 'error.unknown_flag_hint_options');
   // #1934 パート1: runDone が実際に読むのは actual/note のみ（配線直前にコードを再確認済み）。
-  guardUnsupportedFlag(parsed, ['actual', 'note'], DONE_USAGE);
+  guardUnsupportedFlag(parsed, COMMAND_SPECS['done'].supportedFields, DONE_USAGE);
 
   const issue = await fetchAndParseIssue(octokit, owner, repo, num);
   let actual = issue.actual;
@@ -4516,7 +4733,7 @@ async function runMove(octokit, owner, repo, tokens) {
   // extra に正当な位置引数は残らない。許可リストは空。ラベル変更（execMoveGtd）より前に落とす。
   guardUnknownFlag(parsed.extra, [], MOVE_USAGE, 'error.unknown_flag_hint_options');
   // #1934 パート1: runMove が実際に読むのは note のみ（配線直前にコードを再確認済み）。
-  guardUnsupportedFlag(parsed, ['note'], MOVE_USAGE);
+  guardUnsupportedFlag(parsed, COMMAND_SPECS['move'].supportedFields, MOVE_USAGE);
   const noteText = parsed.note || null;
   const newLabel = await execMoveGtd(octokit, owner, repo, num, target);
   runOut(tpl('move.done', { num, label: newLabel }));
@@ -4632,8 +4849,7 @@ async function runEdit(octokit, owner, repo, tokens) {
   guardUnknownFlag(parsed.extra, [], EDIT_USAGE, 'error.unknown_flag_hint_options');
   // #1934 パート1: runEdit が実際に読むのは due/recur/project/desc/estimate/before/
   // activate/dependsOn/resumeCondition/priority のみ（配線直前にコードを再確認済み）。
-  guardUnsupportedFlag(parsed, ['due','recur','project','desc','estimate','before',
-    'activate','dependsOn','resumeCondition','priority'], EDIT_USAGE);
+  guardUnsupportedFlag(parsed, COMMAND_SPECS['edit'].supportedFields, EDIT_USAGE);
 
   const issue = await fetchAndParseIssue(octokit, owner, repo, num);
   let changed = [];
@@ -5042,7 +5258,7 @@ async function runLabel(octokit, owner, repo, tokens) {
     const parsed = parseArgs(tokens.slice(2));
     guardUnknownFlag(parsed.extra, [], LABEL_USAGE, 'error.unknown_flag_hint_options');
     // #1934 パート1: label add が実際に読むのは color のみ（配線直前にコードを再確認済み）。
-    guardUnsupportedFlag(parsed, ['color'], LABEL_USAGE);
+    guardUnsupportedFlag(parsed, COMMAND_SPECS['label add'].supportedFields, LABEL_USAGE);
     validateCtx(name.slice(1));
     const color = parsed.color || 'FBCA04';
     if (parsed.color) validateColor(parsed.color);
@@ -5266,7 +5482,7 @@ async function runTemplate(octokit, owner, repo, tokens) {
       // （const contexts = parsed.contexts; / const tags = parsed.tags;）で読んでいるため
       // supportedFields に含める。#tag をテンプレートへ保存できなかった旧来の非対称は
       // #1936 で解消済み（詳細: DEVELOPMENT.md バグ修正履歴）。
-      guardUnsupportedFlag(parsed, ['due','recur','project','desc','dueOffset','priority','contexts','tags'], TEMPLATE_USAGE);
+      guardUnsupportedFlag(parsed, COMMAND_SPECS['template save'].supportedFields, TEMPLATE_USAGE);
       const contexts = parsed.contexts;
       const tags = parsed.tags;
       const priority = parsed.priority || 'p3';
@@ -5677,7 +5893,7 @@ async function runBulk(octokit, owner, repo, tokens) {
     const parsed = parseArgs(rest);
     guardUnknownFlag(parsed.extra, [], BULK_USAGE, 'error.unknown_flag_hint_options');
     // #1934 パート1: bulk done が実際に読むのは actual のみ（配線直前にコードを再確認済み）。
-    guardUnsupportedFlag(parsed, ['actual'], BULK_USAGE);
+    guardUnsupportedFlag(parsed, COMMAND_SPECS['bulk done'].supportedFields, BULK_USAGE);
     let recurCreated = 0;
     for (const num of nums) {
       try {
@@ -6179,19 +6395,15 @@ async function runMigrateSubIssue(octokit, owner, repo, tokens) {
 }
 
 // ─── 予約語タイトル誤爆ガード（Issue #1646） ───
-// runMain の switch にある実コマンド名一覧。ケースを追加/削除したら必ずここも更新すること。
-// tests/run-tests.sh の「1646: dispatcher コマンド名とガード対象の同期」がドリフトを検知する。
-// 'project' と 'counts' は switch のケースとしては現れないが誤爆しうるため手動追加している:
+// 予約語集合は COMMAND_SPECS（コマンド仕様の宣言表）から導出する（Issue #2102 R2）:
+//   トップレベルのキー ∪ aliases ∪ RESERVED_EXTRA。switch のケースを追加/削除したら
+//   COMMAND_SPECS の対応するキーを足す/消す（tests/run-tests.sh の「1646」と「I-1」が
+//   switch のケースラベルと表の一致を双方向に検査する）。
+// RESERVED_EXTRA は switch のケースとしては現れないが誤爆しうるため手動で足している:
 //   - 'project': GTDラベルと同格の分岐（cmd === PROJECT_LABEL）で switch より手前に処理される
 //   - 'counts' : todo.sh 層のみで処理され、run 経由でもエンジンの switch には到達しない
-const RESERVED_TITLE_GUARD_COMMANDS = new Set([
-  'add','list','done','close','move','edit','due','desc','recur','link','rename',
-  'priority','tag','untag','label','search','archive','dashboard','dash','today',
-  'eisenhower','stats','report','help','template','schema','show','view','bulk',
-  'promote','promote-project','unlink','review-someday','weekly-project-audit',
-  'migrate','activate','comment','api',
-  PROJECT_LABEL, 'counts',
-]);
+const RESERVED_EXTRA = [PROJECT_LABEL, 'counts'];
+const RESERVED_TITLE_GUARD_COMMANDS = deriveReservedCommands(COMMAND_SPECS, RESERVED_EXTRA);
 
 // GTDラベル暗黙add経路（例: /todo project list）で、タイトルが単一トークンかつ
 // 既知コマンド名と完全一致する場合に誤爆と判定する（大文字小文字は区別しない）。
@@ -6355,6 +6567,7 @@ async function runMain(args) {
 module.exports = {
   GTD_LABELS, PROJECT_LABEL, GTD_DISPLAY, PRI_COLORS, RECUR_WEEKDAY_TO_DOW,
   MAX_RECUR_CATCHUP_ITERATIONS, UNKNOWN_FLAG_RE, BRACKETED_GTD_RE, FLAG_FIELD_MAP,
+  COMMAND_SPECS, deriveFlagSupportedBy, deriveReservedCommands, RESERVED_EXTRA,
   FLAG_SUPPORTED_BY, MESSAGES, ADD_USAGE, RESERVED_TITLE_GUARD_COMMANDS, t, tpl, cnt, fmt, addDays,
   addMonth, parseBeforeDuration, addMonths, isValidCalendarDate, isLeapYear, normalizeDue,
   bodyHasProject, parseBodyObj, parseBody, extractIssueFields, buildBody, parseTime,
