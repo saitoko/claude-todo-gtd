@@ -1322,6 +1322,17 @@ resume_condition を持つ Issue は 36-20 のとおり確認待ちとして扱�
 - stderr に「プロジェクト #9999999 の取得に失敗しました」が出力される
 - Issue は作成されている（Issue 作成後にエラー → 子 Issue は残る）
 
+### P-04b. 親 N が project ラベルを持たないとき、Issue を作らずエラー終了すること（#2102c）
+
+前提: Issue #N は存在するが `📁 project` ラベルを持たない（例: next）。
+```
+/todo next サブタスク --project N
+```
+期待:
+- stderr に「#N はプロジェクトではありません」が出力され exit 1
+- Issue は作成されない（親検証は issues.create・ラベル作成より前。孤児 Issue を残さない）
+- 親の取得失敗（P-04）は従来どおり警告のうえ作成続行（body の `project: #N` で親子関係は保たれる）
+
 ### P-09. `/todo link X N` で sub-issue + body メタの両方が設定されること
 
 前提: Issue #X（子）と Issue #N（`📁 project` ラベル付き親）が存在する。
