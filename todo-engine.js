@@ -76,33 +76,12 @@ const FLAG_FIELD_MAP = {
   contexts: '@ctx', tags: '#tag',
 };
 
-// フィールド名 → それを実際に読むコマンドの一覧（エラーメッセージのヒント用）。
-// 「/todo <cmd>」の <cmd> 部分の文字列のみを保持する（コマンド行の組み立ては呼び出し側）。
-// 本設計の「ハンドラ別 実測表」と1対1で対応する。表を更新したら必ずこちらも更新すること。
-const FLAG_SUPPORTED_BY = {
-  due: ['add', 'edit', 'template save'],
-  desc: ['add', 'edit', 'template save'],
-  recur: ['add', 'edit', 'template save'],
-  project: ['add', 'edit', 'template save'],
-  priority: ['add', 'edit', 'template save'],
-  estimate: ['add', 'edit'],
-  actual: ['done', 'bulk done'],
-  dueOffset: ['template save'],
-  color: ['label add'],
-  activate: ['add', 'edit'],
-  before: ['add', 'edit'],
-  dependsOn: ['add', 'edit'],
-  resumeCondition: ['add', 'edit'],
-  note: ['done', 'move'],
-  body: ['add'],
-  bodyFile: ['add'],
-  labels: ['add'],
-  // #1934 パート1.5 / #1936: @ctx・#tag はいずれも add / list / template save
-  // （インライン形式・save-from 形式の両方）で読まれる。旧実装は #tag だけ
-  // template save から読んでいなかった非対称があったが #1936 で解消済み。
-  contexts: ['add', 'list', 'template save'],
-  tags: ['add', 'list', 'template save'],
-};
+// FLAG_SUPPORTED_BY（フィールド名 → それを実際に読むコマンドの一覧。エラーメッセージのヒント用）は、
+// コマンド仕様の宣言表 COMMAND_SPECS（parseArgs 定義の直前）から導出する（Issue #2102 R2）。
+// 手で更新する表ではない。ヒント文のコマンド並びは COMMAND_SPECS の並び順で決まる。
+// 【この定数ブロックに置かない理由】導出元の COMMAND_SPECS は ADD_USAGE の後ろで定義する。
+// 参照するのは guardUnsupportedFlag の本体（実行時）と module.exports（末尾）だけなので、
+// モジュール評価の途中で読むコードはない。
 
 // ─── i18n ───
 const LANG = process.env.LANG_ENV || 'ja';
@@ -3595,6 +3574,129 @@ const ADD_USAGE = 'Usage: /todo add [GTD] <title> [@ctx...] [#tag...] [--due <da
                 + '[--priority p1|p2|p3] [--p1|--p2|--p3] [--estimate <time>] [--label <name>] [--activate <date>] '
                 + '[--before <duration>] [--depends-on <#>] [--resume-condition <text>]  (see: /todo help)';
 
+// ─── コマンド仕様の宣言表 COMMAND_SPECS（Issue #2102 R2）───
+//
+// run 系コマンドの仕様を1か所に集める。FLAG_SUPPORTED_BY と RESERVED_TITLE_GUARD_COMMANDS は
+// この表から導出する（手で同期する表を作らない）。ハンドラの中の処理（ガードを呼ぶ位置・
+// 引数の出どころ・メッセージ）は変えない。表は「何を宣言するか」だけを持つ。
+//
+// 【この表の並び順は FLAG_SUPPORTED_BY のヒント文の順序になる。並べ替えるとエラーメッセージが変わる】
+// runMain の switch の並びに合わせてある。ヒント文は「add / edit / template save」のように
+// 表の挿入順でコマンド名を並べるため、add < list < done < move < edit < label add <
+// template save < bulk done の前後関係を保つこと。
+//
+// キー: トップレベルは 'due' / 'promote-project'、サブコマンドは '<親> <sub>'（空白区切り）。
+// 「キーに空白を含まない = トップレベル」。FLAG_SUPPORTED_BY の文字列には、このキーがそのまま出る。
+// フィールド:
+//   aliases         : トップレベルのみ。同じハンドラへ振り分ける別名（予約語集合には載るが help の個別行はない）
+//   helpKey         : トップレベルのみ。help() の 'help.<helpKey>' メッセージキー（文字列または配列）
+//   supportedFields : guardUnsupportedFlag を呼ぶ spec だけ。ハンドラが実際に読む FLAG_FIELD_MAP のキー
+//
+// 【制約】表と導出の初期化式から t() / tpl() を呼ばない（LANG 依存の文字列を入れない）。
+// 表のコメントや文字列に switch の case ラベルと同じ形の文字列を書かない
+// （run-tests.sh の runMain 抽出が拾うのは runMain 以降だが、念のため）。
+const COMMAND_SPECS = {
+  'add': {
+    helpKey: ['add', 'add_explicit'],
+    supportedFields: ['due','desc','recur','project','priority','estimate','resumeCondition',
+      'before','activate','body','bodyFile','dependsOn','labels','contexts','tags'],
+  },
+  'list': { helpKey: 'list', supportedFields: ['contexts', 'tags'] },
+  'done': { aliases: ['close'], helpKey: 'done', supportedFields: ['actual', 'note'] },
+  'move': { helpKey: 'move', supportedFields: ['note'] },
+  'edit': {
+    helpKey: 'edit',
+    supportedFields: ['due','recur','project','desc','estimate','before',
+      'activate','dependsOn','resumeCondition','priority'],
+  },
+  'due': { helpKey: 'due' },
+  'desc': { helpKey: 'desc' },
+  'recur': { helpKey: 'recur' },
+  'link': { helpKey: 'link' },
+  'rename': { helpKey: 'rename' },
+  'priority': { helpKey: 'priority' },
+  'tag': { helpKey: 'tag' },
+  'tag rename': {},
+  'untag': { helpKey: 'untag' },
+  'label': { helpKey: 'label' },
+  'label list': {},
+  'label add': { supportedFields: ['color'] },
+  'label delete': {},
+  'label rename': {},
+  'search': { helpKey: 'search' },
+  'archive': { helpKey: 'archive' },
+  'archive list': {},
+  'archive search': {},
+  'archive reopen': {},
+  'dashboard': { aliases: ['dash'], helpKey: 'dashboard' },
+  'today': { helpKey: 'today' },
+  'eisenhower': { helpKey: 'eisenhower' },
+  'stats': { helpKey: 'stats' },
+  'report': { helpKey: 'report' },
+  'help': { helpKey: 'help' },
+  'template': { helpKey: 'template' },
+  'template list': {},
+  'template show': {},
+  'template save from': {},
+  // #1934 パート1.5 / #1936: @ctx・#tag はいずれも add / list / template save
+  // （インライン形式・save-from 形式の両方）で読まれる。旧実装は #tag だけ
+  // template save から読んでいなかった非対称があったが #1936 で解消済み。
+  // 'template save' はインライン形式を指す（FLAG_SUPPORTED_BY の文字列もこのキー）。
+  'template save': { supportedFields: ['due','recur','project','desc','dueOffset','priority','contexts','tags'] },
+  'template use': {},
+  'template delete': {},
+  'schema': { helpKey: 'schema' },
+  'show': { helpKey: 'show' },
+  'view': { helpKey: 'view' },
+  'view list': {},
+  'view save': {},
+  'view delete': {},
+  'view use': {},
+  'bulk': { helpKey: 'bulk' },
+  'bulk done': { supportedFields: ['actual'] },
+  'bulk move': {},
+  'bulk tag': {},
+  'bulk untag': {},
+  'bulk priority': {},
+  'promote': { helpKey: 'promote' },
+  'promote-project': { helpKey: 'promote_project' },
+  'unlink': { helpKey: 'unlink' },
+  'review-someday': { helpKey: 'review_someday' },
+  'weekly-project-audit': { helpKey: 'weekly_project_audit' },
+  'migrate': { helpKey: 'migrate' },
+  'migrate sub-issue': {},
+  'activate': { helpKey: 'activate_cmd' },
+  'comment': { helpKey: 'comment' },
+  'api': { helpKey: 'api' },
+};
+
+// FLAG_SUPPORTED_BY を COMMAND_SPECS から導出する。キーは fieldMap（FLAG_FIELD_MAP）の定義順、
+// 値は specs の挿入順（= ヒント文の並び順）。どの spec も読まないフィールドは空配列になる
+// （検査はテスト側。ロード時に throw しない: 表の誤りで全コマンドが起動不能になるのを避ける）。
+// 関数宣言で書くこと（ファイル冒頭 UNKNOWN_FLAG_RE のコメントと同じ理由。module.exports にも載せる）。
+function deriveFlagSupportedBy(specs, fieldMap) {
+  const result = {};
+  for (const field of Object.keys(fieldMap)) {
+    result[field] = Object.keys(specs).filter(key => (specs[key].supportedFields || []).indexOf(field) >= 0);
+  }
+  return result;
+}
+
+// 予約語集合（Issue #1646）を COMMAND_SPECS から導出する: トップレベルのキー ∪ aliases ∪ extra。
+// サブコマンド（キーに空白を含む spec）は予約語の対象外。
+function deriveReservedCommands(specs, extra) {
+  const set = new Set();
+  for (const key of Object.keys(specs)) {
+    if (key.indexOf(' ') >= 0) continue;
+    set.add(key);
+    for (const alias of (specs[key].aliases || [])) set.add(alias);
+  }
+  for (const word of extra) set.add(word);
+  return set;
+}
+
+const FLAG_SUPPORTED_BY = deriveFlagSupportedBy(COMMAND_SPECS, FLAG_FIELD_MAP);
+
 // 汎用引数パーサー
 // tokens: string[]
 // 戻り値: { gtd, title, contexts, due, desc, recur, project, priority, estimate, actual, dueOffset, color, activate, before, dependsOn, note, extra }
@@ -3854,9 +3956,7 @@ async function runAdd(octokit, owner, repo, tokens) {
   // body/bodyFile/dependsOn/labels）。
   // #1934 パート1.5: @ctx/#tag も同じ枠組みで検出する（3631-3632/3645-3653行で
   // parsed.contexts/parsed.tags を実際に読んでいることを配線直前に再確認済み）。
-  guardUnsupportedFlag(parsed, ['due','desc','recur','project','priority','estimate',
-    'resumeCondition','before','activate','body','bodyFile','dependsOn','labels',
-    'contexts','tags'], ADD_USAGE);
+  guardUnsupportedFlag(parsed, COMMAND_SPECS['add'].supportedFields, ADD_USAGE);
 
   // タイトル: 残りトークンを連結
   const titleTokens = parsed.extra.filter(s => s.trim());
@@ -4072,12 +4172,21 @@ async function runList(octokit, owner, repo, tokens) {
 
   // #1921 パターンB: extra に残った未知フラグを黙って無視しない（`list next --no-duee` は
   // 従来どおりだと全件表示されてしまい、フィルタが効いていないことに気づけない）。
-  // LIST_ALLOWED_FLAGS は runList が extra から自前に解釈するフラグ。**下の for ループの
-  // `tok === '--group' / '--no-due' / '--no-estimate'` 判定と必ず同じ字面・同じ順序に保つこと**
-  // （片方だけ増やすと、許可したのにフィルタが効かない/フィルタはあるのにエラーになる）。
+  // LIST_ALLOWED_FLAGS は runList が extra から自前に解釈するフラグ。#2102 R2: 許可リストと
+  // 下の for ループの判定を、1つの対応表 listOwnFlags（フラグ字面 → 立てる真偽値）にまとめた。
+  // 許可リストはその表のキーから作るので、「許可したのにフィルタが効かない/フィルタはあるのに
+  // エラーになる」手同期のずれは構造上起きない。
   // `--json` はここに入れない: runList 冒頭の `tokens.filter(t => t !== '--json')` で
   // parseArgs より前に除去済みのため extra に届かない（行番号は変動するので書かない）。
-  const LIST_ALLOWED_FLAGS = ['--group', '--no-due', '--no-estimate'];
+  let groupByDue = false;
+  let noDue = false;
+  let noEstimate = false;
+  const listOwnFlags = {
+    '--group': () => { groupByDue = true; },
+    '--no-due': () => { noDue = true; },
+    '--no-estimate': () => { noEstimate = true; },
+  };
+  const LIST_ALLOWED_FLAGS = Object.keys(listOwnFlags);
   const LIST_USAGE = 'Usage: /todo list [GTD] [@ctx] [#tag] [p1|p2|p3] [project <#>] [--group] [--no-due] [--no-estimate] [--json]';
   guardUnknownFlag(extra, LIST_ALLOWED_FLAGS, LIST_USAGE, 'error.unknown_flag_hint_options');
   // #1934 パート1: runList は17フラグ由来フィールドを一切読まない（配線直前に上記の実装
@@ -4085,19 +4194,14 @@ async function runList(octokit, owner, repo, tokens) {
   // #1934 パート1.5: parsed.contexts/parsed.tags はこの関数の下方（フィルタ判定の for ループ
   // 直後）で実際に読んでいる（フィルタとして使う）ため supportedFields に含める
   // （行番号は変動するので書かない）。
-  guardUnsupportedFlag(parsed, ['contexts', 'tags'], LIST_USAGE);
+  guardUnsupportedFlag(parsed, COMMAND_SPECS['list'].supportedFields, LIST_USAGE);
 
   // フィルタ判定
   let filterGtd = '', filterCtx = '', filterTag = '', filterPri = '', filterProj = '';
-  let groupByDue = false;
-  let noDue = false;
-  let noEstimate = false;
   let listProjectNum = '';  // /todo list project N の N
   for (let i = 0; i < extra.length; i++) {
     const tok = extra[i];
-    if (tok === '--group') { groupByDue = true; continue; }
-    if (tok === '--no-due') { noDue = true; continue; }
-    if (tok === '--no-estimate') { noEstimate = true; continue; }
+    if (Object.prototype.hasOwnProperty.call(listOwnFlags, tok)) { listOwnFlags[tok](); continue; }
     if (GTD_LABELS.includes(tok)) filterGtd = tok;
     else if (/^p[123]$/.test(tok)) filterPri = tok;
     // #1934 パート3: `@` 始まりのトークンを判定する分岐はここに置いていたが削除した。
@@ -4419,7 +4523,7 @@ async function runDone(octokit, owner, repo, tokens) {
   const DONE_USAGE = 'Usage: /todo done <#> [--actual <time>] [--note "text"]';
   guardUnknownFlag(parsed.extra, [], DONE_USAGE, 'error.unknown_flag_hint_options');
   // #1934 パート1: runDone が実際に読むのは actual/note のみ（配線直前にコードを再確認済み）。
-  guardUnsupportedFlag(parsed, ['actual', 'note'], DONE_USAGE);
+  guardUnsupportedFlag(parsed, COMMAND_SPECS['done'].supportedFields, DONE_USAGE);
 
   const issue = await fetchAndParseIssue(octokit, owner, repo, num);
   let actual = issue.actual;
@@ -4516,7 +4620,7 @@ async function runMove(octokit, owner, repo, tokens) {
   // extra に正当な位置引数は残らない。許可リストは空。ラベル変更（execMoveGtd）より前に落とす。
   guardUnknownFlag(parsed.extra, [], MOVE_USAGE, 'error.unknown_flag_hint_options');
   // #1934 パート1: runMove が実際に読むのは note のみ（配線直前にコードを再確認済み）。
-  guardUnsupportedFlag(parsed, ['note'], MOVE_USAGE);
+  guardUnsupportedFlag(parsed, COMMAND_SPECS['move'].supportedFields, MOVE_USAGE);
   const noteText = parsed.note || null;
   const newLabel = await execMoveGtd(octokit, owner, repo, num, target);
   runOut(tpl('move.done', { num, label: newLabel }));
@@ -4632,8 +4736,7 @@ async function runEdit(octokit, owner, repo, tokens) {
   guardUnknownFlag(parsed.extra, [], EDIT_USAGE, 'error.unknown_flag_hint_options');
   // #1934 パート1: runEdit が実際に読むのは due/recur/project/desc/estimate/before/
   // activate/dependsOn/resumeCondition/priority のみ（配線直前にコードを再確認済み）。
-  guardUnsupportedFlag(parsed, ['due','recur','project','desc','estimate','before',
-    'activate','dependsOn','resumeCondition','priority'], EDIT_USAGE);
+  guardUnsupportedFlag(parsed, COMMAND_SPECS['edit'].supportedFields, EDIT_USAGE);
 
   const issue = await fetchAndParseIssue(octokit, owner, repo, num);
   let changed = [];
@@ -5042,7 +5145,7 @@ async function runLabel(octokit, owner, repo, tokens) {
     const parsed = parseArgs(tokens.slice(2));
     guardUnknownFlag(parsed.extra, [], LABEL_USAGE, 'error.unknown_flag_hint_options');
     // #1934 パート1: label add が実際に読むのは color のみ（配線直前にコードを再確認済み）。
-    guardUnsupportedFlag(parsed, ['color'], LABEL_USAGE);
+    guardUnsupportedFlag(parsed, COMMAND_SPECS['label add'].supportedFields, LABEL_USAGE);
     validateCtx(name.slice(1));
     const color = parsed.color || 'FBCA04';
     if (parsed.color) validateColor(parsed.color);
@@ -5266,7 +5369,7 @@ async function runTemplate(octokit, owner, repo, tokens) {
       // （const contexts = parsed.contexts; / const tags = parsed.tags;）で読んでいるため
       // supportedFields に含める。#tag をテンプレートへ保存できなかった旧来の非対称は
       // #1936 で解消済み（詳細: DEVELOPMENT.md バグ修正履歴）。
-      guardUnsupportedFlag(parsed, ['due','recur','project','desc','dueOffset','priority','contexts','tags'], TEMPLATE_USAGE);
+      guardUnsupportedFlag(parsed, COMMAND_SPECS['template save'].supportedFields, TEMPLATE_USAGE);
       const contexts = parsed.contexts;
       const tags = parsed.tags;
       const priority = parsed.priority || 'p3';
@@ -5677,7 +5780,7 @@ async function runBulk(octokit, owner, repo, tokens) {
     const parsed = parseArgs(rest);
     guardUnknownFlag(parsed.extra, [], BULK_USAGE, 'error.unknown_flag_hint_options');
     // #1934 パート1: bulk done が実際に読むのは actual のみ（配線直前にコードを再確認済み）。
-    guardUnsupportedFlag(parsed, ['actual'], BULK_USAGE);
+    guardUnsupportedFlag(parsed, COMMAND_SPECS['bulk done'].supportedFields, BULK_USAGE);
     let recurCreated = 0;
     for (const num of nums) {
       try {
@@ -6179,19 +6282,15 @@ async function runMigrateSubIssue(octokit, owner, repo, tokens) {
 }
 
 // ─── 予約語タイトル誤爆ガード（Issue #1646） ───
-// runMain の switch にある実コマンド名一覧。ケースを追加/削除したら必ずここも更新すること。
-// tests/run-tests.sh の「1646: dispatcher コマンド名とガード対象の同期」がドリフトを検知する。
-// 'project' と 'counts' は switch のケースとしては現れないが誤爆しうるため手動追加している:
+// 予約語集合は COMMAND_SPECS（コマンド仕様の宣言表）から導出する（Issue #2102 R2）:
+//   トップレベルのキー ∪ aliases ∪ RESERVED_EXTRA。switch のケースを追加/削除したら
+//   COMMAND_SPECS の対応するキーを足す/消す（tests/run-tests.sh の「1646」と「I-1」が
+//   switch のケースラベルと表の一致を双方向に検査する）。
+// RESERVED_EXTRA は switch のケースとしては現れないが誤爆しうるため手動で足している:
 //   - 'project': GTDラベルと同格の分岐（cmd === PROJECT_LABEL）で switch より手前に処理される
 //   - 'counts' : todo.sh 層のみで処理され、run 経由でもエンジンの switch には到達しない
-const RESERVED_TITLE_GUARD_COMMANDS = new Set([
-  'add','list','done','close','move','edit','due','desc','recur','link','rename',
-  'priority','tag','untag','label','search','archive','dashboard','dash','today',
-  'eisenhower','stats','report','help','template','schema','show','view','bulk',
-  'promote','promote-project','unlink','review-someday','weekly-project-audit',
-  'migrate','activate','comment','api',
-  PROJECT_LABEL, 'counts',
-]);
+const RESERVED_EXTRA = [PROJECT_LABEL, 'counts'];
+const RESERVED_TITLE_GUARD_COMMANDS = deriveReservedCommands(COMMAND_SPECS, RESERVED_EXTRA);
 
 // GTDラベル暗黙add経路（例: /todo project list）で、タイトルが単一トークンかつ
 // 既知コマンド名と完全一致する場合に誤爆と判定する（大文字小文字は区別しない）。
@@ -6355,6 +6454,7 @@ async function runMain(args) {
 module.exports = {
   GTD_LABELS, PROJECT_LABEL, GTD_DISPLAY, PRI_COLORS, RECUR_WEEKDAY_TO_DOW,
   MAX_RECUR_CATCHUP_ITERATIONS, UNKNOWN_FLAG_RE, BRACKETED_GTD_RE, FLAG_FIELD_MAP,
+  COMMAND_SPECS, deriveFlagSupportedBy, deriveReservedCommands, RESERVED_EXTRA,
   FLAG_SUPPORTED_BY, MESSAGES, ADD_USAGE, RESERVED_TITLE_GUARD_COMMANDS, t, tpl, cnt, fmt, addDays,
   addMonth, parseBeforeDuration, addMonths, isValidCalendarDate, isLeapYear, normalizeDue,
   bodyHasProject, parseBodyObj, parseBody, extractIssueFields, buildBody, parseTime,

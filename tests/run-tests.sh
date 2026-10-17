@@ -3686,52 +3686,40 @@ assert_contains "1646: /todo next LIST → ガードメッセージに元の大�
 # CLI 直接実行ではなくソースからガード関連コードを抽出して単体テストする。
 _G1646_TMP=$(mktemp /tmp/todo-test-reserved-guard-XXXXXX)
 cat > "$_G1646_TMP" << 'RESERVED_GUARD_TEST_EOF'
+// #2102 R2: 予約語集合は COMMAND_SPECS から導出されるため、ソース文字列の抽出ではなく
+// require() した実体を直接呼ぶ（抽出した断片を eval する旧方式は、導出関数への参照が残ると
+// ReferenceError になる）。キー名とアサーション文言は旧版と同じ。
 const fs = require('fs');
+const E = require(process.argv[2]);
 const src = fs.readFileSync(process.argv[2], 'utf8');
-
-const gtdLabelsMatch  = src.match(/^const GTD_LABELS = \[[^\]]*\];/m);
-const projectLabelMatch = src.match(/^const PROJECT_LABEL = '[^']+';/m);
-const parseArgsMatch  = src.match(/^function parseArgs\(tokens\) \{[\s\S]*?^}/m);
-const guardConstMatch = src.match(/^const RESERVED_TITLE_GUARD_COMMANDS = new Set\(\[[\s\S]*?^\]\);/m);
-const guardFnMatch    = src.match(/^function reservedTitleGuardWord\(restTokens\) \{[\s\S]*?^}/m);
-const runMainMatch    = src.match(/^async function runMain\(args\) \{[\s\S]*$/m);
-
-const missing = [];
-if (!gtdLabelsMatch)  missing.push('GTD_LABELS');
-if (!projectLabelMatch) missing.push('PROJECT_LABEL');
-if (!parseArgsMatch)  missing.push('parseArgs');
-if (!guardConstMatch) missing.push('RESERVED_TITLE_GUARD_COMMANDS');
-if (!guardFnMatch)    missing.push('reservedTitleGuardWord');
-if (!runMainMatch)    missing.push('runMain');
-if (missing.length) {
-  process.stderr.write('抽出失敗: ' + missing.join(',') + '\n');
+const runMainMatch = src.match(/^async function runMain\(args\) \{[\s\S]*$/m);
+if (!runMainMatch) {
+  process.stderr.write('抽出失敗: runMain\n');
   process.exit(1);
 }
 
-// 抽出した定数・関数を1つの eval にまとめて実行する（direct eval の let/const は
-// 呼び出し元と別の字句スコープを持つため、分割 eval だと相互参照できない）
-const combined = [gtdLabelsMatch[0], projectLabelMatch[0], parseArgsMatch[0], guardConstMatch[0], guardFnMatch[0]].join('\n')
-  + '\nconst results = {};'
-  + "\nresults.fire_list    = reservedTitleGuardWord(['list'])    === 'list';"
-  + "\nresults.fire_help    = reservedTitleGuardWord(['help'])    === 'help';"
-  + "\nresults.fire_project = reservedTitleGuardWord(['project']) === 'project';"
-  + "\nresults.fire_counts  = reservedTitleGuardWord(['counts'])  === 'counts';"
-  // 非発火: 日本語単一トークン（摩擦ゼロ収集を維持。現行挙動）
-  + "\nresults.nofire_ja_single = reservedTitleGuardWord(['買い物']) === null;"
-  // 非発火: 複数トークン英語（現行挙動維持。1トークンのみが判定対象）
-  + "\nresults.nofire_en_multi  = reservedTitleGuardWord(['Buy','milk']) === null;"
-  // 非発火: 'add' / 'list' はそもそも GTD ラベル分岐に到達しない
-  //   (/todo add next list は case 'add' へ、/todo list next は case 'list' へ直行し、
-  //    reservedTitleGuardWord は呼ばれない。これが構造的な非発火保証)
-  + "\nresults.nofire_add_not_gtd_branch  = !GTD_LABELS.includes('add')  && 'add'  !== PROJECT_LABEL;"
-  + "\nresults.nofire_list_not_gtd_branch = !GTD_LABELS.includes('list') && 'list' !== PROJECT_LABEL;"
-  + '\nprocess.stdout.write(JSON.stringify(results));';
-eval(combined);
+const results = {};
+results.fire_list    = E.reservedTitleGuardWord(['list'])    === 'list';
+results.fire_help    = E.reservedTitleGuardWord(['help'])    === 'help';
+results.fire_project = E.reservedTitleGuardWord(['project']) === 'project';
+results.fire_counts  = E.reservedTitleGuardWord(['counts'])  === 'counts';
+// 非発火: 日本語単一トークン（摩擦ゼロ収集を維持。現行挙動）
+results.nofire_ja_single = E.reservedTitleGuardWord(['買い物']) === null;
+// 非発火: 複数トークン英語（現行挙動維持。1トークンのみが判定対象）
+results.nofire_en_multi  = E.reservedTitleGuardWord(['Buy', 'milk']) === null;
+// 非発火: 'add' / 'list' はそもそも GTD ラベル分岐に到達しない
+//   (/todo add next list は case 'add' へ、/todo list next は case 'list' へ直行し、
+//    reservedTitleGuardWord は呼ばれない。これが構造的な非発火保証)
+results.nofire_add_not_gtd_branch  = !E.GTD_LABELS.includes('add')  && 'add'  !== E.PROJECT_LABEL;
+results.nofire_list_not_gtd_branch = !E.GTD_LABELS.includes('list') && 'list' !== E.PROJECT_LABEL;
+process.stdout.write(JSON.stringify(results));
 
-// ドリフト検知: runMain の switch にある実コマンド名がすべて
-// RESERVED_TITLE_GUARD_COMMANDS のソースに含まれること（新コマンド追加時の追加漏れを検知）
+// ドリフト検知: runMain の switch にある実コマンド名がすべて予約語集合に含まれること
+// （新コマンド追加時の追加漏れを検知）。案B（表駆動ディスパッチ）等で case ラベルが 0 件に
+// なると「欠落 0 件」で黙って PASS してしまうため、抽出件数も別途出力して 0 件なら FAIL にする。
 const caseLabels = [...runMainMatch[0].matchAll(/case\s*'([a-zA-Z0-9_-]+)'\s*:/g)].map(m => m[1]);
-const missingFromGuard = caseLabels.filter(l => !guardConstMatch[0].includes("'" + l + "'"));
+const missingFromGuard = caseLabels.filter(l => !E.RESERVED_TITLE_GUARD_COMMANDS.has(l));
+process.stderr.write('CASE_LABEL_COUNT:' + caseLabels.length + '\n');
 process.stderr.write('DRIFT_MISSING:' + JSON.stringify(missingFromGuard) + '\n');
 RESERVED_GUARD_TEST_EOF
 
@@ -3751,8 +3739,10 @@ else
     fi
   done
 
-  # ドリフト検知: 空配列（[]）であること
-  if printf '%s' "$_G1646_STDERR" | grep -q 'DRIFT_MISSING:\[\]'; then
+  # ドリフト検知: 空配列（[]）であること。case ラベルの抽出件数が 0 のときは検査が空振りしている
+  # ので FAIL（#2102 R2: 検査対象 0 件のまま PASS する構造を残さない）
+  if printf '%s' "$_G1646_STDERR" | grep -q 'DRIFT_MISSING:\[\]' \
+     && printf '%s' "$_G1646_STDERR" | grep -Eq 'CASE_LABEL_COUNT:[1-9][0-9]*'; then
     printf "  ✅ 1646: dispatcher コマンド名とガード対象の同期（ドリフトなし）\n"; PASS=$((PASS+1))
   else
     printf "  ❌ 1646: switch case が RESERVED_TITLE_GUARD_COMMANDS に未反映: %s\n" "$_G1646_STDERR"; FAIL=$((FAIL+1))
@@ -4505,6 +4495,12 @@ if (!runMainMatch) {
 const caseLabels = [...new Set(
   [...runMainMatch[0].matchAll(/case\s*'([a-zA-Z0-9_-]+)'\s*:/g)].map(m => m[1])
 )];
+// case ラベルが 0 件だと下の検査は対象なしのまま「漏れなし」で通ってしまう（黙って無効化される）。
+// 抽出に失敗した状態を PASS にしないため、0 件なら実行失敗として FAIL にする（#2102 R2）。
+if (caseLabels.length === 0) {
+  process.stderr.write('抽出失敗: runMain の case ラベルが 0 件\n');
+  process.exit(1);
+}
 
 // help() に個別のコマンド行として掲載しない正当な理由を持つコマンド（Issue #1884/#1906）。
 // 除外は「別のコマンド行で正しく代替表示されている」場合に限る。除外リストは検出漏れが
@@ -5063,6 +5059,100 @@ _G55_SCAN=$(node "$_G55_SCANJS" "$ENGINE" 2>&1)
 rm -f "$_G55_SCANJS"
 assert_contains "§55-5 process.env への書き込み（代入・Object.assign）がエンジン全体で 0 件" '"writes":0' "$_G55_SCAN"
 assert_contains "§55-6 表示層・テンプレート/ビュー I/O 層の関数本体が process.env に触れない" '"touching":\[\]' "$_G55_SCAN"
+
+# ──────────────────────────────────────────
+# §56  コマンド仕様の宣言表 COMMAND_SPECS の整合性（Issue #2102 R2）
+# 表と、表から導出する FLAG_SUPPORTED_BY / RESERVED_TITLE_GUARD_COMMANDS、runMain の switch、
+# help() のメッセージキーが食い違わないことを検査する。require() で表を直接読むため、
+# 異常系を呼ばない（ガードは process.exit するので、ここでは呼び出さない）。
+# ガードの配線そのものの検査（適合テスト）は run-tests-write.sh §W37 を参照。
+# ──────────────────────────────────────────
+echo ""
+echo "§56  コマンド仕様の宣言表 COMMAND_SPECS の整合性（Issue #2102 R2）"
+
+_G56_TMP=$(mktemp /tmp/todo-test-r2-spec-XXXXXX)
+cat > "$_G56_TMP" << 'R2_SPEC_TEST_EOF'
+const fs = require('fs');
+const E = require(process.argv[2]);
+const src = fs.readFileSync(process.argv[2], 'utf8');
+const out = [];
+const ok = (id, desc) => out.push(['ok', id + ' ' + desc].join('\t'));
+const ng = (id, desc, detail) => out.push(['ng', id + ' ' + desc, detail].join('\t'));
+const check = (id, desc, cond, detail) => (cond ? ok(id, desc) : ng(id, desc, detail));
+
+const specs = E.COMMAND_SPECS;
+const keys = Object.keys(specs);
+const topKeys = keys.filter(k => k.indexOf(' ') < 0);
+const aliases = [].concat(...topKeys.map(k => specs[k].aliases || []));
+const topAndAlias = new Set(topKeys.concat(aliases));
+const diff = (a, b) => [...a].filter(x => !b.has(x));
+
+// I-1: runMain の case ラベル集合 = トップレベルのキー ∪ aliases（双方向）。0 件なら FAIL
+const runMainMatch = src.match(/^async function runMain\(args\) \{[\s\S]*$/m);
+const caseLabels = new Set([...(runMainMatch ? runMainMatch[0] : '').matchAll(/case\s*'([a-zA-Z0-9_-]+)'\s*:/g)].map(m => m[1]));
+check('I-1', 'runMain の case ラベルを 1 件以上抽出できている（0 件なら検査が空振り）', caseLabels.size > 0, 'count=' + caseLabels.size);
+const onlyCase = diff(caseLabels, topAndAlias), onlySpec = diff(topAndAlias, caseLabels);
+check('I-1', 'switch の case ラベルがすべて COMMAND_SPECS にある', onlyCase.length === 0, 'switch にあって表にない: ' + JSON.stringify(onlyCase));
+check('I-1', 'COMMAND_SPECS のトップレベルキーと aliases がすべて switch にある', onlySpec.length === 0, '表にあって switch にない: ' + JSON.stringify(onlySpec));
+
+// I-2: FLAG_FIELD_MAP の全フィールドについて FLAG_SUPPORTED_BY が空でない（キー集合も一致）
+const fm = Object.keys(E.FLAG_FIELD_MAP);
+const emptyFields = fm.filter(f => !Array.isArray(E.FLAG_SUPPORTED_BY[f]) || E.FLAG_SUPPORTED_BY[f].length === 0);
+check('I-2', 'FLAG_SUPPORTED_BY の全フィールドに、読むコマンドが 1 つ以上ある', emptyFields.length === 0, JSON.stringify(emptyFields));
+check('I-2', 'FLAG_SUPPORTED_BY のキー集合 = FLAG_FIELD_MAP のキー集合',
+  JSON.stringify(Object.keys(E.FLAG_SUPPORTED_BY)) === JSON.stringify(fm), JSON.stringify(Object.keys(E.FLAG_SUPPORTED_BY)));
+check('I-2', 'FLAG_SUPPORTED_BY が deriveFlagSupportedBy(COMMAND_SPECS, FLAG_FIELD_MAP) と一致',
+  JSON.stringify(E.FLAG_SUPPORTED_BY) === JSON.stringify(E.deriveFlagSupportedBy(specs, E.FLAG_FIELD_MAP)), 'mismatch');
+
+// I-3: supportedFields の全要素が FLAG_FIELD_MAP のキー（綴りの誤りを検出）
+const badFields = [];
+for (const k of keys) for (const f of (specs[k].supportedFields || [])) if (fm.indexOf(f) < 0) badFields.push(k + ':' + f);
+check('I-3', 'supportedFields の全要素が FLAG_FIELD_MAP のキーである', badFields.length === 0, JSON.stringify(badFields));
+
+// I-4: RESERVED_TITLE_GUARD_COMMANDS = トップレベルキー ∪ aliases ∪ {project, counts}
+const expectReserved = new Set([...topAndAlias, 'project', 'counts']);
+const R = E.RESERVED_TITLE_GUARD_COMMANDS;
+check('I-4', 'RESERVED_TITLE_GUARD_COMMANDS = トップレベルキー ∪ aliases ∪ {project, counts}',
+  R.size === expectReserved.size && diff(R, expectReserved).length === 0 && diff(expectReserved, R).length === 0,
+  'only-in-set=' + JSON.stringify(diff(R, expectReserved)) + ' only-in-expected=' + JSON.stringify(diff(expectReserved, R)));
+check('I-4', "'project' と 'counts' を個別に含む", R.has('project') && R.has('counts'), 'project=' + R.has('project') + ' counts=' + R.has('counts'));
+check('I-4', 'サブコマンドのキー（空白を含む）は予約語に入っていない', keys.filter(k => k.indexOf(' ') >= 0).every(k => !R.has(k)), 'sub in set');
+check('I-4', '予約語は 40 語', R.size === 40, 'size=' + R.size);
+
+// I-5: トップレベル spec（alias を除く）の helpKey が ja / en の MESSAGES に存在する。サブコマンドは helpKey を持たない
+const missingHelp = [], subWithHelp = [], topNoHelp = [];
+for (const k of keys) {
+  const sp = specs[k];
+  if (k.indexOf(' ') >= 0) { if (sp.helpKey !== undefined) subWithHelp.push(k); continue; }
+  if (!sp.helpKey) { topNoHelp.push(k); continue; }
+  for (const hk of [].concat(sp.helpKey)) for (const lang of ['ja', 'en']) {
+    if (!E.MESSAGES[lang]['help.' + hk]) missingHelp.push(lang + ':help.' + hk);
+  }
+}
+check('I-5', '全トップレベル spec に helpKey があり、ja / en の help.<key> が存在する', missingHelp.length === 0 && topNoHelp.length === 0,
+  'missing=' + JSON.stringify(missingHelp) + ' noHelpKey=' + JSON.stringify(topNoHelp));
+check('I-5', 'サブコマンドの spec は helpKey を持たない', subWithHelp.length === 0, JSON.stringify(subWithHelp));
+
+// I-6: サブコマンドのキーの先頭語がトップレベルのキーとして存在する
+const orphan = keys.filter(k => k.indexOf(' ') >= 0 && topKeys.indexOf(k.split(' ')[0]) < 0);
+check('I-6', 'サブコマンドの先頭語がトップレベルのキーとして存在する', orphan.length === 0, JSON.stringify(orphan));
+
+process.stdout.write(out.join('\n') + '\n');
+R2_SPEC_TEST_EOF
+_G56_OUT=$(node "$_G56_TMP" "$ENGINE" 2>"$_G56_TMP.err"); _G56_EC=$?
+if [ "$_G56_EC" -ne 0 ]; then
+  printf "  ❌ §56 COMMAND_SPECS 整合性テストの実行失敗: %s\n" "$(cat "$_G56_TMP.err" 2>/dev/null)"; FAIL=$((FAIL+1))
+else
+  while IFS=$'\t' read -r _st _desc _detail; do
+    [ -z "$_st" ] && continue
+    if [ "$_st" = "ok" ]; then
+      printf "  ✅ §56 %s\n" "$_desc"; PASS=$((PASS+1))
+    else
+      printf "  ❌ §56 %s\n     %s\n" "$_desc" "$_detail"; FAIL=$((FAIL+1))
+    fi
+  done <<< "$_G56_OUT"
+fi
+rm -f "$_G56_TMP" "$_G56_TMP.err"
 
 # ──────────────────────────────────────────
 # 書き込み系ハンドラのスタブベーステスト（run-tests-write.sh、Issue #1648）
