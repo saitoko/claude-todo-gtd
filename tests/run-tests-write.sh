@@ -5440,6 +5440,33 @@ rm -f "$W42_12C_LOG"
 # 確実にFAILすることを実装時に手動確認済み（他の既存アサーションは1回目の出現のみを
 # 見る弱いneedleのため無傷＝陰性対照として引き続きPASS。詳細は完了報告を参照）。
 
+# ── §W55 run 層は継承された process.env の *_ENV に影響されない（Issue #2102 R4） ──
+# 旧実装は run 層が OPEN_ENV / FILTER_*_ENV を process.env へ書いて表示関数に渡していたため、
+# 呼び出し元が export していた FILTER_*_ENV が run list / run view の絞り込みに混入した。
+# R4 で引数渡しに変えたので、継承 env は無視される。
+W55_HOME=$(mktemp -d /tmp/todo-test-w55-XXXXXX)
+mkdir -p "$W55_HOME/.claude"
+echo '{"onlygtd":{"gtd":"next"}}' > "$W55_HOME/.claude/todo-views.json"
+W55_RESP='{"issues.listForRepo":[{"data":[{"number":801,"title":"W55 next","body":"due: 2026-09-01\n","labels":[{"name":"🎯 next"},{"name":"p2"}],"updated_at":"2026-08-01T00:00:00Z"},{"number":802,"title":"W55 waiting","body":"","labels":[{"name":"⏳ waiting"},{"name":"p1"}],"updated_at":"2026-08-01T00:00:00Z"}]},{"data":[]}]}'
+w55_run() {
+  HOME="$W55_HOME" OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W55_RESP" \
+    TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-09-02 "$@" 2>&1
+}
+W55_BASE=$(w55_run node "$ENGINE" run list)
+assert_contains "W55-0 前提: 継承 env なしの run list は 2 件とも表示する" "W55 waiting" "$W55_BASE"
+assert_contains "W55-0 前提: next も表示する" "W55 next" "$W55_BASE"
+W55_DIRTY=$(w55_run env FILTER_GTD_ENV=next FILTER_PRI_ENV=p9 FILTER_GROUP_ENV=1 FILTER_NO_DUE_ENV=1 FILTER_TAG_ENV=zzz OPEN_ENV='[]' TODAY_ENV=1999-01-01 node "$ENGINE" run list)
+assert_eq "W55-1 run list: 継承された FILTER_*/OPEN_ENV/TODAY_ENV は出力に影響しない" "$W55_BASE" "$W55_DIRTY"
+W55_VBASE=$(w55_run node "$ENGINE" run view use onlygtd)
+W55_VDIRTY=$(w55_run env FILTER_PRI_ENV=p1 FILTER_CTX_ENV=@PC FILTER_NO_DUE_ENV=1 node "$ENGINE" run view use onlygtd)
+assert_eq "W55-2 run view use: ビュー定義にないフィルタは継承 env から混入しない" "$W55_VBASE" "$W55_VDIRTY"
+assert_contains "W55-2 前提: ビュー定義の gtd=next では next が表示される" "W55 next" "$W55_VBASE"
+assert_not_contains "W55-2 前提: next 以外は表示されない" "W55 waiting" "$W55_VBASE"
+W55_DBASE=$(w55_run node "$ENGINE" run dashboard)
+W55_DDIRTY=$(w55_run env OPEN_ENV='[]' CLOSED_ENV='[]' TODAY_ENV=1999-01-01 node "$ENGINE" run dashboard)
+assert_eq "W55-3 run dashboard: 継承された OPEN_ENV/CLOSED_ENV/TODAY_ENV は出力に影響しない" "$W55_DBASE" "$W55_DDIRTY"
+rm -rf "$W55_HOME"
+
 echo ""
 echo "=========================================="
 W_TOTAL=$((PASS+FAIL))

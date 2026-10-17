@@ -1722,17 +1722,20 @@ function listGroupedByDue(issues, today) {
   }
 }
 
-function listAll() {
-  const issues = JSON.parse(process.env.OPEN_ENV || '[]');
-  const today = process.env.TODAY_ENV;
-  const filterGtd = process.env.FILTER_GTD_ENV || '';
-  const filterCtx = process.env.FILTER_CTX_ENV || '';
-  const filterTag = process.env.FILTER_TAG_ENV || '';
-  const filterPri = process.env.FILTER_PRI_ENV || '';
-  const filterProj = process.env.FILTER_PROJ_ENV || '';
-  const groupByDue = process.env.FILTER_GROUP_ENV === '1';
-  const noDue = process.env.FILTER_NO_DUE_ENV === '1';
-  const noEstimate = process.env.FILTER_NO_ESTIMATE_ENV === '1';
+// #2102 R4: 表示層は process.env を読まず引数で受け取る。env を読んで引数へ変換するのは
+// 直接サブコマンド側の薄いラッパ（envOpen / envClosed / envListFilters 等、下記「env → 引数」節）だけ。
+// listAll の data は { open: Issue配列, today: 'YYYY-MM-DD', filters: {...} }。
+// filters の各キーは省略可（省略 = 絞り込みなし）:
+//   gtd / ctx / tag / pri / proj: 文字列、group / noDue / noEstimate: 真偽値。
+function listAll({ open: issues, today, filters = {} }) {
+  const filterGtd = filters.gtd || '';
+  const filterCtx = filters.ctx || '';
+  const filterTag = filters.tag || '';
+  const filterPri = filters.pri || '';
+  const filterProj = filters.proj || '';
+  const groupByDue = filters.group === true;
+  const noDue = filters.noDue === true;
+  const noEstimate = filters.noEstimate === true;
   const w = s => process.stdout.write(s);
 
   // フィルタリング
@@ -1915,9 +1918,7 @@ function listAll() {
   w('\n');
 }
 
-function listSummary() {
-  const issues = JSON.parse(process.env.OPEN_ENV || '[]');
-  const today = process.env.TODAY_ENV;
+function listSummary({ open: issues, today }) {
   const counts = {};
   [...GTD_LABELS, PROJECT_LABEL].forEach(l => counts[l] = 0);
   let overdue = 0, thisWeek = 0;
@@ -1942,9 +1943,7 @@ function listSummary() {
   w('\n');
 }
 
-function weeklySummary() {
-  const issues = JSON.parse(process.env.OPEN_ENV || '[]');
-  const today = process.env.TODAY_ENV;
+function weeklySummary({ open: issues, today }) {
   const counts = {};
   [...GTD_LABELS, PROJECT_LABEL].forEach(l => counts[l] = 0);
   let overdue = 0, thisWeek = 0;
@@ -1975,10 +1974,7 @@ function weeklySummary() {
   w(t('weekly.start')+'\n\n');
 }
 
-function stats() {
-  const issues = JSON.parse(process.env.OPEN_ENV || '[]');
-  const closed = JSON.parse(process.env.CLOSED_ENV || '[]');
-  const today = process.env.TODAY_ENV;
+function stats({ open: issues, closed, today }) {
   const gtdCounts = {};
   [...GTD_LABELS, PROJECT_LABEL].forEach(l => gtdCounts[l] = 0);
   const priCounts = {p1:0, p2:0, p3:0, none:0};
@@ -2108,10 +2104,7 @@ function help() {
   w(t('help.weekly_migrated')+'\n');
 }
 
-function renderToday() {
-  const issues = JSON.parse(process.env.OPEN_ENV || '[]');
-  const todayStr = process.env.TODAY_ENV;
-  const closed = JSON.parse(process.env.CLOSED_ENV || '[]');
+function renderToday({ open: issues, today: todayStr, closed }) {
   const w = s => process.stdout.write(s);
 
   const overdue = [], dueToday = [], routineToday = [], routineOverdue = [];
@@ -2217,9 +2210,7 @@ function renderToday() {
   w(parts.join('  ')+'\n');
 }
 
-function eisenhower() {
-  const issues = JSON.parse(process.env.OPEN_ENV || '[]');
-  const todayStr = process.env.TODAY_ENV;
+function eisenhower({ open: issues, today: todayStr }) {
   const w = s => process.stdout.write(s);
 
   // next ラベルのタスクのみ抽出
@@ -2302,10 +2293,7 @@ function eisenhower() {
   })+'\n');
 }
 
-function dashboard() {
-  const issues = JSON.parse(process.env.OPEN_ENV || '[]');
-  const today = process.env.TODAY_ENV;
-  const closed = JSON.parse(process.env.CLOSED_ENV || '[]');
+function dashboard({ open: issues, today, closed }) {
   const w = s => process.stdout.write(s);
   const d7 = new Date(today); d7.setDate(d7.getDate()+7);
   const d7str = d7.toISOString().slice(0,10);
@@ -2398,11 +2386,9 @@ function dashboard() {
   }
 }
 
-function report() {
-  const today = process.env.TODAY_ENV;
-  const days = parseInt(process.env.DAYS_ENV) || 7;
-  const open = JSON.parse(process.env.OPEN_ENV || '[]');
-  const closed = JSON.parse(process.env.CLOSED_ENV || '[]');
+// days は数値でも数値文字列でもよい（parseInt で解釈。0・非数は 7 に落とす旧来の挙動のまま）。
+function report({ open, closed, today, days: daysRaw }) {
+  const days = parseInt(daysRaw) || 7;
   const w = s => process.stdout.write(s);
 
   const startDate = new Date(today);
@@ -2532,9 +2518,7 @@ function report() {
   w('\n');
 }
 
-function doneCount() {
-  const closed = JSON.parse(process.env.CLOSED_ENV || '[]');
-  const today = process.env.TODAY_ENV;
+function doneCount({ closed, today }) {
   const cnt = closed.filter(i => i.closedAt && toJstDateStr(i.closedAt) === today).length;
   process.stdout.write(String(cnt));
 }
@@ -2580,8 +2564,10 @@ function templateList() {
   }
 }
 
-function templateShow() {
-  const name = process.env.TNAME_ENV;
+// #2102 R4: テンプレート・ビューの I/O 関数も process.env を読まず引数で受け取る。
+// template の保存系 fields は { gtd, contexts: 配列, tags: 配列, dueOffset, due, recur,
+// project, priority, desc }（文字列は省略可。省略時の既定値は各関数の中で補う）。
+function templateShow(name) {
   const data = readJsonFile(getTemplatePath());
   if (!data[name]) { process.stderr.write(tpl('template.not_found', {name: name})+'\n'); process.exit(1); }
   const tmpl = data[name];
@@ -2598,59 +2584,58 @@ function templateShow() {
   if (tmpl.desc) w('  desc:     '+tmpl.desc+'\n');
 }
 
-function templateSave() {
-  const name = process.env.TNAME_ENV;
+function templateSave(name, fields) {
   const data = readJsonFile(getTemplatePath());
   const t = {};
-  t.gtd = process.env.GTD_ENV || 'inbox';
-  t.context = JSON.parse(process.env.CONTEXTS_ENV || '[]');
-  t.tags = JSON.parse(process.env.TAGS_ENV || '[]');
-  const off = process.env.DUE_OFFSET_ENV || '';
+  t.gtd = fields.gtd || 'inbox';
+  const { contexts = [], tags = [] } = fields;
+  t.context = contexts;
+  t.tags = tags;
+  const off = fields.dueOffset || '';
   if (off) t['due-offset'] = parseInt(off);
-  const due = process.env.DUE_ENV || '';
+  const due = fields.due || '';
   if (due && !off) t.due = due;
-  const recur = process.env.RECUR_ENV || '';
+  const recur = fields.recur || '';
   if (recur) t.recur = recur;
-  const proj = process.env.PROJECT_ENV || '';
+  const proj = fields.project || '';
   if (proj) t.project = parseInt(proj);
-  t.priority = process.env.PRIORITY_ENV || 'p3';
-  const desc = process.env.DESC_ENV || '';
+  t.priority = fields.priority || 'p3';
+  const desc = fields.desc || '';
   if (desc) t.desc = desc;
   data[name] = t;
   writeJsonFile(getTemplatePath(), data);
   process.stdout.write(tpl('template.saved', {name: name})+'\n');
 }
 
-function templateSaveFrom() {
-  const name = process.env.TNAME_ENV;
-  const issueNum = process.env.ISSUE_NUM_ENV || '?';
+function templateSaveFrom(name, fields, issueNumArg) {
+  const issueNum = issueNumArg || '?';
   const data = readJsonFile(getTemplatePath());
   const t = {};
-  t.gtd = process.env.GTD_ENV || 'inbox';
-  t.context = JSON.parse(process.env.CONTEXTS_ENV || '[]');
-  t.tags = JSON.parse(process.env.TAGS_ENV || '[]');
-  const due = process.env.DUE_ENV || '';
+  t.gtd = fields.gtd || 'inbox';
+  const { contexts = [], tags = [] } = fields;
+  t.context = contexts;
+  t.tags = tags;
+  const due = fields.due || '';
   if (due) t.due = due;
-  const recur = process.env.RECUR_ENV || '';
+  const recur = fields.recur || '';
   if (recur) t.recur = recur;
-  const proj = process.env.PROJECT_ENV || '';
+  const proj = fields.project || '';
   if (proj) t.project = parseInt(proj);
   // 呼び出し側（template save <name> from <#>）はコピー元Issueの優先度ラベルを
-  // 解析済みで PRIORITY_ENV にセットしている。以前は templateSave()（インライン形式）
+  // 解析済みで fields.priority に渡している。以前は templateSave()（インライン形式）
   // だけが t.priority を書き込んでおり、この関数（from形式）には対応する代入が
   // 存在しなかった（非対称）。読み忘れたまま常に templateUse() 側の
   // `t.priority||'p3'` フォールバックへ落ちるため、コピー元が p1/p2 でも
   // 保存後は常に p3 扱いになっていた。
-  t.priority = process.env.PRIORITY_ENV || 'p3';
-  const desc = process.env.DESC_ENV || '';
+  t.priority = fields.priority || 'p3';
+  const desc = fields.desc || '';
   if (desc) t.desc = desc;
   data[name] = t;
   writeJsonFile(getTemplatePath(), data);
   process.stdout.write(tpl('template.saved_from', {name: name, num: issueNum})+'\n');
 }
 
-function templateUse() {
-  const name = process.env.TNAME_ENV;
+function templateUse(name) {
   const data = readJsonFile(getTemplatePath());
   if (!data[name]) { process.stderr.write(tpl('template.not_found', {name: name})+'\n'); process.exit(1); }
   const t = data[name];
@@ -2666,8 +2651,7 @@ function templateUse() {
   w('DESC_B64='+Buffer.from(t.desc||'','utf8').toString('base64')+'\n');
 }
 
-function templateDelete() {
-  const name = process.env.TNAME_ENV;
+function templateDelete(name) {
   const data = readJsonFile(getTemplatePath());
   if (!data[name]) { process.stderr.write(tpl('template.not_found', {name: name})+'\n'); process.exit(1); }
   delete data[name];
@@ -2675,16 +2659,16 @@ function templateDelete() {
   process.stdout.write(tpl('template.deleted', {name: name})+'\n');
 }
 
-function viewSave() {
-  const name = process.env.VNAME_ENV;
+// viewSave の filters は { gtd, ctx, pri }（いずれも文字列・省略可。ctx は空白区切りで複数可）。
+function viewSave(name, filters) {
   const fpath = getViewPath();
   const data = readJsonFile(fpath);
   const v = {};
-  const gtd = process.env.GTD_ENV || '';
+  const gtd = filters.gtd || '';
   if (gtd) v.gtd = gtd;
-  const ctx = process.env.CTX_ENV || '';
+  const ctx = filters.ctx || '';
   if (ctx) v.context = ctx.trim().split(/\s+/);
-  const pri = process.env.PRI_ENV || '';
+  const pri = filters.pri || '';
   if (pri) v.priority = pri;
   data[name] = v;
   writeJsonFile(fpath, data);
@@ -2695,8 +2679,7 @@ function viewSave() {
   process.stdout.write(tpl('view.saved', {name: name, parts: parts.join(', ')})+'\n');
 }
 
-function viewUse() {
-  const name = process.env.VNAME_ENV;
+function viewUse(name) {
   const data = readJsonFile(getViewPath());
   if (!data[name]) { process.stderr.write(tpl('view.not_found', {name: name})+'\n'); process.exit(1); }
   const v = data[name];
@@ -2721,14 +2704,49 @@ function viewList() {
   }
 }
 
-function viewDelete() {
-  const name = process.env.VNAME_ENV;
+function viewDelete(name) {
   const fpath = getViewPath();
   const data = readJsonFile(fpath);
   if (!data[name]) { process.stderr.write(tpl('view.not_found', {name: name})+'\n'); process.exit(1); }
   delete data[name];
   writeJsonFile(fpath, data);
   process.stdout.write(tpl('view.deleted', {name: name})+'\n');
+}
+
+// ─── env → 引数（直接サブコマンド専用の変換層） ───
+// #2102 R4: 表示層・テンプレート/ビュー I/O 層は process.env を読まない。直接サブコマンド
+// （list-all / dashboard / template / view 等。テストと外部ツールが env で入力を渡す）が
+// 受け取った env を、表示層の引数へ変換するだけの関数をここに集める。run 層（runList /
+// runDashboard / runTemplate 等）は env に書かず、引数で直接渡す。
+function envOpen() { return JSON.parse(process.env.OPEN_ENV || '[]'); }
+function envClosed() { return JSON.parse(process.env.CLOSED_ENV || '[]'); }
+function envListFilters() {
+  return {
+    gtd: process.env.FILTER_GTD_ENV || '',
+    ctx: process.env.FILTER_CTX_ENV || '',
+    tag: process.env.FILTER_TAG_ENV || '',
+    pri: process.env.FILTER_PRI_ENV || '',
+    proj: process.env.FILTER_PROJ_ENV || '',
+    group: process.env.FILTER_GROUP_ENV === '1',
+    noDue: process.env.FILTER_NO_DUE_ENV === '1',
+    noEstimate: process.env.FILTER_NO_ESTIMATE_ENV === '1',
+  };
+}
+function envTemplateFields() {
+  return {
+    gtd: process.env.GTD_ENV,
+    contexts: JSON.parse(process.env.CONTEXTS_ENV || '[]'),
+    tags: JSON.parse(process.env.TAGS_ENV || '[]'),
+    dueOffset: process.env.DUE_OFFSET_ENV,
+    due: process.env.DUE_ENV,
+    recur: process.env.RECUR_ENV,
+    project: process.env.PROJECT_ENV,
+    priority: process.env.PRIORITY_ENV,
+    desc: process.env.DESC_ENV,
+  };
+}
+function envViewFilters() {
+  return { gtd: process.env.GTD_ENV, ctx: process.env.CTX_ENV, pri: process.env.PRI_ENV };
 }
 
 // ─── Octokit API サブコマンド ───
@@ -3207,26 +3225,26 @@ function main() {
       break;
 
     // 集計・表示（env vars 経由）
-    case 'list-all':        listAll(); break;
-    case 'list-summary':    listSummary(); break;
-    case 'weekly-summary':  weeklySummary(); break;
-    case 'stats':           stats(); break;
+    case 'list-all':        listAll({ open: envOpen(), today: process.env.TODAY_ENV, filters: envListFilters() }); break;
+    case 'list-summary':    listSummary({ open: envOpen(), today: process.env.TODAY_ENV }); break;
+    case 'weekly-summary':  weeklySummary({ open: envOpen(), today: process.env.TODAY_ENV }); break;
+    case 'stats':           stats({ open: envOpen(), closed: envClosed(), today: process.env.TODAY_ENV }); break;
     case 'help':            help(); break;
-    case 'today':           renderToday(); break;
-    case 'eisenhower':      eisenhower(); break;
-    case 'dashboard':       dashboard(); break;
-    case 'report':          report(); break;
-    case 'done-count':      doneCount(); break;
+    case 'today':           renderToday({ open: envOpen(), today: process.env.TODAY_ENV, closed: envClosed() }); break;
+    case 'eisenhower':      eisenhower({ open: envOpen(), today: process.env.TODAY_ENV }); break;
+    case 'dashboard':       dashboard({ open: envOpen(), today: process.env.TODAY_ENV, closed: envClosed() }); break;
+    case 'report':          report({ open: envOpen(), closed: envClosed(), today: process.env.TODAY_ENV, days: process.env.DAYS_ENV }); break;
+    case 'done-count':      doneCount({ closed: envClosed(), today: process.env.TODAY_ENV }); break;
 
     // テンプレート管理
     case 'template':
       switch (args[1]) {
         case 'list':      templateList(); break;
-        case 'show':      templateShow(); break;
-        case 'save':      templateSave(); break;
-        case 'save-from': templateSaveFrom(); break;
-        case 'use':       templateUse(); break;
-        case 'delete':    templateDelete(); break;
+        case 'show':      templateShow(process.env.TNAME_ENV); break;
+        case 'save':      templateSave(process.env.TNAME_ENV, envTemplateFields()); break;
+        case 'save-from': templateSaveFrom(process.env.TNAME_ENV, envTemplateFields(), process.env.ISSUE_NUM_ENV); break;
+        case 'use':       templateUse(process.env.TNAME_ENV); break;
+        case 'delete':    templateDelete(process.env.TNAME_ENV); break;
         default: process.stderr.write('Unknown template subcommand: '+args[1]+'\n'); process.exit(1);
       }
       break;
@@ -3234,10 +3252,10 @@ function main() {
     // ビュー管理
     case 'view':
       switch (args[1]) {
-        case 'save':   viewSave(); break;
-        case 'use':    viewUse(); break;
+        case 'save':   viewSave(process.env.VNAME_ENV, envViewFilters()); break;
+        case 'use':    viewUse(process.env.VNAME_ENV); break;
         case 'list':   viewList(); break;
-        case 'delete': viewDelete(); break;
+        case 'delete': viewDelete(process.env.VNAME_ENV); break;
         default: process.stderr.write('Unknown view subcommand: '+args[1]+'\n'); process.exit(1);
       }
       break;
@@ -4148,17 +4166,12 @@ async function runList(octokit, owner, repo, tokens) {
     return;
   }
 
-  const env = { OPEN_ENV: JSON.stringify(allIssues), TODAY_ENV: today };
-  if (filterGtd) env.FILTER_GTD_ENV = filterGtd;
-  if (filterCtx) env.FILTER_CTX_ENV = filterCtx;
-  if (filterTag) env.FILTER_TAG_ENV = filterTag;
-  if (filterPri) env.FILTER_PRI_ENV = filterPri;
-  if (filterProj) env.FILTER_PROJ_ENV = filterProj;
-  if (groupByDue && !noDue) env.FILTER_GROUP_ENV = '1';
-  if (noDue) env.FILTER_NO_DUE_ENV = '1';
-  if (noEstimate) env.FILTER_NO_ESTIMATE_ENV = '1';
-  Object.assign(process.env, env);
-  listAll();
+  listAll({
+    open: allIssues,
+    today,
+    filters: { gtd: filterGtd, ctx: filterCtx, tag: filterTag, pri: filterPri, proj: filterProj,
+               group: groupByDue && !noDue, noDue, noEstimate },
+  });
 }
 
 async function fetchAllOpen(octokit, owner, repo) {
@@ -5067,10 +5080,7 @@ async function runDashboard(octokit, owner, repo) {
     fetchAllOpen(octokit, owner, repo),
     fetchRecentClosed(octokit, owner, repo, 30, ['closedAt','number'])
   ]);
-  process.env.OPEN_ENV = JSON.stringify(open);
-  process.env.CLOSED_ENV = JSON.stringify(closed);
-  process.env.TODAY_ENV = today;
-  dashboard();
+  dashboard({ open, today, closed });
 }
 
 async function runToday(octokit, owner, repo) {
@@ -5079,19 +5089,14 @@ async function runToday(octokit, owner, repo) {
     fetchAllOpen(octokit, owner, repo),
     fetchRecentClosed(octokit, owner, repo, 30, ['closedAt','number'])
   ]);
-  process.env.OPEN_ENV = JSON.stringify(open);
-  process.env.CLOSED_ENV = JSON.stringify(closed);
-  process.env.TODAY_ENV = today;
-  renderToday();
+  renderToday({ open, today, closed });
 }
 
 async function runEisenhower(octokit, owner, repo) {
-  // eisenhower() は完了実績を表示しないため CLOSED_ENV は設定しない（runToday と異なる点）
+  // eisenhower() は完了実績を表示しないため closed は渡さない（runToday と異なる点）
   const today = getToday();
   const open = await fetchAllOpen(octokit, owner, repo);
-  process.env.OPEN_ENV = JSON.stringify(open);
-  process.env.TODAY_ENV = today;
-  eisenhower();
+  eisenhower({ open, today });
 }
 
 async function runStats(octokit, owner, repo) {
@@ -5100,10 +5105,7 @@ async function runStats(octokit, owner, repo) {
     fetchAllOpen(octokit, owner, repo),
     fetchRecentClosed(octokit, owner, repo, 50, ['closedAt'])
   ]);
-  process.env.OPEN_ENV = JSON.stringify(open);
-  process.env.CLOSED_ENV = JSON.stringify(closed);
-  process.env.TODAY_ENV = todayStr;
-  stats();
+  stats({ open, closed, today: todayStr });
 }
 
 async function runReport(octokit, owner, repo, tokens) {
@@ -5130,11 +5132,7 @@ async function runReport(octokit, owner, repo, tokens) {
     fetchAllOpen(octokit, owner, repo),
     fetchRecentClosed(octokit, owner, repo, 200, null)
   ]);
-  process.env.OPEN_ENV = JSON.stringify(open);
-  process.env.CLOSED_ENV = JSON.stringify(closed);
-  process.env.TODAY_ENV = todayStr;
-  process.env.DAYS_ENV = String(days);
-  report();
+  report({ open, closed, today: todayStr, days });
 }
 
 async function runHelp() {
@@ -5161,8 +5159,7 @@ async function runTemplate(octokit, owner, repo, tokens) {
     // `--foo` エントリを書き込めてしまう。show/delete も同じ線引きに揃える。
     guardUnknownFlag(tokens.slice(1), [], TEMPLATE_USAGE, 'error.unknown_flag_hint_options');
     validateName(name);
-    process.env.TNAME_ENV = name;
-    templateShow();
+    templateShow(name);
   } else if (sub === 'save') {
     const name = tokens[1];
     if (!name) { process.stderr.write(`${TEMPLATE_USAGE}\n`); process.exit(1); }
@@ -5191,17 +5188,14 @@ async function runTemplate(octokit, owner, repo, tokens) {
         priority,
       ]);
       const tags = lnames.filter(l => !systemLabels.has(l));
-      process.env.TNAME_ENV = name;
-      process.env.GTD_ENV = gtd;
-      process.env.CONTEXTS_ENV = JSON.stringify(contexts);
-      process.env.TAGS_ENV = JSON.stringify(tags);
-      process.env.DUE_ENV = issue.due || '';
-      process.env.RECUR_ENV = issue.recur || '';
-      process.env.PROJECT_ENV = issue.project || '';
-      process.env.PRIORITY_ENV = priority;
-      process.env.DESC_ENV = issue.desc || '';
-      process.env.ISSUE_NUM_ENV = String(num);
-      templateSaveFrom();
+      templateSaveFrom(name, {
+        gtd, contexts, tags,
+        due: issue.due || '',
+        recur: issue.recur || '',
+        project: issue.project || '',
+        priority,
+        desc: issue.desc || '',
+      }, String(num));
     } else {
       // インライン引数形式
       let gtd = 'inbox';
@@ -5232,17 +5226,13 @@ async function runTemplate(octokit, owner, repo, tokens) {
       }
       if (parsed.recur) validateRecur(parsed.recur);
       if (parsed.project) validateNumber(parsed.project);
-      process.env.TNAME_ENV = name;
-      process.env.GTD_ENV = gtd;
-      process.env.CONTEXTS_ENV = JSON.stringify(contexts);
-      process.env.TAGS_ENV = JSON.stringify(tags);
-      process.env.DUE_OFFSET_ENV = dueOffset;
-      process.env.DUE_ENV = due;
-      process.env.RECUR_ENV = parsed.recur || '';
-      process.env.PROJECT_ENV = parsed.project || '';
-      process.env.PRIORITY_ENV = priority;
-      process.env.DESC_ENV = parsed.desc || '';
-      templateSave();
+      templateSave(name, {
+        gtd, contexts, tags, dueOffset, due,
+        recur: parsed.recur || '',
+        project: parsed.project || '',
+        priority,
+        desc: parsed.desc || '',
+      });
     }
   } else if (sub === 'use') {
     const name = tokens[1];
@@ -5260,7 +5250,6 @@ async function runTemplate(octokit, owner, repo, tokens) {
     // error.name_empty でエラー終了させるため、無条件に呼ぶと「上書きなし」の正常系が
     // 全部壊れる。overrideTitle が真のときのみ検証する。
     if (overrideTitle) validateTitle(overrideTitle);
-    process.env.TNAME_ENV = name;
     // templateUse は stdout に KEY=VALUE を出力する関数なので、内部で直接読む
     const data = readJsonFile(getTemplatePath());
     if (!data[name]) { process.stderr.write(tpl('template.not_found', {name})+'\n'); process.exit(1); }
@@ -5330,8 +5319,7 @@ async function runTemplate(octokit, owner, repo, tokens) {
     // slice(1) で名前の位置も検査する（上記 show のコメント参照）
     guardUnknownFlag(tokens.slice(1), [], TEMPLATE_USAGE, 'error.unknown_flag_hint_options');
     validateName(name);
-    process.env.TNAME_ENV = name;
-    templateDelete();
+    templateDelete(name);
   } else {
     process.stderr.write(`${TEMPLATE_USAGE}\n`); process.exit(1);
   }
@@ -5574,39 +5562,33 @@ async function runView(octokit, owner, repo, tokens) {
       unmatched, VIEW_SAVE_USAGE, 'error.extra_positional_hint_single',
       `/todo view save ${name} ${[gtd, ctx, pri].filter(Boolean).join(' ')}`.trim()
     );
-    process.env.VNAME_ENV = name;
-    process.env.GTD_ENV = gtd;
-    process.env.CTX_ENV = ctx;
-    process.env.PRI_ENV = pri;
-    viewSave();
+    viewSave(name, { gtd, ctx, pri });
   } else if (sub === 'delete') {
     // 予約サブコマンドは「名前扱いフォールバック」より前に判定する
     // （でないと view delete <name> が「delete」という名前のビュー扱いになり到達不能になる。Issue #1643）
     const name = tokens[1];
     if (!name) { process.stderr.write('Usage: run view delete <name>\n'); process.exit(1); }
     validateName(name);
-    process.env.VNAME_ENV = name;
-    viewDelete();
+    viewDelete(name);
   } else if (sub === 'use' || !sub.startsWith('-')) {
     // view use <name> または view <name>（subがコマンド名でない場合）
     const name = sub === 'use' ? tokens[1] : sub;
     if (!name) { process.stderr.write('Usage: run view use <name>\n'); process.exit(1); }
     validateName(name);
-    process.env.VNAME_ENV = name;
     // viewUse の出力を読んで list フィルタに適用
     const vdata = readJsonFile(getViewPath());
     if (!vdata[name]) { process.stderr.write(tpl('view.not_found', {name})+'\n'); process.exit(1); }
     const v = vdata[name];
     const today = getToday();
     const allIssues = await fetchAllOpen(octokit, owner, repo);
-    process.env.OPEN_ENV = JSON.stringify(allIssues);
-    process.env.TODAY_ENV = today;
-    if (v.gtd) process.env.FILTER_GTD_ENV = v.gtd;
-    if (v.context && v.context.length) process.env.FILTER_CTX_ENV = v.context[0];
-    if (v.priority) process.env.FILTER_PRI_ENV = v.priority;
+    // ビュー定義の値だけをフィルタに渡す（旧実装は env へ String 化して書いていたので String() で揃える）
+    const viewFilters = {};
+    if (v.gtd) viewFilters.gtd = String(v.gtd);
+    if (v.context && v.context.length) viewFilters.ctx = String(v.context[0]);
+    if (v.priority) viewFilters.pri = String(v.priority);
     const parts = [v.gtd, v.context ? v.context.join(' ') : '', v.priority].filter(Boolean);
     runOut(tpl('view.viewing', { name, parts: parts.join(', ') })+'\n');
-    listAll();
+    listAll({ open: allIssues, today, filters: viewFilters });
   } else {
     process.stderr.write('Usage: run view list|save|use|delete\n'); process.exit(1);
   }
@@ -6323,6 +6305,7 @@ module.exports = {
   runStats, runReport, runHelp, runTemplate, issueToJsonObj, runSchema, runShow, runView, runBulk,
   runReviewSomeday, runPromote, runPromoteProject, runUnlink, runWeeklyProjectAudit,
   runMigrateSubIssue, reservedTitleGuardWord, runMain,
+  envOpen, envClosed, envListFilters, envTemplateFields, envViewFilters,
 };
 
 if (require.main === module) main();
