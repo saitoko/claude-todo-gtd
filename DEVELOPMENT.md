@@ -51,7 +51,7 @@ cp todo.sh ~/.claude/todo.sh
 ## テスト
 
 - テストランナー: `bash tests/run-tests.sh`（+ 書き込み系は `bash tests/run-tests-write.sh` として個別実行も可能。通常は `run-tests.sh` から自動的に呼び出される）
-- 自動テスト総件数: **2,218件**（read-only系 984 + 書き込み系 1,234。`bash tests/run-tests.sh` の最終行が出す実測値。2026-09-13 時点。全件PASSが目安）
+- 自動テスト総件数: **2,256件**（read-only系 984 + 書き込み系 1,272。`bash tests/run-tests.sh` の最終行が出す実測値。2026-10-17 時点。全件PASSが目安）
 - シナリオ一覧: `tests/scenarios.md`
 - 全件 PASS が Pull Request マージの必須条件
 - 件数を更新する際は README.md の記載も合わせて更新する
@@ -726,6 +726,22 @@ function guardExtraPositional(extraTokens, usage, hintKey, example) {
 **変更なし:** コード・`todo.md`・テストはいずれも変更していない（実装と文書は既に一致している）。本セクションは「なぜ追加しないか」を残すための記録。
 
 **残課題:** `validateTitle` と同じ論理で `FORBIDDEN_CHARS` 自体を縮小・廃止する方向は未検討のまま残っている。着手する場合は本Issueとは別に扱うこと。
+
+### 2026-10-17: `project: #N` の前方一致 / `run help` のトークン要件 / `show --json` の型（Issue #2102）
+
+**症状:**
+- `list project 12` / `list`（project 行の子タスク集計）/ `weekly-project-audit` が、`project: #123` の子や、本文中に書かれた `project: #12` という文字列を `#12` の子として数えた。
+- トークン未設定環境で `run help` / `run schema` が `GH_TOKEN is not set` で終了した。
+- `show --json` の `project` / `dependsOn` が文字列（`"12"`）で出力され、`list --json` と `schema` の `integer | null` と食い違った。
+
+**原因:**
+- 子の判定が `body.includes('project: #'+N)` で、行頭・行末のアンカーがなかった。
+- `runMain` が help/schema でも無条件に `initOctokit()` を呼んでいた。
+- `runShow` の JSON 整形だけ `parseInt` を通していなかった。
+
+**修正:** `bodyHasProject(body, num)`（行頭から行末までの完全一致）を追加して4箇所を置換。help/schema は `initOctokit()` を呼ばない。`show --json` は `issueToJsonObj` と同じく `parseInt` を通す。
+
+**テスト:** `tests/run-tests-write.sh` §W42 に追加。修正前のエンジンに戻すと15アサーションが FAIL することを確認済み。`add --project` の親が project でないとき Issue 作成後に exit 1 する挙動は仕様未確定のため修正せず、現行挙動を特性テスト（W42-12）で固定している。
 
 ## 翻訳方針（i18n）
 

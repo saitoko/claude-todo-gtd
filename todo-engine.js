@@ -1057,6 +1057,17 @@ function normalizeDue(raw, today) {
   return result !== null ? result : raw;
 }
 
+// body の `project: #N` メタ行が、指定した Issue 番号 N と完全一致するか判定する。
+// 従来は `body.includes('project: #'+N)` で判定していたため、N=12 のとき `project: #123` の
+// 子や、desc 本文中に書かれた文字列にも一致していた（前方一致の誤判定。Issue #2102）。
+// parseBodyObj と同じく「行頭」から始まるメタ行のみを対象にし、番号は桁の途中で切れないよう
+// 行末（任意の空白・CR を許す）まで一致を要求する。
+function bodyHasProject(body, num) {
+  const n = String(num).replace(/\D/g, '');
+  if (!n) return false;
+  return new RegExp('^project: #' + n + '[ \\t]*\\r?$', 'm').test(body || '');
+}
+
 // body を解析してオブジェクトで返す（parseBody の内部実装。全フィールドを一元管理）
 function parseBodyObj(body) {
   const lines = (body || '').split('\n');
@@ -1731,8 +1742,7 @@ function listAll() {
   if (filterTag) filtered = filtered.filter(i => getLnames(i).includes(filterTag));
   if (filterPri) filtered = filtered.filter(i => getLnames(i).includes(filterPri));
   if (filterProj) {
-    const projTag = 'project: #'+filterProj;
-    filtered = filtered.filter(i => (i.body||'').includes(projTag));
+    filtered = filtered.filter(i => bodyHasProject(i.body, filterProj));
   }
 
   // 「/todo list project」（filterGtd === 'project'）は 🌈 someday を併せ持つ project を
@@ -1833,9 +1843,8 @@ function listAll() {
   const pausedProjCount = allProjItems.length - projItems.length;
   let noNextCount = 0, staleCount = 0;
   const projStats = projItems.map(issue => {
-    const projTag = 'project: #'+issue.number;
     // body メタ検索と sub-issue の両方は非同期不可のため body メタのみでカウント
-    const childIssues = issues.filter(i => (i.body||'').includes(projTag));
+    const childIssues = issues.filter(i => bodyHasProject(i.body, issue.number));
     const nextCount = childIssues.filter(i => getLnames(i).includes('next')).length;
     const waitingCount = childIssues.filter(i => getLnames(i).includes('waiting')).length;
     const hasNext = nextCount > 0;
@@ -4087,8 +4096,7 @@ async function runList(octokit, owner, repo, tokens) {
     const subNums = new Set(subIssues.map(s => s.number));
 
     // body メタ検索（後方互換）
-    const projTag = 'project: #'+listProjectNum;
-    const bodyChildren = allIssues.filter(i => (i.body||'').includes(projTag));
+    const bodyChildren = allIssues.filter(i => bodyHasProject(i.body, listProjectNum));
     for (const bc of bodyChildren) subNums.add(bc.number);
 
     const children = allIssues.filter(i => subNums.has(i.number));
@@ -5470,9 +5478,10 @@ async function runShow(octokit, owner, repo, tokens) {
       claude: isClaudeTask,
       tags: tags.length ? tags : [],
       recur: issue.recur || null,
-      project: issue.project || null,
+      // issueToJsonObj / runSchema（integer | null）と型を揃える（Issue #2102）。
+      project: issue.project ? parseInt(issue.project) : null,
       activate: issue.activate || null,
-      dependsOn: issue.dependsOn || null,
+      dependsOn: issue.dependsOn ? parseInt(issue.dependsOn) : null,
       resumeCondition: issue.resumeCondition || null,
       desc: (issue.desc && issue.desc.trim()) ? issue.desc.trim() : null,
       labels: issue.labels,
@@ -5982,8 +5991,7 @@ async function runWeeklyProjectAudit(octokit, owner, repo) {
     // sub-issue API + body メタ OR で子タスクを取得
     const subIssues = await listSubIssues(octokit, owner, repo, projNum);
     const subNums = new Set(subIssues.map(s => s.number));
-    const projTag = 'project: #' + projNum;
-    const bodyChildren = allIssues.filter(i => (i.body||'').includes(projTag));
+    const bodyChildren = allIssues.filter(i => bodyHasProject(i.body, projNum));
     for (const bc of bodyChildren) subNums.add(bc.number);
     const children = allIssues.filter(i => subNums.has(i.number));
 
@@ -6151,7 +6159,9 @@ async function runMain(args) {
   if (cmd0 !== 'help' && cmd0 !== 'schema' && (!REPO_OWNER || !REPO_NAME)) {
     throw apiErr(t('error.repo_not_configured') + '\n' + t('error.mcp_fallback_guidance'));
   }
-  const octokit = await initOctokit();
+  // help/schema は GitHub API を使わないため、トークン未設定環境でも動作させる（Issue #2102）。
+  // 従来は無条件に initOctokit() を呼んでおり、トークンがないと help すら表示できなかった。
+  const octokit = (cmd0 === 'help' || cmd0 === 'schema') ? null : await initOctokit();
   const owner = REPO_OWNER, repo = REPO_NAME;
 
   let cmd = args[0];

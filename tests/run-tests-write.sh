@@ -5291,6 +5291,124 @@ assert_contains "W41-1: 【核心】2回目・3回目のプレースホルダ出
 assert_not_contains "W41-1: 生のプレースホルダ {n} が出力に残らない" "{n}" "$W1949_1_OUT"
 rm -f "$W1949_1_LOG"
 
+# ──────────────────────────────────────────
+# §W42  Issue #2102 バグ候補4件の確定と修正
+#   (a) project: #N の前方一致（#12 の子検索が #123 の子・本文中の言及を拾う）
+#   (b) run help / run schema がトークン未設定環境で落ちる
+#   (d) show --json の project / dependsOn が文字列（schema は integer | null）
+#   (c) add --project の親が project でないときの作成後 exit 1 は「要判断」のため
+#       修正対象外。現行挙動を特性テストとして固定する（仕様が決まったら更新する）
+# ──────────────────────────────────────────
+echo ""
+echo "§W42  Issue #2102 バグ候補の修正（projTag 前方一致 / help のトークン要件 / show --json 型）"
+
+# 共通データ: 短い番号の project(70012) と、その番号を前方に含む長い番号の project(700123)
+#   70013: 70012 の本物の子 / 70014: 700123 の子 / 70015: 本文中に言及があるだけ（子ではない）
+W42_LIST='[
+  {"number":70012,"title":"Proj Short","updated_at":"2026-04-01T00:00:00Z","body":"","labels":[{"name":"📁 project"}]},
+  {"number":700123,"title":"Proj Long","updated_at":"2026-04-01T00:00:00Z","body":"","labels":[{"name":"📁 project"}]},
+  {"number":70013,"title":"Child of short","updated_at":"2026-04-01T00:00:00Z","body":"project: #70012\n","labels":[{"name":"🎯 next"}]},
+  {"number":70014,"title":"Child of long","updated_at":"2026-04-01T00:00:00Z","body":"project: #700123\n","labels":[{"name":"🎯 next"}]},
+  {"number":70015,"title":"Mention only","updated_at":"2026-04-01T00:00:00Z","body":"due: 2026-05-01\n\nsee project: #70012 for context\n","labels":[{"name":"🎯 next"}]}
+]'
+
+# W42-1 list project N: 前方一致する別プロジェクトの子・本文中の言及を子として数えない
+W42_1_RESP="{\"issues.listForRepo\":[{\"data\":$W42_LIST}],\"GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"data\":[]}],\"issues.get\":[{\"data\":{\"number\":70012,\"title\":\"P\",\"body\":\"\",\"labels\":[{\"name\":\"📁 project\"}]}}]}"
+W42_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W42_1_RESP" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run list project 70012 2>&1); W42_1_EC=$?
+assert_exit_ok "W42-1 list project 70012(#2102a): exit 0" "$W42_1_EC"
+assert_contains "W42-1: 本物の子 #70013 は列挙される" "#70013" "$W42_1_OUT"
+assert_contains "W42-1【核心】子タスク数は1件（前方一致・本文言及を除外）" "（1件）" "$W42_1_OUT"
+assert_not_contains "W42-1【核心】#700123 の子 #70014 は混入しない" "#70014" "$W42_1_OUT"
+assert_not_contains "W42-1【核心】本文中の言及だけの #70015 は混入しない" "#70015" "$W42_1_OUT"
+
+# W42-2 逆方向: 長い番号の project の子は、自分の子だけが列挙される（完全一致は維持）
+W42_2_RESP="{\"issues.listForRepo\":[{\"data\":$W42_LIST}],\"GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"data\":[]}],\"issues.get\":[{\"data\":{\"number\":700123,\"title\":\"P\",\"body\":\"\",\"labels\":[{\"name\":\"📁 project\"}]}}]}"
+W42_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W42_2_RESP" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run list project 700123 2>&1); W42_2_EC=$?
+assert_exit_ok "W42-2 list project 700123: exit 0" "$W42_2_EC"
+assert_contains "W42-2: 自分の子 #70014 は列挙される" "#70014" "$W42_2_OUT"
+assert_not_contains "W42-2: 短い番号 project の子 #70013 は混入しない" "#70013" "$W42_2_OUT"
+
+# W42-3 weekly-project-audit: next 子タスク数が前方一致で水増しされない
+W42_3_RESP="{\"issues.listForRepo\":[{\"data\":$W42_LIST}],\"GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues\":[{\"data\":[]},{\"data\":[]}]}"
+W42_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W42_3_RESP" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run weekly-project-audit 2>&1); W42_3_EC=$?
+assert_exit_ok "W42-3 weekly-project-audit(#2102a): exit 0" "$W42_3_EC"
+assert_contains "W42-3【核心】#70012 の next 子タスクは1件（旧実装は3件）" "子タスク: next=1件 waiting=0件 someday=0件" "$W42_3_OUT"
+assert_not_contains "W42-3: next=3件 の水増し表示が出ない" "next=3件" "$W42_3_OUT"
+
+# W42-4 list（全体）の project 行の子タスク集計（listAll 内の projStats）
+W42_4_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="{\"issues.listForRepo\":[{\"data\":$W42_LIST}]}" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run list 2>&1); W42_4_EC=$?
+assert_exit_ok "W42-4 list(#2102a): exit 0" "$W42_4_EC"
+assert_contains "W42-4【核心】#70012 の行は next:1件（旧実装は3件）" "#70012  Proj Short  ✅ next:1件" "$W42_4_OUT"
+assert_contains "W42-4: #700123 の行も next:1件" "#700123  Proj Long  ✅ next:1件" "$W42_4_OUT"
+
+# W42-5 FILTER_PROJ_ENV 経路（listAll の filterProj）。runList は現状この環境変数を
+# 設定しないが、list-all を直接呼ぶ経路が残っているため関数単体でも固定する
+W42_5_OUT=$(OPEN_ENV="$W42_LIST" TODAY_ENV=2026-04-05 FILTER_PROJ_ENV=70012 node "$ENGINE" list-all 2>&1); W42_5_EC=$?
+assert_exit_ok "W42-5 list-all FILTER_PROJ_ENV(#2102a): exit 0" "$W42_5_EC"
+assert_contains "W42-5: 本物の子 #70013 は残る" "#70013" "$W42_5_OUT"
+assert_not_contains "W42-5【核心】前方一致の #70014 は除外される" "#70014" "$W42_5_OUT"
+assert_not_contains "W42-5【核心】本文言及の #70015 は除外される" "#70015" "$W42_5_OUT"
+
+# W42-6 (b) help / schema はトークン・リポジトリ未設定でも動く（env -i + 空 HOME で再現）
+W42_EMPTY_HOME=$(mktemp -d /tmp/todo-test-w42-home-XXXXXX)
+W42_6_OUT=$(env -i PATH="$PATH" HOME="$W42_EMPTY_HOME" node "$ENGINE" run help 2>&1); W42_6_EC=$?
+assert_exit_ok "W42-6 run help トークンなし(#2102b): exit 0" "$W42_6_EC"
+assert_contains "W42-6: コマンド一覧が出る" "/todo コマンド一覧" "$W42_6_OUT"
+assert_not_contains "W42-6【核心】GH_TOKEN エラーが出ない" "GH_TOKEN is not set" "$W42_6_OUT"
+W42_7_OUT=$(env -i PATH="$PATH" HOME="$W42_EMPTY_HOME" node "$ENGINE" run schema 2>&1); W42_7_EC=$?
+assert_exit_ok "W42-7 run schema トークンなし(#2102b): exit 0" "$W42_7_EC"
+assert_contains "W42-7: スキーマ JSON が出る" "出力スキーマ" "$W42_7_OUT"
+assert_not_contains "W42-7【核心】GH_TOKEN エラーが出ない" "GH_TOKEN is not set" "$W42_7_OUT"
+# W42-8 リグレッション: help/schema 以外は従来どおりトークンを要求する（ガードを広げすぎていない）
+W42_8_OUT=$(env -i PATH="$PATH" HOME="$W42_EMPTY_HOME" TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo node "$ENGINE" run list 2>&1); W42_8_EC=$?
+assert_exit_fail "W42-8 run list トークンなし: exit非0（従来どおり）" "$W42_8_EC"
+assert_contains "W42-8: トークン未設定エラー" "GH_TOKEN is not set" "$W42_8_OUT"
+rm -rf "$W42_EMPTY_HOME"
+
+# W42-9 (d) show --json の project / dependsOn は integer（list --json / schema と一致）
+W42_9_ISSUE='{"number":70050,"id":970050,"title":"T","body":"project: #12\ndepends_on: #7\n","labels":[{"name":"🎯 next"}],"state":"open"}'
+W42_9_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="{\"issues.get\":[{\"data\":$W42_9_ISSUE}]}" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run show 70050 --json 2>&1); W42_9_EC=$?
+assert_exit_ok "W42-9 show --json(#2102d): exit 0" "$W42_9_EC"
+assert_contains "W42-9【核心】project は数値（旧実装は \"12\" の文字列）" '"project": 12,' "$W42_9_OUT"
+assert_contains "W42-9【核心】dependsOn は数値（旧実装は \"7\" の文字列）" '"dependsOn": 7,' "$W42_9_OUT"
+# W42-10 値なしは従来どおり null
+W42_10_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="{\"issues.get\":[{\"data\":{\"number\":70051,\"id\":970051,\"title\":\"T\",\"body\":\"\",\"labels\":[]}}]}" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run show 70051 --json 2>&1); W42_10_EC=$?
+assert_exit_ok "W42-10 show --json 値なし: exit 0" "$W42_10_EC"
+assert_contains "W42-10: project は null" '"project": null' "$W42_10_OUT"
+assert_contains "W42-10: dependsOn は null" '"dependsOn": null' "$W42_10_OUT"
+# W42-11 show --json と list --json で project / dependsOn の型が一致する
+W42_11_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="{\"issues.listForRepo\":[{\"data\":[$W42_9_ISSUE]}]}" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run list next --json 2>&1); W42_11_EC=$?
+assert_exit_ok "W42-11 list --json: exit 0" "$W42_11_EC"
+assert_contains "W42-11: list --json の project も数値" '"project": 12,' "$W42_11_OUT"
+
+# W42-12 (c) 特性テスト: add --project の親が project でないとき、Issue は作成済みのまま
+# exit 1 する現行挙動を固定する。**これは仕様の追認ではない**（#2102 で「要判断」とされた
+# 挙動の現状記録）。親検証を作成前へ移す等の方針が決まったら、このテストを更新すること。
+W42_12_LOG=$(mktemp /tmp/todo-test-w42-12-XXXXXX)
+W42_12_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{},{}],"issues.create":[{"data":{"number":70060,"id":970060,"html_url":"https://example.invalid/70060"}}],"issues.get":[{"data":{"number":70061,"title":"NotProject","body":"","labels":[{"name":"🎯 next"}]}}]}'
+W42_12_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W42_12_RESP" OCTOKIT_STUB_LOG_ENV="$W42_12_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run add next "child" --project 70061 2>&1); W42_12_EC=$?
+assert_exit_fail "W42-12 add --project 非project親(#2102c 特性): exit 1" "$W42_12_EC"
+assert_contains "W42-12: 作成完了メッセージは出る（Issue は作成済み）" "#70060" "$W42_12_OUT"
+assert_contains "W42-12: プロジェクトではないエラー" "はプロジェクトではありません" "$W42_12_OUT"
+assert_eq "W42-12: issues.create は1回呼ばれている（作成後に失敗する現行挙動）" "1" "$(log_count "$W42_12_LOG" issues.create)"
+rm -f "$W42_12_LOG"
+
 # ガード除去による回帰検出: tpl() の split/join を修正前の非グローバル replace に
 # 一時的に戻して実行し、W41-1(2アサーション: 核心needle・{n}残存チェック)・
 # W22-3(1アサーション: /todo unlink 8703 --force needle)・
