@@ -1402,6 +1402,27 @@ function validateNumber(value) {
   }
 }
 
+// Issue 番号の引数（位置引数）を厳密に解釈する（Issue #2132 / R3 (g) parseIssueNumberArg の先行実装）。
+// 数字だけで構成され、かつ 1 以上の文字列のみ正の整数として返す。それ以外は null。
+// parseInt は先頭の数字部分だけを読むため、`42abc`・`4.2`・`0x10`・` 42`・`+42` を
+// 42・4・16・42・42 という別の番号として通してしまう（`done 21O4`（0 を O と打ち間違え）が #21 を閉じる）。
+// 先頭 `#` は受け付けない（従来どおり。受け付けるのは show と --depends-on だけで、それぞれ別処理）。
+function parseIssueNumberArg(raw) {
+  if (typeof raw !== 'string' || !/^\d+$/.test(raw)) return null;
+  const n = parseInt(raw, 10);
+  return n > 0 ? n : null;
+}
+
+// ハンドラ・api 共通の検証。`!num` による「引数なし」の判定（各コマンド固有の Usage / positive_int）は
+// 呼び出し側に残し、それを通った後で「数字だけの正の整数か」を確かめる。不正なら validateNumber と
+// 同じ error.positive_int で exit 1（従来 -1 や 0 に対して出していたエラーと同一）。
+function assertIssueNumberArg(raw) {
+  if (parseIssueNumberArg(raw) === null) {
+    process.stderr.write(t('error.positive_int')+'\n');
+    process.exit(1);
+  }
+}
+
 // M/D 形式の妥当性判定に使う基準年（存在しない年は判定できないため、うるう年を採用し
 // 2/29 を許容する。西暦は判定結果に影響しない：2/30 等の非存在日は年に関わらず常に無効）
 const MD_VALIDATION_LEAP_YEAR = 2000;
@@ -2835,7 +2856,7 @@ async function apiMain(subArgs) {
       }
 
       case 'view-issue': {
-        const num = parseInt(subArgs[1]);
+        const num = parseIssueNumberArg(subArgs[1]);
         if (!num) { throw apiErr('Usage: api view-issue <number>'); }
         const { data: i } = await octokit.issues.get({ owner, repo, issue_number: num });
         const result = {
@@ -2850,7 +2871,7 @@ async function apiMain(subArgs) {
       }
 
       case 'view-issue-detail': {
-        const num = parseInt(subArgs[1]);
+        const num = parseIssueNumberArg(subArgs[1]);
         if (!num) { throw apiErr('Usage: api view-issue-detail <number>'); }
         const { data: i } = await octokit.issues.get({ owner, repo, issue_number: num });
         const result = {
@@ -2867,7 +2888,7 @@ async function apiMain(subArgs) {
       }
 
       case 'list-comments': {
-        const num = parseInt(subArgs[1]);
+        const num = parseIssueNumberArg(subArgs[1]);
         if (!num) { throw apiErr('Usage: api list-comments <number>'); }
         const { data } = await octokit.issues.listComments({ owner, repo, issue_number: num, per_page: 100 });
         const result = data.map(c => ({
@@ -2917,7 +2938,7 @@ async function apiMain(subArgs) {
       }
 
       case 'edit-issue': {
-        const num = parseInt(subArgs[1]);
+        const num = parseIssueNumberArg(subArgs[1]);
         if (!num) { throw apiErr('Usage: api edit-issue <number>'); }
         const input = JSON.parse(process.env.ISSUE_INPUT_ENV || '{}');
         const params = { owner, repo, issue_number: num };
@@ -2929,7 +2950,7 @@ async function apiMain(subArgs) {
       }
 
       case 'close-issue': {
-        const num = parseInt(subArgs[1]);
+        const num = parseIssueNumberArg(subArgs[1]);
         if (!num) { throw apiErr('Usage: api close-issue <number>'); }
         await octokit.issues.update({ owner, repo, issue_number: num, state: 'closed' });
         process.stdout.write('ok');
@@ -2941,7 +2962,7 @@ async function apiMain(subArgs) {
       // 繰り返しタスクの周期チェーンが無言で途切れていた。CLIの `run done`（runDone）と
       // 同じ後処理を api 層からも呼べるようにする専用サブコマンド。
       case 'done-issue': {
-        const num = parseInt(subArgs[1]);
+        const num = parseIssueNumberArg(subArgs[1]);
         if (!num) { throw apiErr('Usage: api done-issue <number>'); }
         const issue = await fetchAndParseIssue(octokit, owner, repo, num);
         // #1652: create-before-close — 次周期Issueの作成をcloseより先に行う（詳細はcreateRecurIssue定義部のコメント参照）
@@ -2965,7 +2986,7 @@ async function apiMain(subArgs) {
       }
 
       case 'reopen-issue': {
-        const num = parseInt(subArgs[1]);
+        const num = parseIssueNumberArg(subArgs[1]);
         if (!num) { throw apiErr('Usage: api reopen-issue <number>'); }
         await octokit.issues.update({ owner, repo, issue_number: num, state: 'open' });
         process.stdout.write('ok');
@@ -2973,7 +2994,7 @@ async function apiMain(subArgs) {
       }
 
       case 'add-labels': {
-        const num = parseInt(subArgs[1]);
+        const num = parseIssueNumberArg(subArgs[1]);
         if (!num) { throw apiErr('Usage: api add-labels <number>'); }
         const labels = (process.env.LABELS_ENV || '').split(',').map(s => s.trim()).filter(Boolean);
         if (!labels.length) { throw apiErr('Error: LABELS_ENV is not set'); }
@@ -2983,7 +3004,7 @@ async function apiMain(subArgs) {
       }
 
       case 'remove-labels': {
-        const num = parseInt(subArgs[1]);
+        const num = parseIssueNumberArg(subArgs[1]);
         if (!num) { throw apiErr('Usage: api remove-labels <number>'); }
         const labels = (process.env.LABELS_ENV || '').split(',').map(s => s.trim()).filter(Boolean);
         await execRemoveLabels(octokit, owner, repo, num, labels);
@@ -2992,7 +3013,7 @@ async function apiMain(subArgs) {
       }
 
       case 'move-gtd': {
-        const num = parseInt(subArgs[1]);
+        const num = parseIssueNumberArg(subArgs[1]);
         const target = subArgs[2];
         if (!num || !target) { throw apiErr('Usage: api move-gtd <number> <gtd_key>'); }
         await execMoveGtd(octokit, owner, repo, num, target);
@@ -3033,7 +3054,7 @@ async function apiMain(subArgs) {
       }
 
       case 'create-comment': {
-        const num = parseInt(subArgs[1]);
+        const num = parseIssueNumberArg(subArgs[1]);
         if (!num) { throw apiErr('Usage: api create-comment <number>'); }
         // コメント本文は環境変数経由（セキュリティルール準拠）
         let body = process.env.COMMENT_BODY_ENV || '';
@@ -4629,7 +4650,7 @@ async function postDoneProcessing(octokit, owner, repo, num, issue) {
 async function runDone(octokit, owner, repo, tokens) {
   const num = parseInt(tokens[0]);
   if (!num) { process.stderr.write(t('error.positive_int')+'\n'); process.exit(1); }
-  validateNumber(String(num));
+  assertIssueNumberArg(tokens[0]);
   const parsed = parseArgs(tokens.slice(1));
   // #1921 パターンB: 未知フラグは黙って捨てず、API 副作用（下の fetchAndParseIssue 以降）より前に落とす。
   // done は自由記述を持たない（番号は先に取り出し済み）ため許可リストは空。
@@ -4726,7 +4747,7 @@ async function runMove(octokit, owner, repo, tokens) {
   // #1921 第2弾: Usage 文言を1本化して未知フラグエラーと引数不足エラーで共用する。
   const MOVE_USAGE = 'Usage: /todo move <#> <GTD> [--note "text"]';
   if (!num || !target) { process.stderr.write(`${MOVE_USAGE}\n`); process.exit(1); }
-  validateNumber(String(num));
+  assertIssueNumberArg(tokens[0]);
   // --note オプションを取り出す（残りのトークンから解析）
   const parsed = parseArgs(tokens.slice(2));
   // #1921 パターンB: 移動先 GTD 名は tokens[1] で取得済み・slice(2) で除外されるため
@@ -4776,7 +4797,7 @@ async function createCommentSanitized(octokit, owner, repo, num, rawText) {
 async function runComment(octokit, owner, repo, tokens) {
   const num = parseInt(tokens[0]);
   if (!num) { process.stderr.write(t('error.positive_int')+'\n'); process.exit(1); }
-  validateNumber(String(num));
+  assertIssueNumberArg(tokens[0]);
 
   const rest = tokens.slice(1);
   const usage = 'Usage: /todo comment <#> <text> | --body "text" | --body-file <path>';
@@ -4839,7 +4860,7 @@ async function runEdit(octokit, owner, repo, tokens) {
   const today = getToday();
   const num = parseInt(tokens[0]);
   if (!num) { process.stderr.write(t('error.positive_int')+'\n'); process.exit(1); }
-  validateNumber(String(num));
+  assertIssueNumberArg(tokens[0]);
   const parsed = parseArgs(tokens.slice(1));
   // #1921 パターンB: 未知フラグ（`--duee` 等のタイポ・値欠落した既知フラグ）を黙って捨てず、
   // Issue 取得より前に落とす。edit は自由記述の位置引数を持たないため許可リストは空。
@@ -4986,7 +5007,7 @@ async function runDue(octokit, owner, repo, tokens) {
   const rawDue = tokens[1];
   const DUE_USAGE = 'Usage: /todo due <#> <date|clear>';
   if (!num || rawDue === undefined) { process.stderr.write(`${DUE_USAGE}\n`); process.exit(1); }
-  validateNumber(String(num));
+  assertIssueNumberArg(tokens[0]);
   // #1921 パターンC: 固定インデックス（tokens[0]=番号 / tokens[1]=日付）で読むため、
   // tokens.slice(2) 以降は従来すべて黙って捨てられていた（`due 42 2026-09-10 --note "理由"` の
   // --note は効かない）。フラグ字面のトークンだけをエラーにする。
@@ -5021,7 +5042,7 @@ async function runDue(octokit, owner, repo, tokens) {
 async function runDesc(octokit, owner, repo, tokens) {
   const num = parseInt(tokens[0]);
   if (!num) { process.stderr.write(t('error.positive_int')+'\n'); process.exit(1); }
-  validateNumber(String(num));
+  assertIssueNumberArg(tokens[0]);
 
   const newText = tokens.slice(1).join(' ');
   // #1921 第2弾: desc は tokens.slice(1) をそのまま連結して本文に追記するため、
@@ -5046,7 +5067,7 @@ async function runRecur(octokit, owner, repo, tokens) {
   const pattern = tokens[1];
   const RECUR_USAGE = 'Usage: /todo recur <#> <pattern|clear>';
   if (!num || !pattern) { process.stderr.write(`${RECUR_USAGE}\n`); process.exit(1); }
-  validateNumber(String(num));
+  assertIssueNumberArg(tokens[0]);
   // #1921 パターンC: tokens.slice(2) 以降は従来黙って捨てられていた。
   guardUnknownFlag(tokens.slice(2), [], RECUR_USAGE, 'error.unknown_flag_hint_options');
   // #1934 パート2: 位置引数の余剰（due と同型）を塞ぐ。
@@ -5068,7 +5089,7 @@ async function runLink(octokit, owner, repo, tokens) {
   const proj = parseInt(tokens[1]);
   const LINK_USAGE = 'Usage: /todo link <#> <project-#>';
   if (!num || !proj) { process.stderr.write(`${LINK_USAGE}\n`); process.exit(1); }
-  validateNumber(String(num)); validateNumber(String(proj));
+  assertIssueNumberArg(tokens[0]); assertIssueNumberArg(tokens[1]);
   // #1921 パターンC: tokens.slice(2) 以降は従来黙って捨てられていた。
   guardUnknownFlag(tokens.slice(2), [], LINK_USAGE, 'error.unknown_flag_hint_options');
   // #1934 パート2: 位置引数の余剰（`link 42 100 101` 等）を塞ぐ。project番号は単一トークン
@@ -5114,7 +5135,7 @@ async function runRename(octokit, owner, repo, tokens) {
   // `rename 42 --boddy-file /tmp/x` が既存タイトルを「--boddy-file /tmp/x」で上書きして
   // exit 0 になっていた（add のゴミ Issue より復旧が困難）。update の前に落とす。
   guardUnknownFlag(tokens.slice(1), [], RENAME_USAGE, 'error.unknown_flag_hint');
-  validateNumber(String(num)); validateTitle(newTitle);
+  assertIssueNumberArg(tokens[0]); validateTitle(newTitle);
   await octokit.issues.update({ owner, repo, issue_number: num, title: newTitle });
   runOut(tpl('rename.done', { num, title: newTitle }));
 }
@@ -5124,7 +5145,7 @@ async function runPriority(octokit, owner, repo, tokens) {
   const level = tokens[1];
   const PRIORITY_USAGE = 'Usage: /todo priority <#> <p1|p2|p3|clear>';
   if (!num || !level) { process.stderr.write(`${PRIORITY_USAGE}\n`); process.exit(1); }
-  validateNumber(String(num));
+  assertIssueNumberArg(tokens[0]);
   // #1921 パターンC: tokens.slice(2) 以降は従来黙って捨てられていた。
   guardUnknownFlag(tokens.slice(2), [], PRIORITY_USAGE, 'error.unknown_flag_hint_options');
   // #1934 パート2: 位置引数の余剰（`priority 42 p1 p2` 等）を塞ぐ。levelは単一トークンで
@@ -5201,7 +5222,7 @@ async function runTag(octokit, owner, repo, tokens) {
   }
   const num = parseInt(tokens[0]);
   if (!num) { process.stderr.write(t('error.positive_int')+'\n'); process.exit(1); }
-  validateNumber(String(num));
+  assertIssueNumberArg(tokens[0]);
   const labelList = normalizeTagTokens(tokens.slice(1));
   if (!labelList.length) { process.stderr.write('Usage: run tag <number> @ctx/#tag ...\n'); process.exit(1); }
   for (const lbl of labelList) {
@@ -5223,7 +5244,7 @@ async function runTag(octokit, owner, repo, tokens) {
 async function runUntag(octokit, owner, repo, tokens) {
   const num = parseInt(tokens[0]);
   if (!num) { process.stderr.write(t('error.positive_int')+'\n'); process.exit(1); }
-  validateNumber(String(num));
+  assertIssueNumberArg(tokens[0]);
   const labelList = normalizeTagTokens(tokens.slice(1));
   if (!labelList.length) { process.stderr.write('Usage: run untag <number> @ctx/#tag ...\n'); process.exit(1); }
   for (const lbl of labelList) {
@@ -5339,7 +5360,7 @@ async function runArchive(octokit, owner, repo, tokens) {
   } else if (sub === 'reopen') {
     const num = parseInt(tokens[1]);
     if (!num) { process.stderr.write('Usage: run archive reopen <number>\n'); process.exit(1); }
-    validateNumber(String(num));
+    assertIssueNumberArg(tokens[1]);
     await octokit.issues.update({ owner, repo, issue_number: num, state: 'open' });
     await octokit.issues.addLabels({ owner, repo, issue_number: num, labels: ['📥 inbox'] });
     runOut(tpl('archive.reopened', { num }));
@@ -5686,7 +5707,7 @@ async function runShow(octokit, owner, repo, tokens) {
   const jsonMode = tokens.includes('--json');
   const filteredTokens = tokens.filter(t => t !== '--json');
   const numStr = (filteredTokens[0] || '').replace(/^#/, '');
-  if (!numStr || !/^\d+$/.test(numStr)) {
+  if (!numStr || parseIssueNumberArg(numStr) === null) {
     process.stderr.write(`${SHOW_USAGE}\n`);
     process.exit(1);
   }
@@ -6024,7 +6045,7 @@ async function runReviewSomeday(octokit, owner, repo, tokens) {
   const num = parseInt(tokens[0]);
   const REVIEW_SOMEDAY_USAGE = 'Usage: /todo review-someday <number>';
   if (!num) { process.stderr.write(`${REVIEW_SOMEDAY_USAGE}\n`); process.exit(1); }
-  validateNumber(String(num));
+  assertIssueNumberArg(tokens[0]);
   // #1938: tokens[0] しか使わないため tokens.slice(1) 以降は従来黙って捨てられていた
   // （書き込みは reviewedAt 更新のみでデータ破壊はしない）。review-someday は「第2の
   // 位置引数スロット」を持たないため guardExtraPositional の対象ではなく（#1937の
@@ -6095,7 +6116,7 @@ async function runPromoteProject(octokit, owner, repo, tokens) {
   const num = parseInt(tokens[0]);
   const PROMOTE_PROJECT_USAGE = 'Usage: /todo promote-project <N> [--outcome "title"]';
   if (!num) { process.stderr.write(`${PROMOTE_PROJECT_USAGE}\n`); process.exit(1); }
-  validateNumber(String(num));
+  assertIssueNumberArg(tokens[0]);
 
   // #1938: --outcome は tokens.indexOf() の走査型判定のみで、未知フラグ（typo）を検出して
   // いなかった。`--outcom "title"` のタイポではタイトル変更が黙ってスキップされ、ユーザーは
@@ -6156,7 +6177,7 @@ async function runUnlink(octokit, owner, repo, tokens) {
   const num = parseInt(tokens[0]);
   const UNLINK_USAGE = 'Usage: /todo unlink <N> [--force]';
   if (!num) { process.stderr.write(`${UNLINK_USAGE}\n`); process.exit(1); }
-  validateNumber(String(num));
+  assertIssueNumberArg(tokens[0]);
   // #1937: force は tokens.includes('--force') という走査型判定のみで、未知フラグ
   // （typo）を検出していなかった。`unlink 42 --forse` は force=false のまま処理が進み、
   // たまたま「未登録」エラー（error.unlink_mismatch）で止まっていた
@@ -6574,7 +6595,7 @@ module.exports = {
   extractTimeField, estimateMinutesFromBody, actualMinutesFromBody, formatTime, priorityColor,
   splitRecurPattern, nextDueWeeklyOnDow, nextDueMonthlyOnDay, nextDue, nextDueCatchUp,
   firstDueOnDow, firstDueOnDay, firstDueFromToday, computeCyclesOverdue, validateCtx, validateTag,
-  validateNumber, validateDue, validateActivateFormat, validateRecur, validateColor,
+  validateNumber, parseIssueNumberArg, assertIssueNumberArg, validateDue, validateActivateFormat, validateRecur, validateColor,
   validatePriority, validateName, validateResumeCondition, validateTitle, normLabel, getLnames,
   getDue, getPri, priIcon, getCtx, getTags, daysBetween, sortByPriDue, sortByReviewedAtThenPri,
   renderIssueList, listGroupedByDue, listAll, listSummary, weeklySummary, stats, help, renderToday,
