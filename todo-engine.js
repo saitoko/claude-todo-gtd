@@ -3065,225 +3065,230 @@ async function apiMain(subArgs) {
 
 // ─── メインディスパッチャー ───
 
-const args = process.argv.slice(2);
-const cmd = args[0];
+// トップレベルのディスパッチャーは main() に包む。モジュール評価の途中で switch が走ると、
+// 後半の const（ADD_USAGE / RESERVED_TITLE_GUARD_COMMANDS 等）が TDZ（初期化前参照）で
+// 落ちるため、ファイル末尾の `if (require.main === module) main();` で全定義の評価後に呼ぶ（#2102 R1）。
+function main() {
+  const args = process.argv.slice(2);
+  const cmd = args[0];
 
-switch (cmd) {
-  // ユーティリティ
-  case 'normalize-due':   process.stdout.write(normalizeDue(args[1], args[2])); break;
-  case 'add-days':        process.stdout.write(addDays(args[1], parseInt(args[2]))); break;
-  case 'add-month':       process.stdout.write(addMonth(args[1])); break;
-  case 'parse-body':           process.stdout.write(parseBody(args[1])); break;
-  case 'extract-issue-fields': extractIssueFields(); break;
-  case 'build-body':      process.stdout.write(buildBody({
-    due:        args[1] || '',
-    recur:      args[2] || '',
-    project:    args[3] || '',
-    estimate:   args[4] || '',
-    actual:     args[5] || '',
-    desc:       args[6] || '',
-    activate:   args[7] || '',
-    before:     args[8] || '',
-    reviewedAt: args[9] || '',
-    dependsOn:  args[10] || '',
-  })); break;
-  case 'parse-time': {
-    const v = parseTime(args[1]);
-    process.stdout.write(v !== null ? String(v) : 'null');
-    break;
-  }
-  case 'format-time':     process.stdout.write(formatTime(args[1])); break;
-  case 'priority-color':  process.stdout.write(priorityColor(args[1])); break;
-  case 'next-due':        process.stdout.write(nextDue(args[1], args[2])); break;
-  case 'first-due':       process.stdout.write(firstDueFromToday(args[1], args[2])); break;
-  case 'next-due-catchup': process.stdout.write(JSON.stringify(nextDueCatchUp(args[1], args[2], args[3]))); break;
-  case 'cycles-overdue':  process.stdout.write(String(computeCyclesOverdue(args[1], args[2], args[3]))); break;
-  case 'find-unknown-flag': {
-    // 未知フラグ判定の単体テスト用（Issue #1921）。入力は JSON 配列の文字列
-    // （例: '["設計書を書く","--boddy-file"]' と許可リスト '["--group"]'）。
-    // 検出したフラグ文字列を、なければ空文字列を stdout へ返す。
-    // Octokit スタブも GitHub 接続も不要な純粋関数なので、入力文字パターン・境界値を
-    // 大量に回して検証できる（tests/run-tests.sh §51）。
-    const toks = JSON.parse(args[1] || '[]');
-    const allowed = JSON.parse(args[2] || '[]');
-    process.stdout.write(findUnknownFlag(toks, allowed) || '');
-    break;
-  }
-  case 'find-unsupported-flag': {
-    // findUnsupportedFlagField() の単体テスト用（#1934 パート1）。入力は「値が設定されている
-    // とみなすフィールド名の JSON配列」（例: '["note","actual"]'）と「そのハンドラの許可
-    // フィールド一覧」（例: '["actual"]'）。判定結果（最初に見つかった未サポートフィールド名。
-    // なければ空文字列）を stdout へ返す。メッセージ整形（guardUnsupportedFlag）は経由しない
-    // ので FLAG_SUPPORTED_BY への依存はここには生じない。
-    const setFields = JSON.parse(args[1] || '[]');
-    const supportedFields = JSON.parse(args[2] || '[]');
-    // 未設定のフィールドは parseArgs() の初期値（null、labels のみ空配列）に揃えておく必要が
-    // ある。ここを省略すると dummyParsed[field] が undefined のままになり、
-    // findUnsupportedFlagField() の isSet 判定（val !== null）が「undefined !== null」で
-    // 常に true になってしまい、setFields に含めていないフィールドまで誤検出する
-    // （実装時に §52 実測で発見。設計書のサンプルコードのままでは動かない）。
-    // #1934 パート1.5: contexts/tags も labels と同じ配列フィールドなのでダミー初期化を揃える
-    // （文字列でも isSet 判定上は動作するが、実際の parseArgs() の型と一致させておく）。
-    const ARRAY_FIELDS = ['labels', 'contexts', 'tags'];
-    const dummyParsed = {};
-    for (const f of Object.keys(FLAG_FIELD_MAP)) dummyParsed[f] = ARRAY_FIELDS.includes(f) ? [] : null;
-    for (const f of setFields) dummyParsed[f] = ARRAY_FIELDS.includes(f) ? ['x'] : 'x';
-    process.stdout.write(findUnsupportedFlagField(dummyParsed, supportedFields) || '');
-    break;
-  }
-  case 'compute-github-ms': {
-    // 区間統合アルゴリズム単体テスト用（Issue #455）。入力はms単位の [start, end] 配列
-    // （例: '[[0,100],[50,150],[200,250]]'）。内部でns相当に換算してcomputeGithubMs()を
-    // 通し、結果をms単位の整数文字列で返す。Octokitスタブなしで区間統合の挙動を検証できる。
-    const intervalsMs = JSON.parse(args[1] || '[]');
-    const intervalsNs = intervalsMs.map(([s, e]) => [BigInt(s) * 1000000n, BigInt(e) * 1000000n]);
-    process.stdout.write(String(computeGithubMs(intervalsNs)));
-    break;
-  }
-  case 'check-octokit-wrap-props': {
-    // wrapOctokitTiming() が Octokit の関数プロパティ（.endpoint/.defaults）を保持する
-    // ことを検証するテスト専用コマンド（Issue #455）。initOctokit() と同じ分岐
-    // （OCTOKIT_STUB_ENV が設定されていればスタブ、なければ実 @octokit/rest）を使う。
-    // どちらの経路もネットワーク接続不要（インスタンスを構築してプロパティを
-    // 調べるだけ、HTTP呼び出しは行わない）。実 @octokit/rest 経路の GH_TOKEN は
-    // 実在不要（構築時に検証されないダミー値で足りる）。
-    (async () => {
-      const stubModulePath = process.env.OCTOKIT_STUB_ENV;
-      let raw;
-      if (stubModulePath) {
-        const createStubOctokit = require(path.resolve(stubModulePath));
-        raw = createStubOctokit({ logPath: null, responsesSpec: null });
-      } else {
-        const { pathToFileURL } = require('url');
-        const octokitPath = path.join(process.env.HOME || os.homedir(), '.claude', 'node_modules', '@octokit', 'rest', 'dist-src', 'index.js');
-        const mod = await import(pathToFileURL(octokitPath).href);
-        raw = new mod.Octokit({ auth: 'dummy-token-for-property-check' });
-      }
-      const wrapped = wrapOctokitTiming(raw);
-      process.stdout.write(JSON.stringify({
-        requestHasEndpoint: typeof wrapped.request.endpoint === 'function',
-        requestHasDefaults: typeof wrapped.request.defaults === 'function',
-        issuesGetHasEndpoint: !!(wrapped.issues && wrapped.issues.get && typeof wrapped.issues.get.endpoint === 'function'),
-        issuesGetHasDefaults: !!(wrapped.issues && wrapped.issues.get && typeof wrapped.issues.get.defaults === 'function'),
-      }));
-    })().catch(e => {
-      process.stderr.write('Error: '+(e.message||String(e))+'\n');
-      process.exitCode = 1;
-    });
-    break;
-  }
-  case 'decode-b64':      process.stdout.write(Buffer.from(args[1]||'','base64').toString('utf8')); break;
-  case 'ctx-to-json': {
-    const list = (args[1]||'').trim();
-    const arr = list ? list.split(/\s+/) : [];
-    process.stdout.write(JSON.stringify(arr));
-    break;
-  }
-  case 'home-path':       process.stdout.write(path.join(homeDir(), '.claude', args[1]||'')); break;
-  case 'gtd-label':       process.stdout.write(GTD_DISPLAY[args[1]] || args[1]); break;
-
-  // バリデーション
-  case 'validate':
-    switch (args[1]) {
-      case 'ctx':       validateCtx(args[2]); break;
-      case 'number':    validateNumber(args[2]); break;
-      case 'due':       validateDue(args[2]); break;
-      case 'recur':     validateRecur(args[2]); break;
-      case 'color':     validateColor(args[2]); break;
-      case 'priority':  validatePriority(args[2]); break;
-      case 'name':      validateName(args[2]); break;
-      case 'title':     validateTitle(args[2]); break;
-      case 'time': {
-        const v = parseTime(args[2]);
-        if (v === null || v <= 0) { process.stderr.write(t('error.time_format')+'\n'); process.exit(1); }
-        break;
-      }
-      default: process.stderr.write('Unknown validate type: '+args[1]+'\n'); process.exit(1);
+  switch (cmd) {
+    // ユーティリティ
+    case 'normalize-due':   process.stdout.write(normalizeDue(args[1], args[2])); break;
+    case 'add-days':        process.stdout.write(addDays(args[1], parseInt(args[2]))); break;
+    case 'add-month':       process.stdout.write(addMonth(args[1])); break;
+    case 'parse-body':           process.stdout.write(parseBody(args[1])); break;
+    case 'extract-issue-fields': extractIssueFields(); break;
+    case 'build-body':      process.stdout.write(buildBody({
+      due:        args[1] || '',
+      recur:      args[2] || '',
+      project:    args[3] || '',
+      estimate:   args[4] || '',
+      actual:     args[5] || '',
+      desc:       args[6] || '',
+      activate:   args[7] || '',
+      before:     args[8] || '',
+      reviewedAt: args[9] || '',
+      dependsOn:  args[10] || '',
+    })); break;
+    case 'parse-time': {
+      const v = parseTime(args[1]);
+      process.stdout.write(v !== null ? String(v) : 'null');
+      break;
     }
-    break;
-
-  // 集計・表示（env vars 経由）
-  case 'list-all':        listAll(); break;
-  case 'list-summary':    listSummary(); break;
-  case 'weekly-summary':  weeklySummary(); break;
-  case 'stats':           stats(); break;
-  case 'help':            help(); break;
-  case 'today':           renderToday(); break;
-  case 'eisenhower':      eisenhower(); break;
-  case 'dashboard':       dashboard(); break;
-  case 'report':          report(); break;
-  case 'done-count':      doneCount(); break;
-
-  // テンプレート管理
-  case 'template':
-    switch (args[1]) {
-      case 'list':      templateList(); break;
-      case 'show':      templateShow(); break;
-      case 'save':      templateSave(); break;
-      case 'save-from': templateSaveFrom(); break;
-      case 'use':       templateUse(); break;
-      case 'delete':    templateDelete(); break;
-      default: process.stderr.write('Unknown template subcommand: '+args[1]+'\n'); process.exit(1);
+    case 'format-time':     process.stdout.write(formatTime(args[1])); break;
+    case 'priority-color':  process.stdout.write(priorityColor(args[1])); break;
+    case 'next-due':        process.stdout.write(nextDue(args[1], args[2])); break;
+    case 'first-due':       process.stdout.write(firstDueFromToday(args[1], args[2])); break;
+    case 'next-due-catchup': process.stdout.write(JSON.stringify(nextDueCatchUp(args[1], args[2], args[3]))); break;
+    case 'cycles-overdue':  process.stdout.write(String(computeCyclesOverdue(args[1], args[2], args[3]))); break;
+    case 'find-unknown-flag': {
+      // 未知フラグ判定の単体テスト用（Issue #1921）。入力は JSON 配列の文字列
+      // （例: '["設計書を書く","--boddy-file"]' と許可リスト '["--group"]'）。
+      // 検出したフラグ文字列を、なければ空文字列を stdout へ返す。
+      // Octokit スタブも GitHub 接続も不要な純粋関数なので、入力文字パターン・境界値を
+      // 大量に回して検証できる（tests/run-tests.sh §51）。
+      const toks = JSON.parse(args[1] || '[]');
+      const allowed = JSON.parse(args[2] || '[]');
+      process.stdout.write(findUnknownFlag(toks, allowed) || '');
+      break;
     }
-    break;
-
-  // ビュー管理
-  case 'view':
-    switch (args[1]) {
-      case 'save':   viewSave(); break;
-      case 'use':    viewUse(); break;
-      case 'list':   viewList(); break;
-      case 'delete': viewDelete(); break;
-      default: process.stderr.write('Unknown view subcommand: '+args[1]+'\n'); process.exit(1);
+    case 'find-unsupported-flag': {
+      // findUnsupportedFlagField() の単体テスト用（#1934 パート1）。入力は「値が設定されている
+      // とみなすフィールド名の JSON配列」（例: '["note","actual"]'）と「そのハンドラの許可
+      // フィールド一覧」（例: '["actual"]'）。判定結果（最初に見つかった未サポートフィールド名。
+      // なければ空文字列）を stdout へ返す。メッセージ整形（guardUnsupportedFlag）は経由しない
+      // ので FLAG_SUPPORTED_BY への依存はここには生じない。
+      const setFields = JSON.parse(args[1] || '[]');
+      const supportedFields = JSON.parse(args[2] || '[]');
+      // 未設定のフィールドは parseArgs() の初期値（null、labels のみ空配列）に揃えておく必要が
+      // ある。ここを省略すると dummyParsed[field] が undefined のままになり、
+      // findUnsupportedFlagField() の isSet 判定（val !== null）が「undefined !== null」で
+      // 常に true になってしまい、setFields に含めていないフィールドまで誤検出する
+      // （実装時に §52 実測で発見。設計書のサンプルコードのままでは動かない）。
+      // #1934 パート1.5: contexts/tags も labels と同じ配列フィールドなのでダミー初期化を揃える
+      // （文字列でも isSet 判定上は動作するが、実際の parseArgs() の型と一致させておく）。
+      const ARRAY_FIELDS = ['labels', 'contexts', 'tags'];
+      const dummyParsed = {};
+      for (const f of Object.keys(FLAG_FIELD_MAP)) dummyParsed[f] = ARRAY_FIELDS.includes(f) ? [] : null;
+      for (const f of setFields) dummyParsed[f] = ARRAY_FIELDS.includes(f) ? ['x'] : 'x';
+      process.stdout.write(findUnsupportedFlagField(dummyParsed, supportedFields) || '');
+      break;
     }
-    break;
-
-  // Octokit API
-  case 'api': {
-    // 実行時間計測（Issue #455）。多くのハンドラはバリデーションエラー時に
-    // throw ではなく process.exit(1) を直接呼ぶ（本ファイル全体の既存流儀）。
-    // process.exit() は同期的に即座にプロセスを終了させるため、Promise チェーンの
-    // .finally() は「スケジュールはされるが実行される前にプロセスが終了する」形で
-    // 到達しないことを実装時に実機確認した（run done 番号なし 等で再現）。
-    // 確実にあらゆる終了経路（正常終了・.catch()経由のエラー・process.exit()直接呼び出し）
-    // で1回だけ出力するため、Promise ではなく process.on('exit', ...) を使う。
-    // 'exit' ハンドラ内は同期処理のみ許容されるが、printTiming() は
-    // hrtime.bigint()/配列演算/process.stderr.write() のみで完結し要件を満たす。
-    const _timingStart = process.hrtime.bigint();
-    if (TIMING_ENABLED) process.on('exit', () => printTiming(_timingStart));
-    apiMain(args.slice(1)).catch(e => {
-      // GitHub REST APIの401（認証拒否）はWeb環境等でGH_TOKENが使えないケースを示唆する（Issue #1695）
-      if (e.status === 401) {
-        process.stderr.write(t('error.gh_auth_rejected') + '\n' + t('error.mcp_fallback_guidance') + '\n');
-      } else {
+    case 'compute-github-ms': {
+      // 区間統合アルゴリズム単体テスト用（Issue #455）。入力はms単位の [start, end] 配列
+      // （例: '[[0,100],[50,150],[200,250]]'）。内部でns相当に換算してcomputeGithubMs()を
+      // 通し、結果をms単位の整数文字列で返す。Octokitスタブなしで区間統合の挙動を検証できる。
+      const intervalsMs = JSON.parse(args[1] || '[]');
+      const intervalsNs = intervalsMs.map(([s, e]) => [BigInt(s) * 1000000n, BigInt(e) * 1000000n]);
+      process.stdout.write(String(computeGithubMs(intervalsNs)));
+      break;
+    }
+    case 'check-octokit-wrap-props': {
+      // wrapOctokitTiming() が Octokit の関数プロパティ（.endpoint/.defaults）を保持する
+      // ことを検証するテスト専用コマンド（Issue #455）。initOctokit() と同じ分岐
+      // （OCTOKIT_STUB_ENV が設定されていればスタブ、なければ実 @octokit/rest）を使う。
+      // どちらの経路もネットワーク接続不要（インスタンスを構築してプロパティを
+      // 調べるだけ、HTTP呼び出しは行わない）。実 @octokit/rest 経路の GH_TOKEN は
+      // 実在不要（構築時に検証されないダミー値で足りる）。
+      (async () => {
+        const stubModulePath = process.env.OCTOKIT_STUB_ENV;
+        let raw;
+        if (stubModulePath) {
+          const createStubOctokit = require(path.resolve(stubModulePath));
+          raw = createStubOctokit({ logPath: null, responsesSpec: null });
+        } else {
+          const { pathToFileURL } = require('url');
+          const octokitPath = path.join(process.env.HOME || os.homedir(), '.claude', 'node_modules', '@octokit', 'rest', 'dist-src', 'index.js');
+          const mod = await import(pathToFileURL(octokitPath).href);
+          raw = new mod.Octokit({ auth: 'dummy-token-for-property-check' });
+        }
+        const wrapped = wrapOctokitTiming(raw);
+        process.stdout.write(JSON.stringify({
+          requestHasEndpoint: typeof wrapped.request.endpoint === 'function',
+          requestHasDefaults: typeof wrapped.request.defaults === 'function',
+          issuesGetHasEndpoint: !!(wrapped.issues && wrapped.issues.get && typeof wrapped.issues.get.endpoint === 'function'),
+          issuesGetHasDefaults: !!(wrapped.issues && wrapped.issues.get && typeof wrapped.issues.get.defaults === 'function'),
+        }));
+      })().catch(e => {
         process.stderr.write('Error: '+(e.message||String(e))+'\n');
-      }
-      process.exitCode = 1;
-    });
-    break;
-  }
+        process.exitCode = 1;
+      });
+      break;
+    }
+    case 'decode-b64':      process.stdout.write(Buffer.from(args[1]||'','base64').toString('utf8')); break;
+    case 'ctx-to-json': {
+      const list = (args[1]||'').trim();
+      const arr = list ? list.split(/\s+/) : [];
+      process.stdout.write(JSON.stringify(arr));
+      break;
+    }
+    case 'home-path':       process.stdout.write(path.join(homeDir(), '.claude', args[1]||'')); break;
+    case 'gtd-label':       process.stdout.write(GTD_DISPLAY[args[1]] || args[1]); break;
 
-  // run サブコマンド（高レベルディスパッチャー）
-  case 'run': {
-    // 実行時間計測（Issue #455）。上記 'api' と同じ方針・同じ理由で process.on('exit') を使う。
-    const _timingStart = process.hrtime.bigint();
-    if (TIMING_ENABLED) process.on('exit', () => printTiming(_timingStart));
-    runMain(args.slice(1)).catch(e => {
-      // GitHub REST APIの401（認証拒否）はWeb環境等でGH_TOKENが使えないケースを示唆する（Issue #1695）
-      if (e.status === 401) {
-        process.stderr.write(t('error.gh_auth_rejected') + '\n' + t('error.mcp_fallback_guidance') + '\n');
-      } else if (!e._msgWritten) {
-        process.stderr.write('Error: '+(e.message||String(e))+'\n');
+    // バリデーション
+    case 'validate':
+      switch (args[1]) {
+        case 'ctx':       validateCtx(args[2]); break;
+        case 'number':    validateNumber(args[2]); break;
+        case 'due':       validateDue(args[2]); break;
+        case 'recur':     validateRecur(args[2]); break;
+        case 'color':     validateColor(args[2]); break;
+        case 'priority':  validatePriority(args[2]); break;
+        case 'name':      validateName(args[2]); break;
+        case 'title':     validateTitle(args[2]); break;
+        case 'time': {
+          const v = parseTime(args[2]);
+          if (v === null || v <= 0) { process.stderr.write(t('error.time_format')+'\n'); process.exit(1); }
+          break;
+        }
+        default: process.stderr.write('Unknown validate type: '+args[1]+'\n'); process.exit(1);
       }
-      process.exitCode = 1;
-    });
-    break;
-  }
+      break;
 
-  default:
-    process.stderr.write('Unknown command: '+cmd+'\n');
-    process.stderr.write('Usage: todo-engine.js <command> [args...]\n');
-    process.exit(1);
+    // 集計・表示（env vars 経由）
+    case 'list-all':        listAll(); break;
+    case 'list-summary':    listSummary(); break;
+    case 'weekly-summary':  weeklySummary(); break;
+    case 'stats':           stats(); break;
+    case 'help':            help(); break;
+    case 'today':           renderToday(); break;
+    case 'eisenhower':      eisenhower(); break;
+    case 'dashboard':       dashboard(); break;
+    case 'report':          report(); break;
+    case 'done-count':      doneCount(); break;
+
+    // テンプレート管理
+    case 'template':
+      switch (args[1]) {
+        case 'list':      templateList(); break;
+        case 'show':      templateShow(); break;
+        case 'save':      templateSave(); break;
+        case 'save-from': templateSaveFrom(); break;
+        case 'use':       templateUse(); break;
+        case 'delete':    templateDelete(); break;
+        default: process.stderr.write('Unknown template subcommand: '+args[1]+'\n'); process.exit(1);
+      }
+      break;
+
+    // ビュー管理
+    case 'view':
+      switch (args[1]) {
+        case 'save':   viewSave(); break;
+        case 'use':    viewUse(); break;
+        case 'list':   viewList(); break;
+        case 'delete': viewDelete(); break;
+        default: process.stderr.write('Unknown view subcommand: '+args[1]+'\n'); process.exit(1);
+      }
+      break;
+
+    // Octokit API
+    case 'api': {
+      // 実行時間計測（Issue #455）。多くのハンドラはバリデーションエラー時に
+      // throw ではなく process.exit(1) を直接呼ぶ（本ファイル全体の既存流儀）。
+      // process.exit() は同期的に即座にプロセスを終了させるため、Promise チェーンの
+      // .finally() は「スケジュールはされるが実行される前にプロセスが終了する」形で
+      // 到達しないことを実装時に実機確認した（run done 番号なし 等で再現）。
+      // 確実にあらゆる終了経路（正常終了・.catch()経由のエラー・process.exit()直接呼び出し）
+      // で1回だけ出力するため、Promise ではなく process.on('exit', ...) を使う。
+      // 'exit' ハンドラ内は同期処理のみ許容されるが、printTiming() は
+      // hrtime.bigint()/配列演算/process.stderr.write() のみで完結し要件を満たす。
+      const _timingStart = process.hrtime.bigint();
+      if (TIMING_ENABLED) process.on('exit', () => printTiming(_timingStart));
+      apiMain(args.slice(1)).catch(e => {
+        // GitHub REST APIの401（認証拒否）はWeb環境等でGH_TOKENが使えないケースを示唆する（Issue #1695）
+        if (e.status === 401) {
+          process.stderr.write(t('error.gh_auth_rejected') + '\n' + t('error.mcp_fallback_guidance') + '\n');
+        } else {
+          process.stderr.write('Error: '+(e.message||String(e))+'\n');
+        }
+        process.exitCode = 1;
+      });
+      break;
+    }
+
+    // run サブコマンド（高レベルディスパッチャー）
+    case 'run': {
+      // 実行時間計測（Issue #455）。上記 'api' と同じ方針・同じ理由で process.on('exit') を使う。
+      const _timingStart = process.hrtime.bigint();
+      if (TIMING_ENABLED) process.on('exit', () => printTiming(_timingStart));
+      runMain(args.slice(1)).catch(e => {
+        // GitHub REST APIの401（認証拒否）はWeb環境等でGH_TOKENが使えないケースを示唆する（Issue #1695）
+        if (e.status === 401) {
+          process.stderr.write(t('error.gh_auth_rejected') + '\n' + t('error.mcp_fallback_guidance') + '\n');
+        } else if (!e._msgWritten) {
+          process.stderr.write('Error: '+(e.message||String(e))+'\n');
+        }
+        process.exitCode = 1;
+      });
+      break;
+    }
+
+    default:
+      process.stderr.write('Unknown command: '+cmd+'\n');
+      process.stderr.write('Usage: todo-engine.js <command> [args...]\n');
+      process.exit(1);
+  }
 }
 
 // ─── run サブコマンド実装 ───────────────────────────────────────────────────
@@ -6277,3 +6282,47 @@ async function runMain(args) {
     }
   }
 }
+
+// ─── エントリポイントと export（#2102 R1） ───
+//
+// 直接実行（node todo-engine.js ...）のときだけ main() を呼ぶ。require() された場合は
+// 何も実行せず（stdout 出力なし・exit なし）、下記を export する。
+//
+// 呼ぶ位置はファイル末尾でなければならない: ADD_USAGE / RESERVED_TITLE_GUARD_COMMANDS 等の
+// 後半の const が初期化される前に main() を呼ぶと TDZ で落ちる（旧構造で
+// `Cannot access 'UNKNOWN_FLAG_RE' before initialization` が実際に起きた）。
+//
+// 注意: バリデータ・ガード・run ハンドラの多くは失敗時に process.exit(1) を直接呼ぶ。
+// プロセス内から異常系を呼ぶテストは、テストランナー自身が終了する点に注意する。
+// 末尾 export 範囲を run-tests.sh の runMain 抽出（/^async function runMain...[\s\S]*$/m）が
+// 取り込み、case ラベルの抽出対象になるため、ここに switch の case 句と同じ形の文字列を書かないこと。
+module.exports = {
+  GTD_LABELS, PROJECT_LABEL, GTD_DISPLAY, PRI_COLORS, RECUR_WEEKDAY_TO_DOW,
+  MAX_RECUR_CATCHUP_ITERATIONS, UNKNOWN_FLAG_RE, BRACKETED_GTD_RE, FLAG_FIELD_MAP,
+  FLAG_SUPPORTED_BY, MESSAGES, ADD_USAGE, RESERVED_TITLE_GUARD_COMMANDS, t, tpl, cnt, fmt, addDays,
+  addMonth, parseBeforeDuration, addMonths, isValidCalendarDate, isLeapYear, normalizeDue,
+  bodyHasProject, parseBodyObj, parseBody, extractIssueFields, buildBody, parseTime,
+  extractTimeField, estimateMinutesFromBody, actualMinutesFromBody, formatTime, priorityColor,
+  splitRecurPattern, nextDueWeeklyOnDow, nextDueMonthlyOnDay, nextDue, nextDueCatchUp,
+  firstDueOnDow, firstDueOnDay, firstDueFromToday, computeCyclesOverdue, validateCtx, validateTag,
+  validateNumber, validateDue, validateActivateFormat, validateRecur, validateColor,
+  validatePriority, validateName, validateResumeCondition, validateTitle, normLabel, getLnames,
+  getDue, getPri, priIcon, getCtx, getTags, daysBetween, sortByPriDue, sortByReviewedAtThenPri,
+  renderIssueList, listGroupedByDue, listAll, listSummary, weeklySummary, stats, help, renderToday,
+  eisenhower, dashboard, report, doneCount, homeDir, getTemplatePath, getViewPath, readJsonFile,
+  writeJsonFile, templateList, templateShow, templateSave, templateSaveFrom, templateUse,
+  templateDelete, viewSave, viewUse, viewList, viewDelete, apiErr, apiMain, main,
+  wrapOctokitTiming, computeGithubMs, printTiming, initOctokit, findUnknownFlag, guardUnknownFlag,
+  findBracketedGtdLabel, guardBracketedGtdLabel, findUnsupportedFlagField, guardUnsupportedFlag,
+  guardExtraPositional, parseArgs, getToday, toJstDateStr, ensureLabel, fetchAndParseIssue,
+  addSubIssue, listSubIssues, removeSubIssue, updateIssueBody, runOut, runAdd, runList,
+  fetchAllOpen, fetchRecentClosed, createRecurIssue, postDoneProcessing, runDone, execMoveGtd,
+  removeLabelIfPresent, execRemoveLabels, runMove, createCommentSanitized, runComment, runEdit,
+  runDue, runDesc, runRecur, runLink, runRename, runPriority, normalizeTagTokens, renameCtxLabel,
+  runTag, runUntag, runLabel, runSearch, runArchive, runDashboard, runToday, runEisenhower,
+  runStats, runReport, runHelp, runTemplate, issueToJsonObj, runSchema, runShow, runView, runBulk,
+  runReviewSomeday, runPromote, runPromoteProject, runUnlink, runWeeklyProjectAudit,
+  runMigrateSubIssue, reservedTitleGuardWord, runMain,
+};
+
+if (require.main === module) main();

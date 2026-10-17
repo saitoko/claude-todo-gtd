@@ -4765,6 +4765,93 @@ assert_contains "§53-17 monthly:31 クランプ時は既存の warn.month_day_c
 # 元々PASSのまま。詳細は完了報告を参照）。
 
 # ──────────────────────────────────────────
+# §54  require() の無副作用と module.exports（Issue #2102 R1）
+# 旧構造は require() しただけで process.argv を読んでトップレベルの switch が走り、
+# 引数なしなら "Unknown command" を stderr に出して exit 1 していた。main() に包み
+# `if (require.main === module) main();` をファイル末尾に置いたことで、require() は
+# 何も実行せず、純粋関数をプロセス内から呼べる。
+# 回帰検出力: 旧エンジン（switch がトップレベル）に対しては 54-1/2/3 が FAIL する
+# （実装時に旧版 todo-engine.js を差し替えて確認済み。完了報告参照）。
+# ──────────────────────────────────────────
+echo ""
+echo "§54  require() の無副作用と module.exports（Issue #2102 R1）"
+
+_G54_TMP=$(mktemp /tmp/todo-test-require-XXXXXX)
+cat > "$_G54_TMP" << 'REQUIRE_TEST_EOF'
+// 使い方: node <this> <engine> <mode>
+const enginePath = process.argv[2];
+const mode = process.argv[3];
+if (mode === 'noargs') {
+  // 引数なしで require する（旧構造: Unknown command + exit 1）
+  require(enginePath);
+  process.stdout.write('REQUIRED_OK');
+} else if (mode === 'with-cmd') {
+  // 実在コマンドを argv に仮置きして require する（旧構造: gtd-label が stdout に出る）
+  process.argv.splice(2, process.argv.length, 'gtd-label', 'next');
+  require(enginePath);
+  process.stdout.write('|REQUIRED_OK');
+} else if (mode === 'exports') {
+  const e = require(enginePath);
+  const r = {};
+  r.nextDue = e.nextDue('weekly:mon', '2026-10-17') === '2026-10-26';
+  r.addDays = e.addDays('2026-10-17', 3) === '2026-10-20';
+  r.gtdLabels = Array.isArray(e.GTD_LABELS) && e.GTD_LABELS.includes('next');
+  r.findUnknownFlag = e.findUnknownFlag(['title', '--boddy-file'], ['--group']) === '--boddy-file';
+  r.findUnknownFlagOk = !e.findUnknownFlag(['title', '--group'], ['--group']);
+  r.parseArgs = typeof e.parseArgs === 'function' && Array.isArray(e.parseArgs(['--estimate', '30m', 'T']).extra || []);
+  r.runHandlers = ['runAdd', 'runList', 'runDone', 'runMove', 'runMain', 'main'].every(n => typeof e[n] === 'function');
+  r.noExitListener = process.listenerCount('exit') === 0;
+  process.stdout.write(JSON.stringify(r));
+} else if (mode === 'coverage') {
+  // ソース上のトップレベル function 宣言がすべて export されていること（追加時の export 漏れ検知）
+  const fs = require('fs');
+  const e = require(enginePath);
+  const src = fs.readFileSync(enginePath, 'utf8');
+  const names = [...src.matchAll(/^(?:async )?function (\w+)/gm)].map(m => m[1]);
+  const missing = names.filter(n => typeof e[n] !== 'function');
+  process.stdout.write(JSON.stringify({ count: names.length, missing }));
+}
+REQUIRE_TEST_EOF
+
+_G54_OUT=$(node "$_G54_TMP" "$ENGINE" noargs 2>"$_G54_TMP.err"); _G54_EC=$?
+_G54_ERR=$(cat "$_G54_TMP.err")
+assert_eq "§54-1 引数なしで require しても exit 0 で読み込み完了する" "0" "$_G54_EC"
+assert_eq "§54-2 引数なしで require しても stdout は呼び出し側の出力のみ（エンジンは何も出さない）" "REQUIRED_OK" "$_G54_OUT"
+assert_eq "§54-3 引数なしで require しても stderr は空（Unknown command を出さない）" "" "$_G54_ERR"
+
+_G54_OUT=$(node "$_G54_TMP" "$ENGINE" with-cmd 2>"$_G54_TMP.err"); _G54_EC=$?
+assert_eq "§54-4 実在コマンドを argv に仮置きして require してもサブコマンドは実行されない" "|REQUIRED_OK" "$_G54_OUT"
+
+_G54_OUT=$(TODO_TIMING=1 node "$_G54_TMP" "$ENGINE" exports 2>"$_G54_TMP.err"); _G54_EC=$?
+assert_exit_ok "§54-5 exports モードが正常終了する（TODO_TIMING=1 でも）" "$_G54_EC"
+for key in nextDue addDays gtdLabels findUnknownFlag findUnknownFlagOk parseArgs runHandlers noExitListener; do
+  assert_contains "§54-6 [$key] プロセス内から呼べる／副作用なし" "\"$key\":true" "$_G54_OUT"
+done
+
+_G54_OUT=$(node "$_G54_TMP" "$ENGINE" coverage 2>"$_G54_TMP.err")
+assert_contains "§54-7 トップレベル function 宣言はすべて export されている" '"missing":\[\]' "$_G54_OUT"
+
+# 直接実行でディスパッチャが従来どおり動く（require.main === module 側の分岐）
+assert_eq "§54-8 直接実行: gtd-label next が従来どおり動く" "🎯 next" "$(node "$ENGINE" gtd-label next)"
+_G54_ERR=$(node "$ENGINE" 2>&1 >/dev/null); _G54_EC=$?
+assert_exit_fail "§54-9 直接実行: 引数なしは従来どおり exit 1" "$_G54_EC"
+assert_contains "§54-10 直接実行: 引数なしは Unknown command を stderr に出す" "Unknown command" "$_G54_ERR"
+
+# main() の呼び出しはファイル末尾でなければならない（後半 const の TDZ 回避）。
+# 末尾の非空・非コメント行が呼び出し行であること。
+_G54_LAST=$(grep -v '^[[:space:]]*$' "$ENGINE" | tail -1)
+assert_eq "§54-11 ファイル末尾の最終行が main() 呼び出しガードである（TDZ 回避の位置不変条件）" \
+  "if (require.main === module) main();" "$_G54_LAST"
+_G54_MAINLINE=$(grep -n '^function main() {' "$ENGINE" | cut -d: -f1)
+_G54_ADDUSAGE=$(grep -n '^const ADD_USAGE' "$ENGINE" | cut -d: -f1)
+if [ -n "$_G54_MAINLINE" ] && [ -n "$_G54_ADDUSAGE" ] && [ "$_G54_MAINLINE" -lt "$_G54_ADDUSAGE" ]; then
+  printf "  ✅ §54-12 main() の定義は後半 const (ADD_USAGE) より前にあり、呼び出しだけが末尾にある\n"; PASS=$((PASS+1))
+else
+  printf "  ❌ §54-12 main() 定義位置の前提が崩れている (main=%s ADD_USAGE=%s)\n" "$_G54_MAINLINE" "$_G54_ADDUSAGE"; FAIL=$((FAIL+1))
+fi
+rm -f "$_G54_TMP" "$_G54_TMP.err"
+
+# ──────────────────────────────────────────
 # 書き込み系ハンドラのスタブベーステスト（run-tests-write.sh、Issue #1648）
 # 3,266行超に肥大化した本ファイルへの追記を避けるため別ファイルに分離し、
 # ここで子プロセスとして呼び出して結果を合算する。実行口は
