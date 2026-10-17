@@ -500,6 +500,8 @@ const MESSAGES = {
     'error.unknown_command': 'エラー: 未知のコマンド「{cmd}」です。',
     'error.unknown_command_hint1': '  （コマンドと混同を避けるため、英字タイトルは /todo add <タイトル> で明示的に追加してください）',
     'error.unknown_command_hint2': '  明示的に inbox へ追加したい場合: /todo add {args}',
+    'error.reserved_multiword_title': 'エラー: 「{title}」は先頭語「{word}」がコマンド名のため、タスク追加ではなくコマンドの誤入力の可能性があります。Issue は作成していません。',
+    'error.reserved_multiword_title_hint': '  意図したタスク追加なら明示してください: /todo add inbox "{title}"',
     'error.close_failed_after_recur': 'エラー: #{num} のクローズに失敗しました（新しい繰り返しIssue #{newNum} は作成済みです）: {msg}\n  同じタスクのオープンなIssueが2件（元 #{num} と新規 #{newNum}）残っている可能性があります。手動で確認してください。',
     'warn.sub_issue_skip': '⚠️ sub-issue 登録スキップ: #{parent} に既に登録済み（冪等）',
     'warn.sub_issue_register_failed': '⚠️ sub-issue 登録失敗（Issue は作成済み）: {msg}',
@@ -884,6 +886,8 @@ const MESSAGES = {
     'error.unknown_command': 'Error: Unknown command "{cmd}".',
     'error.unknown_command_hint1': '  (To avoid confusion with a command, use /todo add <title> to explicitly add an English title)',
     'error.unknown_command_hint2': '  To explicitly add it to inbox: /todo add {args}',
+    'error.reserved_multiword_title': 'Error: "{title}" starts with the command name "{word}", so it may be a mistyped command rather than a task. No issue was created.',
+    'error.reserved_multiword_title_hint': '  If you meant to add a task, be explicit: /todo add inbox "{title}"',
     'error.close_failed_after_recur': 'Error: Failed to close #{num} (a new recurring issue #{newNum} was already created): {msg}\n  There may now be two open issues for the same task (original #{num} and new #{newNum}). Please check manually.',
     'warn.sub_issue_skip': '⚠️ sub-issue registration skipped: #{parent} already registered (idempotent)',
     'warn.sub_issue_register_failed': '⚠️ sub-issue registration failed (issue was already created): {msg}',
@@ -6201,6 +6205,14 @@ function reservedTitleGuardWord(restTokens) {
   return RESERVED_TITLE_GUARD_COMMANDS.has(word.toLowerCase()) ? word : null;
 }
 
+// default 経路（未知コマンド）用: 第1引数が空白を含み、空白区切りの1語目が既知コマンド名なら
+// その語を返す（大文字小文字無視）。それ以外は null。純粋関数（Issue #2131）。
+function reservedMultiwordFirstWord(first) {
+  if (typeof first !== 'string' || !/\s/.test(first.trim())) return null;
+  const word = first.trim().split(/\s+/)[0];
+  return RESERVED_TITLE_GUARD_COMMANDS.has(word.toLowerCase()) ? word : null;
+}
+
 // runMain: コマンドディスパッチャー
 async function runMain(args) {
   const cmd0 = args[0];
@@ -6313,6 +6325,14 @@ async function runMain(args) {
         process.stderr.write(t('error.command_list_hint')+'\n');
         process.exit(1);
       }
+      // 第1引数が空白入りで1語目が既知コマンド名（例: "list next" を1引数で渡した誤爆）→ 止める。
+      // 明示的な add / <GTD> <タイトル> 経路は別 case で処理されるため対象外（Issue #2131）。
+      const mwWord = reservedMultiwordFirstWord(cmd);
+      if (mwWord) {
+        process.stderr.write(tpl('error.reserved_multiword_title', { title: cmd, word: mwWord })+'\n');
+        process.stderr.write(tpl('error.reserved_multiword_title_hint', { title: cmd })+'\n');
+        process.exit(1);
+      }
       // 非英字（日本語タイトル等）は従来通り inbox 追加（摩擦ゼロ収集の維持）
       return await runAdd(octokit, owner, repo, args);
     }
@@ -6358,7 +6378,7 @@ module.exports = {
   runTag, runUntag, runLabel, runSearch, runArchive, runDashboard, runToday, runEisenhower,
   runStats, runReport, runHelp, runTemplate, issueToJsonObj, runSchema, runShow, runView, runBulk,
   runReviewSomeday, runPromote, runPromoteProject, runUnlink, runWeeklyProjectAudit,
-  runMigrateSubIssue, reservedTitleGuardWord, runMain,
+  runMigrateSubIssue, reservedTitleGuardWord, reservedMultiwordFirstWord, runMain,
   envOpen, envClosed, envListFilters, envTemplateFields, envViewFilters,
 };
 

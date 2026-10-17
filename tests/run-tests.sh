@@ -3759,6 +3759,63 @@ else
   fi
 fi
 
+# --- Issue #2131: default 経路の複数語予約語ガード（"list next" 等を1引数で渡す誤爆）---
+echo ""
+echo "▶ Issue #2131: 先頭語がコマンド名の複数語タイトル（default 経路のみ止める）"
+_T2131_TITLES=(
+  "list next"
+  "show 2102"
+  "LIST next --json"
+  "activate 1088 2026-05-01"
+  "add zettel.sh Mac対応"
+  "template save が #tag を保存しない"
+  "Search Console を GA4 に連携する"
+  "unlink が親を外さない"
+  "migrate sub-issue が既登録を数える"
+  "weekly-project-audit が落ちる"
+  "recur 再作成時に due が消える"
+  "due 未設定の routine が"
+  "activate コマンドが"
+)
+_i=0
+for _t in "${_T2131_TITLES[@]}"; do
+  _i=$((_i+1))
+  _LOG2131=$(mktemp /tmp/todo-test-2131-XXXXXX)
+  _OUT2131=$(TODO_REPO_OWNER=test TODO_REPO_NAME=test OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" OCTOKIT_STUB_LOG_ENV="$_LOG2131" \
+    node "$ENGINE" run "$_t" 2>&1); _EC2131=$?
+  assert_exit_fail "2131-${_i}: default 経路で「${_t}」→ exit 1" "$_EC2131"
+  assert_contains "2131-${_i}: 案内（add inbox）を含む" '/todo add inbox' "$_OUT2131"
+  assert_not_contains "2131-${_i}: 作成されない" 'Issue #' "$_OUT2131"
+  if [ -s "$_LOG2131" ] && grep -q 'issues.create' "$_LOG2131"; then
+    printf "  ❌ 2131-%s: issues.create が呼ばれた\n" "$_i"; FAIL=$((FAIL+1))
+  else
+    printf "  ✅ 2131-%s: issues.create は呼ばれていない\n" "$_i"; PASS=$((PASS+1))
+  fi
+  rm -f "$_LOG2131"
+  # 明示 add 経路は通る（正当タイトルの救済経路）
+  _R2131='{"GET /repos/{owner}/{repo}/labels/{name}":[{}],"issues.create":[{"data":{"number":9201,"html_url":"https://example.com/9201"}}]}'
+  _AOUT=$(TODO_REPO_OWNER=test TODO_REPO_NAME=test OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" OCTOKIT_STUB_RESPONSES_ENV="$_R2131" \
+    node "$ENGINE" run add inbox "$_t" 2>&1); _AEC=$?
+  assert_exit_ok "2131-${_i}: add inbox 経路では「${_t}」が通る" "$_AEC"
+  assert_contains "2131-${_i}: add inbox で #9201 が作成される" "9201" "$_AOUT"
+done
+# 対象外: 非コマンド先頭語の英字タイトル・日本語タイトルは従来どおり inbox 追加
+_R2131='{"GET /repos/{owner}/{repo}/labels/{name}":[{}],"issues.create":[{"data":{"number":9202,"html_url":"https://example.com/9202"}}]}'
+for _t in "Podman Desktop を入れて" "買い物 list"; do
+  _AOUT=$(TODO_REPO_OWNER=test TODO_REPO_NAME=test OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" OCTOKIT_STUB_RESPONSES_ENV="$_R2131" \
+    node "$ENGINE" run "$_t" 2>&1); _AEC=$?
+  assert_exit_ok "2131: 対象外「${_t}」は従来どおり default 経路で追加される" "$_AEC"
+done
+# 既存の単一英字語は unknown_command のまま
+_UOUT=$(TODO_REPO_OWNER=test TODO_REPO_NAME=test OCTOKIT_STUB_ENV="$STUB_ENGINE_PATH" node "$ENGINE" run Podman 2>&1); _UEC=$?
+assert_exit_fail "2131: 単一英字語は従来どおり unknown_command" "$_UEC"
+assert_contains "2131: unknown_command メッセージ" '未知のコマンド' "$_UOUT"
+# ja/en 両方のキーが存在する
+for _k in error.reserved_multiword_title error.reserved_multiword_title_hint; do
+  _n=$(grep -c "'$_k':" "$ENGINE")
+  if [ "$_n" -eq 2 ]; then printf "  ✅ 2131: MESSAGES に %s が ja/en 両方ある\n" "$_k"; PASS=$((PASS+1)); else printf "  ❌ 2131: %s が %s 件\n" "$_k" "$_n"; FAIL=$((FAIL+1)); fi
+done
+
 # ──────────────────────────────────────────
 # §41  recur 曜日・日付固定サフィックス（Issue #1676）
 # weekly:<曜日> / monthly:<日> の validateRecur・nextDue・renderIssueList を
