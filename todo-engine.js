@@ -4061,6 +4061,21 @@ async function updateIssueBody(octokit, owner, repo, num, fields) {
 // 確認メッセージを stdout に出力
 function runOut(msg) { process.stdout.write(msg+'\n'); }
 
+// --body-file の読み込み。パスが無い・読めないときはエラーを stderr に出して exit 1
+function readBodyFileOrExit(filePath) {
+  const resolvedPath = path.resolve(filePath);
+  if (!fs.existsSync(resolvedPath)) {
+    process.stderr.write(tpl('error.body_file_not_found', { path: resolvedPath })+'\n');
+    process.exit(1);
+  }
+  try {
+    return fs.readFileSync(resolvedPath, 'utf8');
+  } catch (e) {
+    process.stderr.write(tpl('error.body_file_read_failed', { msg: e.message })+'\n');
+    process.exit(1);
+  }
+}
+
 // --- 各コマンドハンドラ ---
 
 async function runAdd(octokit, owner, repo, tokens) {
@@ -4245,17 +4260,7 @@ async function runAdd(octokit, owner, repo, tokens) {
   // --body / --body-file: ユーザー提供の本文（--body-file 優先）
   let userBody = '';
   if (parsed.bodyFile) {
-    const resolvedPath = path.resolve(parsed.bodyFile);
-    if (!fs.existsSync(resolvedPath)) {
-      process.stderr.write(tpl('error.body_file_not_found', { path: resolvedPath })+'\n');
-      process.exit(1);
-    }
-    try {
-      userBody = fs.readFileSync(resolvedPath, 'utf8');
-    } catch (e) {
-      process.stderr.write(tpl('error.body_file_read_failed', { msg: e.message })+'\n');
-      process.exit(1);
-    }
+    userBody = readBodyFileOrExit(parsed.bodyFile);
   } else if (parsed.body !== null) {
     userBody = parsed.body;
   }
@@ -4830,17 +4835,7 @@ async function runComment(octokit, owner, repo, tokens) {
   let text;
   if (bodyFileOpt !== null) {
     // --body-file 優先（runAdd と同じ挙動・同じエラーメッセージを再利用）
-    const resolvedPath = path.resolve(bodyFileOpt);
-    if (!fs.existsSync(resolvedPath)) {
-      process.stderr.write(tpl('error.body_file_not_found', { path: resolvedPath })+'\n');
-      process.exit(1);
-    }
-    try {
-      text = fs.readFileSync(resolvedPath, 'utf8');
-    } catch (e) {
-      process.stderr.write(tpl('error.body_file_read_failed', { msg: e.message })+'\n');
-      process.exit(1);
-    }
+    text = readBodyFileOrExit(bodyFileOpt);
   } else if (bodyOpt !== null) {
     text = bodyOpt;
   } else {
@@ -6614,6 +6609,7 @@ module.exports = {
   runReviewSomeday, runPromote, runPromoteProject, runUnlink, runWeeklyProjectAudit,
   runMigrateSubIssue, reservedTitleGuardWord, reservedMultiwordFirstWord, runMain,
   envOpen, envClosed, envListFilters, envTemplateFields, envViewFilters,
+  readBodyFileOrExit,
 };
 
 if (require.main === module) main();
