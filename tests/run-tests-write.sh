@@ -6161,16 +6161,22 @@ w58_run "{\"issues.get\":[{\"data\":$(w58_issue 750 '🎯 next')}],\"issues.upda
 assert_eq "W58 T-b1 done: 絵文字なし next の #751 は昇格しない・絵文字なし someday の #752 だけ昇格する" "issues.get > issues.update > issues.listForRepo > issues.removeLabel > issues.addLabels" "$(w58_seq "$W58_LOG")"
 assert_contains "W58 T-b1 done: 昇格したのは #752" '"issue_number":752' "$(log_lines_for_method "$W58_LOG" issues.addLabels)"
 
-# ── T-b2: promote-project の API 呼び出し順（旧 GTD ラベルの削除 → ラベル存在確認 → 付与） ──
+# ── T-b2: promote-project の API 呼び出し順（ラベル存在確認 → 旧 GTD ラベルの削除 → 付与。J4 で順序を変更） ──
 w58_run "{\"issues.get\":[{\"data\":$(w58_issue 760 '🎯 next')}],\"issues.removeLabel\":[{}],\"$W58_L\":[{}],\"issues.addLabels\":[{}]}" run promote-project 760
 assert_exit_ok "W58 T-b2 promote-project: exit 0" "$W58_EC"
-assert_eq "W58 T-b2 呼び出し順: get → 旧 GTD 削除 → ラベル確認 → 付与" "issues.get > issues.removeLabel > LABEL? > issues.addLabels" "$(w58_seq "$W58_LOG")"
+assert_eq "W58 T-b2 呼び出し順: get → ラベル確認 → 旧 GTD 削除 → 付与" "issues.get > LABEL? > issues.removeLabel > issues.addLabels" "$(w58_seq "$W58_LOG")"
 w58_run "{\"issues.get\":[{\"data\":$(w58_issue 761 '🎯 next')}],\"issues.removeLabel\":[{}],\"$W58_L\":[$W58_E404],\"issues.createLabel\":[{}],\"issues.addLabels\":[{}]}" run promote-project 761
-assert_eq "W58 T-b2 ラベルが無いとき: 削除 → 確認 → 作成 → 付与" "issues.get > issues.removeLabel > LABEL? > issues.createLabel > issues.addLabels" "$(w58_seq "$W58_LOG")"
+assert_eq "W58 T-b2 ラベルが無いとき: 確認 → 作成 → 削除 → 付与" "issues.get > LABEL? > issues.createLabel > issues.removeLabel > issues.addLabels" "$(w58_seq "$W58_LOG")"
 assert_eq "W58 T-b2 作成するラベルの色" "📁 project=0052CC" "$(w58_colors "$W58_LOG")"
 w58_run "{\"issues.get\":[{\"data\":$(w58_issue 762 '🎯 next')}],\"issues.removeLabel\":[{}],\"$W58_L\":[$W58_E500]}" run promote-project 762
 assert_exit_fail "W58 T-b2 ラベル確認の失敗: exit 1" "$W58_EC"
-assert_eq "W58 T-b2 ラベル確認が失敗しても旧 GTD ラベルは先に外れている（現状）" "issues.get > issues.removeLabel > LABEL?" "$(w58_seq "$W58_LOG")"
+assert_eq "W58 T-b2/J4 ラベル確認が失敗したら旧 GTD ラベルは外さない（何も変えない）" "issues.get > LABEL?" "$(w58_seq "$W58_LOG")"
+assert_eq "W58 T-b2/J4 ラベル確認が失敗したら removeLabel / addLabels は 0 回" "0" "$(( $(log_count "$W58_LOG" issues.removeLabel) + $(log_count "$W58_LOG" issues.addLabels) ))"
+w58_run "{\"issues.get\":[{\"data\":$(w58_issue 763 '🎯 next')}],\"issues.removeLabel\":[{}],\"$W58_L\":[$W58_E404],\"issues.createLabel\":[$W58_E500]}" run promote-project 763
+assert_exit_fail "W58 T-b2/J4 ラベル作成の失敗: exit 1" "$W58_EC"
+assert_eq "W58 T-b2/J4 ラベル作成が失敗したら旧 GTD ラベルは外さない" "issues.get > LABEL? > issues.createLabel" "$(w58_seq "$W58_LOG")"
+w58_run "{\"issues.get\":[{\"data\":$(w58_issue 764 'inbox')}],\"issues.removeLabel\":[{}],\"$W58_L\":[{}],\"issues.addLabels\":[{}]}" run promote-project 764
+assert_eq "W58 T-b2【対照】旧 GTD ラベルが絵文字なし 'inbox' でも、確認 → 削除 → 付与" "issues.get > LABEL? > issues.removeLabel > issues.addLabels" "$(w58_seq "$W58_LOG")"
 
 # ── T-c1: 優先度ラベル付け替えの API 呼び出し順 ──
 w58_run "{\"issues.get\":[{\"data\":$(w58_issue 770 '🎯 next,p3')}],\"issues.removeLabel\":[{}],\"$W58_L\":[{}],\"issues.addLabels\":[{}]}" run priority 770 p1

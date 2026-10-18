@@ -6173,10 +6173,11 @@ async function runPromoteProject(octokit, owner, repo, tokens) {
     process.exit(1);
   }
 
-  // GTD ラベルを外し、📁 project ラベルを付与する（削除と付与の間で ensureLabel）
-  await swapGtdLabel(octokit, owner, repo, num, issue.labels, GTD_DISPLAY[PROJECT_LABEL], {
-    ensureBeforeAdd: { color: PROJECT_LABEL_COLOR, description: 'GTD: project' },
-  });
+  // 📁 project ラベルの存在確認・作成を、旧 GTD ラベルの削除より前に行う。
+  // 逆順だと確認・作成の失敗時に「旧 GTD ラベルだけ外れて project ラベルが付かない」状態が残る
+  await ensureLabel(octokit, owner, repo, GTD_DISPLAY[PROJECT_LABEL], PROJECT_LABEL_COLOR, 'GTD: project');
+  // GTD ラベルを外し、📁 project ラベルを付与する
+  await swapGtdLabel(octokit, owner, repo, num, issue.labels, GTD_DISPLAY[PROJECT_LABEL]);
 
   // --outcome 指定時はタイトルを書き換え（outcomeIdx は関数冒頭のガードで算出済み）
   let newTitle = issue.title;
