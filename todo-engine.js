@@ -439,6 +439,7 @@ const MESSAGES = {
     'show.desc_header': '### 説明',
     'view.viewing': '## 👁 ビュー: {name} [{parts}]',
     'error.no_issue_numbers': 'エラー: Issue番号が指定されていません。',
+    'error.bulk_non_numeric_number': "エラー: '{token}' は Issue 番号ではありません。番号は数字だけで指定してください（何も処理していません）。",
     'bulk.item_error': '  #{num} エラー: {msg}',
     'bulk.done_count': '✅ {n}件完了',
     'bulk.done_recur_suffix': '（うち繰り返し再作成: {n}件）',
@@ -825,6 +826,7 @@ const MESSAGES = {
     'show.desc_header': '### Description',
     'view.viewing': '## 👁 View: {name} [{parts}]',
     'error.no_issue_numbers': 'Error: No issue numbers specified.',
+    'error.bulk_non_numeric_number': "Error: '{token}' is not an issue number. Specify issue numbers as digits only (nothing was processed).",
     'bulk.item_error': '  #{num} error: {msg}',
     'bulk.done_count': '✅ {n} completed',
     'bulk.done_recur_suffix': ' (recurring recreated: {n})',
@@ -5938,6 +5940,13 @@ async function runBulk(octokit, owner, repo, tokens) {
   while (i < tokens.length && /^\d+$/.test(tokens[i])) { nums.push(parseInt(tokens[i])); i++; }
   const rest = tokens.slice(i);
   if (!nums.length) { process.stderr.write(t('error.no_issue_numbers')+'\n'); process.exit(1); }
+  // done / tag / untag は番号の直後の語を操作の引数として読むため、'43abc' のような数字で始まる語が
+  // 番号の並びに混ざっていると、番号のつもりの語を黙って別の意味に読んでしまう（done は無視、tag / untag は
+  // その名前の context ラベルとして扱う）。何も処理せずに落とす。move / priority は引数として読んで既にエラーになる
+  if (['done','tag','untag'].includes(sub) && rest.length && /^\d/.test(rest[0])) {
+    process.stderr.write(tpl('error.bulk_non_numeric_number', { token: rest[0] })+'\n');
+    process.exit(1);
+  }
   for (const n of nums) validateNumber(String(n));
 
   let doneCount = 0, errCount = 0;

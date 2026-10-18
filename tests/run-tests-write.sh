@@ -6237,23 +6237,58 @@ w58_run "{\"issues.createComment\":[{\"data\":{\"html_url\":\"x\"}}]}" run comme
 assert_exit_ok "W58 T-f1【対照】comment --body-file 実ファイル: exit 0" "$W58_EC"
 assert_contains "W58 T-f1【対照】本文はファイルの中身" '"body":"from file"' "$(log_lines_for_method "$W58_LOG" issues.createComment)"
 
-# ── T-a1: bulk の番号列に数字でない語が混ざったときの現状（Issue #2102 R3 の判断 J12 で将来変える） ──
-# 現状: 番号は先頭から「数字だけのトークン」を集め、最初の数字でない語から後ろは操作ごとの引数として読む。
+# ── T-a1: bulk の番号列に数字でない語が混ざったとき（J12。done / tag / untag は何も処理せずエラー終了） ──
+# 番号は先頭から「数字だけのトークン」を集める。最初の数字でない語から後ろは操作ごとの引数として読まれる。
+# done / tag / untag で、その語が数字で始まる（'43abc' のような番号のつもりの語）場合は、何も書き込まずに exit 1。
+# w58_writes <ログ>: 書き込み系 API（issues.update / addLabels / removeLabel / createLabel）の呼び出し回数。ログが読めなければ ERR
+w58_writes() {
+  LOGFILE="$1" node -e "
+    const fs=require('fs'); const f=process.env.LOGFILE;
+    if(!fs.existsSync(f)){process.stdout.write('ERR');process.exit(0);}
+    const W=new Set(['issues.update','issues.addLabels','issues.removeLabel','issues.createLabel']);
+    let n=0;
+    for(const l of fs.readFileSync(f,'utf8').split('\\n').filter(Boolean)){try{if(W.has(JSON.parse(l).method))n++;}catch(e){process.stdout.write('ERR');process.exit(0);}}
+    process.stdout.write(String(n));"
+}
 W58_B42="\"issues.get\":[{\"data\":$(w58_issue 42 '🎯 next')}],\"issues.update\":[{}],\"issues.listForRepo\":[{\"data\":[]}]"
+W58_J12_RES="{\"$W58_L\":[{},{}],$W58_B42,\"issues.addLabels\":[{}],\"issues.removeLabel\":[{}]}"
+# 対照: 正しい番号だけなら処理される（書き込みが 0 より大きい = 書き込みログが読めている）
+w58_run "{$W58_B42}" run bulk done 42
+assert_exit_ok "W58 T-a1/J12【対照】bulk done 42: exit 0" "$W58_EC"
+assert_eq "W58 T-a1/J12【対照】bulk done 42: 書き込み系 API が呼ばれる（close の 1 回）" "1" "$(w58_writes "$W58_LOG")"
+w58_run "$W58_J12_RES" run bulk tag 42 @w58x
+assert_eq "W58 T-a1/J12【対照】bulk tag 42 @w58x: addLabels の 1 回" "1" "$(w58_writes "$W58_LOG")"
+w58_run "$W58_J12_RES" run bulk untag 42 @w58x
+assert_eq "W58 T-a1/J12【対照】bulk untag 42 @w58x: removeLabel の 1 回" "1" "$(w58_writes "$W58_LOG")"
+w58_run "$W58_J12_RES" run bulk tag 42 home
+assert_exit_ok "W58 T-a1/J12【対照】bulk tag 42 home（数字で始まらない語は従来どおり context 名）: exit 0" "$W58_EC"
+w58_run "$W58_J12_RES" run bulk tag 42 43 @w58x
+assert_eq "W58 T-a1/J12【対照】bulk tag 42 43 @w58x（43 は番号）: 2 件に addLabels" "2" "$(w58_writes "$W58_LOG")"
+# J12: 番号の並びに '43abc' が混ざっていたら、何も処理せずエラー
 w58_run "{$W58_B42}" run bulk done 42 43abc 44
-assert_exit_ok "W58 T-a1 bulk done 42 43abc 44: exit 0（現状）" "$W58_EC"
-assert_contains "W58 T-a1 bulk done 42 43abc 44: #42 だけ完了（1 completed）" "✅ 1 completed" "$W58_OUT"
-assert_eq "W58 T-a1 bulk done 42 43abc 44: 処理されるのは #42 だけ。'43abc' と 44 は黙って無視される" "issues.get > issues.update > issues.listForRepo" "$(w58_seq "$W58_LOG")"
-assert_contains "W58 T-a1: 閉じたのは #42" '"issue_number":42' "$(log_lines_for_method "$W58_LOG" issues.update)"
+assert_exit_fail "W58 T-a1/J12 bulk done 42 43abc 44: exit 1" "$W58_EC"
+assert_contains "W58 T-a1/J12 bulk done: error.bulk_non_numeric_number" "Error: '43abc' is not an issue number. Specify issue numbers as digits only (nothing was processed)." "$W58_ERR"
+assert_eq "W58 T-a1/J12 bulk done 42 43abc 44: 書き込み系 API は 0 回（#42 も閉じない）" "0" "$(w58_writes "$W58_LOG")"
+assert_eq "W58 T-a1/J12 bulk done 42 43abc 44: API 呼び出し自体がない" "" "$(w58_seq "$W58_LOG")"
+assert_not_contains "W58 T-a1/J12 bulk done: 完了メッセージを出さない" "completed" "$W58_OUT"
+w58_run "$W58_J12_RES" run bulk tag 42 43abc @w58x
+assert_exit_fail "W58 T-a1/J12 bulk tag 42 43abc @w58x: exit 1" "$W58_EC"
+assert_contains "W58 T-a1/J12 bulk tag: error.bulk_non_numeric_number" "Error: '43abc' is not an issue number." "$W58_ERR"
+assert_eq "W58 T-a1/J12 bulk tag: 書き込み系 API は 0 回（@43abc ラベルを作らない）" "0" "$(w58_writes "$W58_LOG")"
+assert_eq "W58 T-a1/J12 bulk tag: API 呼び出し自体がない" "" "$(w58_seq "$W58_LOG")"
+w58_run "$W58_J12_RES" run bulk untag 42 43abc @w58x
+assert_exit_fail "W58 T-a1/J12 bulk untag 42 43abc @w58x: exit 1" "$W58_EC"
+assert_contains "W58 T-a1/J12 bulk untag: error.bulk_non_numeric_number" "Error: '43abc' is not an issue number." "$W58_ERR"
+assert_eq "W58 T-a1/J12 bulk untag: 書き込み系 API は 0 回" "0" "$(w58_writes "$W58_LOG")"
+assert_eq "W58 T-a1/J12 bulk untag: API 呼び出し自体がない" "" "$(w58_seq "$W58_LOG")"
+w58_run "$W58_J12_RES" run bulk tag 42 43 44abc @w58x
+assert_exit_fail "W58 T-a1/J12 bulk tag 42 43 44abc @w58x（正しい番号の後ろに混ざる）: exit 1" "$W58_EC"
+assert_contains "W58 T-a1/J12 後ろに混ざる場合も '44abc' を指摘する" "'44abc' is not an issue number" "$W58_ERR"
+assert_eq "W58 T-a1/J12 後ろに混ざる場合も書き込み系 API は 0 回" "0" "$(w58_writes "$W58_LOG")"
 w58_run "{$W58_B42}" run bulk done 43abc 42
-assert_exit_fail "W58 T-a1 bulk done 43abc 42: 先頭が数字でないと番号なしで exit 1" "$W58_EC"
+assert_exit_fail "W58 T-a1 bulk done 43abc 42: 先頭が数字でないと番号なしで exit 1（従来どおり）" "$W58_EC"
 assert_contains "W58 T-a1: error.no_issue_numbers" "No issue numbers specified." "$W58_ERR"
 assert_eq "W58 T-a1 bulk done 43abc 42: API 呼び出しなし" "" "$(w58_seq "$W58_LOG")"
-# bulk tag は '43abc' を ctx 名として読み、'@43abc' というラベルを作って付ける（番号のつもりの語が別物になる）
-w58_run "{\"$W58_L\":[$W58_E404,$W58_E404],\"issues.createLabel\":[{},{}],\"issues.addLabels\":[{}]}" run bulk tag 42 43abc @w58x
-assert_exit_ok "W58 T-a1 bulk tag 42 43abc @w58x: exit 0（現状）" "$W58_EC"
-assert_eq "W58 T-a1 bulk tag: '43abc' が '@43abc' ラベルとして作られる（現状）" "@43abc=FBCA04,@w58x=FBCA04" "$(w58_colors "$W58_LOG")"
-assert_contains "W58 T-a1 bulk tag: #42 に @43abc @w58x が付く" '"labels":["@43abc","@w58x"]' "$(log_lines_for_method "$W58_LOG" issues.addLabels)"
 # bulk move / priority は '43abc' を引数として読み、不正値としてエラーにする（書き込みなし）
 w58_run "{$W58_B42}" run bulk move 42 43abc 44 next
 assert_exit_fail "W58 T-a1 bulk move 42 43abc 44 next: exit 1（移動先が 43abc と読まれて不正）" "$W58_EC"
