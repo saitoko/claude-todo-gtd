@@ -440,6 +440,7 @@ const MESSAGES = {
     'view.viewing': '## 👁 ビュー: {name} [{parts}]',
     'error.no_issue_numbers': 'エラー: Issue番号が指定されていません。',
     'error.bulk_non_numeric_number': "エラー: '{token}' は Issue 番号ではありません。番号は数字だけで指定してください（何も処理していません）。",
+    'error.bulk_done_stray_arg': "エラー: bulk done に '{token}' は指定できません。番号（数字だけ）のあとに指定できるのは --actual <時間> だけです（何も処理していません）。",
     'bulk.item_error': '  #{num} エラー: {msg}',
     'bulk.done_count': '✅ {n}件完了',
     'bulk.done_recur_suffix': '（うち繰り返し再作成: {n}件）',
@@ -827,6 +828,7 @@ const MESSAGES = {
     'view.viewing': '## 👁 View: {name} [{parts}]',
     'error.no_issue_numbers': 'Error: No issue numbers specified.',
     'error.bulk_non_numeric_number': "Error: '{token}' is not an issue number. Specify issue numbers as digits only (nothing was processed).",
+    'error.bulk_done_stray_arg': "Error: '{token}' is not allowed in bulk done. After the issue numbers, only --actual <time> is accepted (nothing was processed).",
     'bulk.item_error': '  #{num} error: {msg}',
     'bulk.done_count': '✅ {n} completed',
     'bulk.done_recur_suffix': ' (recurring recreated: {n})',
@@ -5960,6 +5962,14 @@ async function runBulk(octokit, owner, repo, tokens) {
     guardUnknownFlag(parsed.extra, [], BULK_USAGE, 'error.unknown_flag_hint_options');
     // #1934 パート1: bulk done が実際に読むのは actual のみ（配線直前にコードを再確認済み）。
     guardUnsupportedFlag(parsed, COMMAND_SPECS['bulk done'].supportedFields, BULK_USAGE);
+    // 番号とフラグ（--actual とその値）以外の語があれば何も処理せずに落とす（'abc' や、フラグの後ろの番号 '44'）。
+    // 未知フラグ・未サポートフラグは上のガードで処理済みなので、'-' 始まりの語はここでは読み飛ばす
+    for (let k = 0; k < rest.length; k++) {
+      if (rest[k] === '--actual') { k++; continue; }
+      if (rest[k].startsWith('-')) continue;
+      process.stderr.write(tpl('error.bulk_done_stray_arg', { token: rest[k] })+'\n');
+      process.exit(1);
+    }
     // --actual は全 Issue 共通の1つの値。解釈できない値を黙って捨てず、ループに入る前（API を呼ぶ前）に落とす
     const actualValue = parseActualOrExit(parsed);
     let recurCreated = 0;

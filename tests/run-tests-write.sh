@@ -6285,6 +6285,21 @@ w58_run "$W58_J12_RES" run bulk tag 42 43 44abc @w58x
 assert_exit_fail "W58 T-a1/J12 bulk tag 42 43 44abc @w58x（正しい番号の後ろに混ざる）: exit 1" "$W58_EC"
 assert_contains "W58 T-a1/J12 後ろに混ざる場合も '44abc' を指摘する" "'44abc' is not an issue number" "$W58_ERR"
 assert_eq "W58 T-a1/J12 後ろに混ざる場合も書き込み系 API は 0 回" "0" "$(w58_writes "$W58_LOG")"
+# J12 追加: bulk done は、番号とフラグ（--actual とその値）以外の語が1つでもあれば何も処理せずエラー
+w58_run "{$W58_B42}" run bulk done 42 abc
+assert_exit_fail "W58 T-a1/J12 bulk done 42 abc: exit 1" "$W58_EC"
+assert_contains "W58 T-a1/J12 bulk done 42 abc: error.bulk_done_stray_arg" "Error: 'abc' is not allowed in bulk done." "$W58_ERR"
+assert_eq "W58 T-a1/J12 bulk done 42 abc: 書き込み系 API は 0 回" "0" "$(w58_writes "$W58_LOG")"
+assert_eq "W58 T-a1/J12 bulk done 42 abc: API 呼び出し自体がない" "" "$(w58_seq "$W58_LOG")"
+w58_run "{$W58_B42}" run bulk done 42 --actual 2h 44
+assert_exit_fail "W58 T-a1/J12 bulk done 42 --actual 2h 44（フラグの後ろの番号）: exit 1" "$W58_EC"
+assert_contains "W58 T-a1/J12 bulk done 42 --actual 2h 44: error.bulk_done_stray_arg" "Error: '44' is not allowed in bulk done." "$W58_ERR"
+assert_eq "W58 T-a1/J12 bulk done 42 --actual 2h 44: 書き込み系 API は 0 回（#42 も閉じない）" "0" "$(w58_writes "$W58_LOG")"
+assert_eq "W58 T-a1/J12 bulk done 42 --actual 2h 44: API 呼び出し自体がない" "" "$(w58_seq "$W58_LOG")"
+w58_run "{\"issues.get\":[{\"data\":$(w58_issue 42 '🎯 next')},{\"data\":$(w58_issue 43 '🎯 next')}],\"issues.update\":[{},{},{},{}],\"issues.listForRepo\":[{\"data\":[]},{\"data\":[]}]}" run bulk done 42 43 --actual 2h
+assert_exit_ok "W58 T-a1/J12【対照】bulk done 42 43 --actual 2h: exit 0" "$W58_EC"
+assert_contains "W58 T-a1/J12【対照】bulk done 42 43 --actual 2h: 2 件完了" "✅ 2 completed" "$W58_OUT"
+assert_eq "W58 T-a1/J12【対照】bulk done 42 43 --actual 2h: 書き込み系 API が 4 回（actual 書き込み 2 + close 2）" "4" "$(w58_writes "$W58_LOG")"
 w58_run "{$W58_B42}" run bulk done 43abc 42
 assert_exit_fail "W58 T-a1 bulk done 43abc 42: 先頭が数字でないと番号なしで exit 1（従来どおり）" "$W58_EC"
 assert_contains "W58 T-a1: error.no_issue_numbers" "No issue numbers specified." "$W58_ERR"
