@@ -6178,21 +6178,26 @@ assert_eq "W58 T-b2/J4 ラベル作成が失敗したら旧 GTD ラベルは外�
 w58_run "{\"issues.get\":[{\"data\":$(w58_issue 764 'inbox')}],\"issues.removeLabel\":[{}],\"$W58_L\":[{}],\"issues.addLabels\":[{}]}" run promote-project 764
 assert_eq "W58 T-b2【対照】旧 GTD ラベルが絵文字なし 'inbox' でも、確認 → 削除 → 付与" "issues.get > LABEL? > issues.removeLabel > issues.addLabels" "$(w58_seq "$W58_LOG")"
 
-# ── T-c1: 優先度ラベル付け替えの API 呼び出し順 ──
+# ── T-c1: 優先度ラベル付け替えの API 呼び出し順（ラベル確認 → 旧優先度の削除 → 付与。J5 で順序を変更） ──
 w58_run "{\"issues.get\":[{\"data\":$(w58_issue 770 '🎯 next,p3')}],\"issues.removeLabel\":[{}],\"$W58_L\":[{}],\"issues.addLabels\":[{}]}" run priority 770 p1
-assert_eq "W58 T-c1 priority: get → 旧優先度削除 → ラベル確認 → 付与" "issues.get > issues.removeLabel > LABEL? > issues.addLabels" "$(w58_seq "$W58_LOG")"
+assert_eq "W58 T-c1 priority: get → ラベル確認 → 旧優先度削除 → 付与" "issues.get > LABEL? > issues.removeLabel > issues.addLabels" "$(w58_seq "$W58_LOG")"
 w58_run "{\"issues.get\":[{\"data\":$(w58_issue 771 '🎯 next,p2')}],\"issues.removeLabel\":[{}],\"$W58_L\":[{}],\"issues.addLabels\":[{}]}" run priority 771 p2
-assert_eq "W58 T-c1 priority p2 → p2: 一度削除して付け直す" "issues.get > issues.removeLabel > LABEL? > issues.addLabels" "$(w58_seq "$W58_LOG")"
+assert_eq "W58 T-c1 priority p2 → p2: 確認のあと、一度削除して付け直す" "issues.get > LABEL? > issues.removeLabel > issues.addLabels" "$(w58_seq "$W58_LOG")"
 w58_run "{\"issues.get\":[{\"data\":$(w58_issue 772 '🎯 next,p2')}],\"issues.removeLabel\":[{}]}" run priority 772 clear
-assert_eq "W58 T-c1 priority clear: 削除だけ" "issues.get > issues.removeLabel" "$(w58_seq "$W58_LOG")"
+assert_eq "W58 T-c1 priority clear: ラベル確認なし・削除だけ" "issues.get > issues.removeLabel" "$(w58_seq "$W58_LOG")"
 w58_run "{\"issues.get\":[{\"data\":$(w58_issue 773 '🎯 next,p3')}],\"issues.removeLabel\":[{}],\"$W58_L\":[$W58_E500]}" run priority 773 p1
 assert_exit_fail "W58 T-c1 priority: ラベル確認の失敗は exit 1" "$W58_EC"
-assert_eq "W58 T-c1 priority: ラベル確認が失敗しても旧優先度は先に外れている（現状）" "issues.get > issues.removeLabel > LABEL?" "$(w58_seq "$W58_LOG")"
+assert_eq "W58 T-c1/J5 priority: ラベル確認が失敗したら旧優先度は外さない（何も変えない）" "issues.get > LABEL?" "$(w58_seq "$W58_LOG")"
+w58_run "{\"issues.get\":[{\"data\":$(w58_issue 780 '🎯 next,p3')}],\"issues.removeLabel\":[{}],\"$W58_L\":[$W58_E404],\"issues.createLabel\":[$W58_E500]}" run priority 780 p1
+assert_exit_fail "W58 T-c1/J5 priority: ラベル作成の失敗は exit 1" "$W58_EC"
+assert_eq "W58 T-c1/J5 priority: ラベル作成が失敗したら旧優先度は外さない" "issues.get > LABEL? > issues.createLabel" "$(w58_seq "$W58_LOG")"
 w58_run "{\"issues.get\":[{\"data\":$(w58_issue 774 '🎯 next,p3')}],\"issues.removeLabel\":[{}],\"$W58_L\":[{}],\"issues.addLabels\":[{}],\"issues.update\":[{}]}" run edit 774 --priority p2
-assert_eq "W58 T-c1 edit --priority: 旧優先度削除 → ラベル確認 → 付与 → 本文更新" "issues.get > issues.removeLabel > LABEL? > issues.addLabels > issues.update" "$(w58_seq "$W58_LOG")"
+assert_eq "W58 T-c1 edit --priority: ラベル確認 → 旧優先度削除 → 付与 → 本文更新" "issues.get > LABEL? > issues.removeLabel > issues.addLabels > issues.update" "$(w58_seq "$W58_LOG")"
 w58_run "{\"issues.get\":[{\"data\":$(w58_issue 775 '🎯 next,p3')}],\"issues.removeLabel\":[{}],\"$W58_L\":[$W58_E500]}" run edit 775 --priority p2
 assert_exit_fail "W58 T-c1 edit --priority: ラベル確認の失敗は exit 1" "$W58_EC"
-assert_eq "W58 T-c1 edit --priority: 失敗すると旧優先度だけ外れ、本文は更新されない（現状）" "issues.get > issues.removeLabel > LABEL?" "$(w58_seq "$W58_LOG")"
+assert_eq "W58 T-c1/J5 edit --priority: ラベル確認が失敗したら旧優先度は外さず、本文も更新しない" "issues.get > LABEL?" "$(w58_seq "$W58_LOG")"
+w58_run "{\"issues.get\":[{\"data\":$(w58_issue 781 '🎯 next,p2')}],\"issues.removeLabel\":[{}],\"issues.update\":[{}]}" run edit 781 --priority clear
+assert_eq "W58 T-c1 edit --priority clear: ラベル確認なし・削除と本文更新だけ" "issues.get > issues.removeLabel > issues.update" "$(w58_seq "$W58_LOG")"
 # bulk priority は、ラベル確認をループの外で1回だけ・最初の削除より前に行う
 w58_run "{\"$W58_L\":[{}],\"issues.get\":[{\"data\":$(w58_issue 776 '🎯 next,p3')},{\"data\":$(w58_issue 777 '🎯 next')}],\"issues.removeLabel\":[{}],\"issues.addLabels\":[{},{}]}" run bulk priority 776 777 p2
 assert_eq "W58 T-c1 bulk priority: ラベル確認は最初に1回だけ" "LABEL? > issues.get > issues.removeLabel > issues.addLabels > issues.get > issues.addLabels" "$(w58_seq "$W58_LOG")"

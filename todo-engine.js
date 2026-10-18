@@ -4798,9 +4798,16 @@ async function swapGtdLabel(octokit, owner, repo, num, labelNames, newLabel, opt
   return oldGtd || null;
 }
 
+// 優先度ラベル（level）の存在確認・作成。'clear' のときは何もしない。
+// 旧ラベルの削除より前に呼ぶこと（replacePriorityLabel には { ensure: false } を渡す）
+async function ensurePriorityLabel(octokit, owner, repo, level) {
+  if (level === 'clear') return;
+  await ensureLabel(octokit, owner, repo, level, priorityColor(level), t('label.desc_priority'));
+}
+
 // 優先度ラベル（p1/p2/p3）を付け替える。旧ラベルがあれば削除 → level が 'clear' でなければ
 // （opts.ensure が真なら ensureLabel のうえで）付与する。level の検証は呼び出し側で先に済ませること。
-// bulk はラベルの作成をループの前で1回済ませるため { ensure: false } を渡す
+// 呼び出し側が削除より前にラベルの作成を済ませている場合（edit / priority / bulk priority）は { ensure: false } を渡す
 async function replacePriorityLabel(octokit, owner, repo, num, labelNames, level, opts = { ensure: true }) {
   const oldPri = labelNames.find(l => /^p[123]$/.test(l));
   if (oldPri) {
@@ -5045,7 +5052,9 @@ async function runEdit(octokit, owner, repo, tokens) {
     // #1652: validate-before-mutate — 旧priorityラベルを削除する前にparsed.priorityを検証する。
     // 逆順だとtypo時に旧ラベルだけ削除された中途半端な状態でエラー終了してしまう。
     if (parsed.priority !== 'clear') validatePriority(parsed.priority);
-    await replacePriorityLabel(octokit, owner, repo, num, issue.labels, parsed.priority);
+    // ラベルの存在確認・作成は旧優先度ラベルの削除より前に行う（失敗時に旧ラベルだけ外れた状態を残さない）
+    await ensurePriorityLabel(octokit, owner, repo, parsed.priority);
+    await replacePriorityLabel(octokit, owner, repo, num, issue.labels, parsed.priority, { ensure: false });
     if (parsed.priority === 'clear') {
       changed.push('priority → '+t('edit.clear'));
     } else {
@@ -5212,7 +5221,9 @@ async function runPriority(octokit, owner, repo, tokens) {
   if (level !== 'clear') validatePriority(level);
 
   const issue = await fetchAndParseIssue(octokit, owner, repo, num);
-  await replacePriorityLabel(octokit, owner, repo, num, issue.labels, level);
+  // ラベルの存在確認・作成は旧優先度ラベルの削除より前に行う（失敗時に旧ラベルだけ外れた状態を残さない）
+  await ensurePriorityLabel(octokit, owner, repo, level);
+  await replacePriorityLabel(octokit, owner, repo, num, issue.labels, level, { ensure: false });
   if (level === 'clear') {
     runOut(tpl('priority.cleared', { num }));
   } else {
@@ -6637,7 +6648,7 @@ module.exports = {
   runReviewSomeday, runPromote, runPromoteProject, runUnlink, runWeeklyProjectAudit,
   runMigrateSubIssue, reservedTitleGuardWord, reservedMultiwordFirstWord, runMain,
   envOpen, envClosed, envListFilters, envTemplateFields, envViewFilters,
-  parseActualOrExit, completeIssue, fetchParentProject, swapGtdLabel, replacePriorityLabel, getReviewedAt, getRecurValue, getBodyProjectNum,
+  parseActualOrExit, ensurePriorityLabel, completeIssue, fetchParentProject, swapGtdLabel, replacePriorityLabel, getReviewedAt, getRecurValue, getBodyProjectNum,
   readBodyFileOrExit, ensureCtxLabel, ensureTagLabel,
   CTX_LABEL_COLOR, TAG_LABEL_COLOR, EXTRA_LABEL_COLOR, PROJECT_LABEL_COLOR,
 };
