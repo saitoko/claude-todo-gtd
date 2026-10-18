@@ -6502,6 +6502,145 @@ if [ "$W58_N" -lt 80 ]; then
 fi
 rm -rf "$W58_HOME"
 
+# ── §W59 R6: api 層（list-issues / list-closed / create-comment / done-issue）の出力・戻り値の固定（Issue #2102 R6） ──
+# api は外部（web が spawn、Cowork 版 SKILL が直接呼ぶ）から使われるため、出力 JSON の形（キー名・順序）・
+# 戻り文字列・英語メッセージ・exit code・API 呼び出しを固定する。run 層ヘルパへ寄せる内部整理の前後で
+# 変わってはならない。差分ハーネス（m01〜m24）は前後の一致を、ここは現行の値そのものを固定する。
+# 安全条件: HOME を一時ディレクトリに隔離し、OCTOKIT_STUB_ENV でスタブを指定する（w59_run が強制する）。
+echo ""
+echo "§W59  R6 api 層固定テスト（Issue #2102 R6）"
+
+W59_P0=$PASS
+W59_HOME=$(mktemp -d /tmp/todo-test-w59-XXXXXX)
+W59_LOG="$W59_HOME/stub.jsonl"
+
+# w59_run <responses-json> [ENV=VAL ...] -- <args...>: W59_OUT=stdout / W59_ERR=stderr / W59_EC=終了コード
+w59_run() {
+  case "$W59_HOME" in
+    /tmp/todo-test-w59-??????) : ;;
+    *) printf "  ❌ W59 隔離 HOME を作れていないため実行しない (%s)\n" "$W59_HOME"; FAIL=$((FAIL+1)); W59_OUT=""; W59_ERR=""; W59_EC=99; return 1 ;;
+  esac
+  : > "$W59_LOG"
+  local resp="$1"; shift
+  local extra=()
+  while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do extra+=("$1"); shift; done
+  shift
+  W59_OUT=$(env HOME="$W59_HOME" LANG_ENV=en OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$resp" OCTOKIT_STUB_LOG_ENV="$W59_LOG" \
+    TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-10-18 ${extra[@]+"${extra[@]}"} \
+    node "$ENGINE" "$@" 2>"$W59_HOME/stderr"); W59_EC=$?
+  W59_ERR=$(cat "$W59_HOME/stderr")
+}
+
+# スタブログの listForRepo 呼び出しを 'state/per_page/page' の列にして返す
+w59_pages() {
+  LOGFILE="$W59_LOG" node -e "
+    const fs=require('fs'); const out=[];
+    for(const l of fs.readFileSync(process.env.LOGFILE,'utf8').split('\n').filter(Boolean)){const j=JSON.parse(l); if(j.method==='issues.listForRepo') out.push(j.args.state+'/'+j.args.per_page+'/'+j.args.page);}
+    process.stdout.write(out.join(' '));"
+}
+
+W59_GI='{"number":11,"title":"T11","body":"B11","labels":[{"name":"🎯 next"},{"name":"@home"}],"closed_at":null,"updated_at":"2026-10-01T00:00:00Z"}'
+W59_GN='{"number":12,"title":"T12","body":null,"labels":[],"closed_at":"2026-10-02T00:00:00Z","updated_at":null}'
+W59_GP='{"number":13,"title":"PR","body":"x","labels":[],"pull_request":{}}'
+
+# list-issues: 既定（state open / per_page 100）、PR 除外、body null→''、closed_at/updated_at null→null
+w59_run "{\"issues.listForRepo\":[{\"data\":[$W59_GI,$W59_GP,$W59_GN]}]}" -- api list-issues
+assert_exit_ok "W59 list-issues: exit 0" "$W59_EC"
+assert_eq "W59 list-issues: 出力 JSON（キー名・順序・PR 除外・null 補正）" \
+  '[{"number":11,"title":"T11","body":"B11","labels":[{"name":"🎯 next"},{"name":"@home"}],"closedAt":null,"updatedAt":"2026-10-01T00:00:00Z"},{"number":12,"title":"T12","body":"","labels":[],"closedAt":"2026-10-02T00:00:00Z","updatedAt":null}]' "$W59_OUT"
+assert_eq "W59 list-issues: stderr は空" "" "$W59_ERR"
+assert_eq "W59 list-issues: listForRepo は open/100/page1 の1回" "open/100/1" "$(w59_pages)"
+assert_contains "W59 list-issues: pulls:false を渡している" '"pulls":false' "$(log_lines_for_method "$W59_LOG" issues.listForRepo)"
+
+# list-issues: --state closed --limit N は per_page=min(N,100)
+w59_run "{\"issues.listForRepo\":[{\"data\":[$W59_GN]}]}" -- api list-issues --state closed --limit 7
+assert_eq "W59 list-issues --state closed --limit 7: state/per_page" "closed/7/1" "$(w59_pages)"
+assert_contains "W59 list-issues --state closed: 出力" '"number":12' "$W59_OUT"
+
+# list-issues: 100件ページ ×2 で 200 件に達すると 3ページ目を要求せず、警告も出さない
+W59_P100=$(node -e "process.stdout.write(JSON.stringify(Array.from({length:100},(_,k)=>({number:100+k,title:'t',body:'',labels:[],closed_at:null,updated_at:null}))))")
+W59_P100B=$(node -e "process.stdout.write(JSON.stringify(Array.from({length:100},(_,k)=>({number:300+k,title:'t',body:'',labels:[],closed_at:null,updated_at:null}))))")
+w59_run "{\"issues.listForRepo\":[{\"data\":$W59_P100},{\"data\":$W59_P100B}]}" -- api list-issues
+assert_eq "W59 list-issues 200件: ページ呼び出しは2回で止まる" "open/100/1 open/100/2" "$(w59_pages)"
+assert_eq "W59 list-issues 200件: 結果は200件" "200" "$(printf '%s' "$W59_OUT" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(String(JSON.parse(s).length)))")"
+assert_eq "W59 list-issues 200件: stderr は空（警告なし）" "" "$W59_ERR"
+
+# list-issues: --limit 120 でも 200 件で打ち切られる（slice しない）
+w59_run "{\"issues.listForRepo\":[{\"data\":$W59_P100},{\"data\":$W59_P100B}]}" -- api list-issues --limit 120
+assert_eq "W59 list-issues --limit 120: 結果は200件（切り詰めない）" "200" "$(printf '%s' "$W59_OUT" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(String(JSON.parse(s).length)))")"
+
+# list-issues: API エラーは stderr + exit 1
+w59_run "{\"issues.listForRepo\":[$W58_E500]}" -- api list-issues
+assert_exit_fail "W59 list-issues API エラー: exit 1" "$W59_EC"
+assert_eq "W59 list-issues API エラー: stdout は空" "" "$W59_OUT"
+
+# list-closed: 既定 limit 50 / per_page 50、PR 除外、キー順（number, closedAt, title, body, labels）
+w59_run "{\"issues.listForRepo\":[{\"data\":[$W59_GN,$W59_GP,$W59_GI]}]}" -- api list-closed
+assert_exit_ok "W59 list-closed: exit 0" "$W59_EC"
+assert_eq "W59 list-closed: 出力 JSON（キー順・PR 除外）" \
+  '[{"number":12,"closedAt":"2026-10-02T00:00:00Z","title":"T12","body":"","labels":[]},{"number":11,"closedAt":null,"title":"T11","body":"B11","labels":[{"name":"🎯 next"},{"name":"@home"}]}]' "$W59_OUT"
+assert_eq "W59 list-closed: listForRepo は closed/50/page1" "closed/50/1" "$(w59_pages)"
+
+# list-closed: --fields で絞る / --limit で切り詰める
+w59_run "{\"issues.listForRepo\":[{\"data\":[$W59_GN,$W59_GI]}]}" -- api list-closed --limit 1 --fields title,labels
+assert_eq "W59 list-closed --limit 1 --fields title,labels: 出力" '[{"number":12,"closedAt":"2026-10-02T00:00:00Z","title":"T12","labels":[]}]' "$W59_OUT"
+assert_eq "W59 list-closed --limit 1: per_page=1" "closed/1/1" "$(w59_pages)"
+w59_run "{\"issues.listForRepo\":[{\"data\":[$W59_GN]}]}" -- api list-closed --fields closedAt
+assert_eq "W59 list-closed --fields closedAt: number と closedAt のみ" '[{"number":12,"closedAt":"2026-10-02T00:00:00Z"}]' "$W59_OUT"
+
+# list-closed: --limit 150 は2ページ取得して150件に切り詰める
+w59_run "{\"issues.listForRepo\":[{\"data\":$W59_P100},{\"data\":$W59_P100B}]}" -- api list-closed --limit 150
+assert_eq "W59 list-closed --limit 150: ページ呼び出し" "closed/100/1 closed/100/2" "$(w59_pages)"
+assert_eq "W59 list-closed --limit 150: 結果は150件" "150" "$(printf '%s' "$W59_OUT" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(String(JSON.parse(s).length)))")"
+
+# list-closed: --fields の値欠け・API エラーは exit 1
+w59_run '{}' -- api list-closed --fields
+assert_exit_fail "W59 list-closed --fields 値欠け: exit 1" "$W59_EC"
+w59_run "{\"issues.listForRepo\":[$W58_E500]}" -- api list-closed
+assert_exit_fail "W59 list-closed API エラー: exit 1" "$W59_EC"
+
+# create-comment: 正規化（CRLF/CR→LF、制御文字除去）して投稿し、{id,url} を返す
+w59_run '{"issues.createComment":[{"data":{"id":77,"html_url":"https://example.test/c/77"}}]}' "COMMENT_BODY_ENV=$(printf 'a\r\nb\rc\001d\007e\tf')" -- api create-comment 21
+assert_exit_ok "W59 create-comment: exit 0" "$W59_EC"
+assert_eq "W59 create-comment: 出力 JSON" '{"id":77,"url":"https://example.test/c/77"}' "$W59_OUT"
+assert_contains "W59 create-comment: 投稿本文は正規化済み（\\n 区切り・制御文字なし・タブは除去）" '"body":"a\nb\ncdef"' "$(log_lines_for_method "$W59_LOG" issues.createComment)"
+assert_contains "W59 create-comment: issue_number" '"issue_number":21' "$(log_lines_for_method "$W59_LOG" issues.createComment)"
+
+# create-comment: 異常系（英語メッセージ固定・API 呼び出しなし）
+w59_run '{}' -- api create-comment 22
+assert_exit_fail "W59 create-comment 環境変数なし: exit 1" "$W59_EC"
+assert_eq "W59 create-comment 環境変数なし: メッセージ（stderr は apiErr の出力 + main の再表示で2行）" "$(printf '%s\nError: %s' "Error: COMMENT_BODY_ENV is not set" "Error: COMMENT_BODY_ENV is not set")" "$W59_ERR"
+w59_run '{}' "COMMENT_BODY_ENV=$(printf ' \001\002 \n ')" -- api create-comment 23
+assert_exit_fail "W59 create-comment 空白のみ: exit 1" "$W59_EC"
+assert_eq "W59 create-comment 空白のみ: メッセージ" "$(printf '%s\nError: %s' "Error: Comment body is empty" "Error: Comment body is empty")" "$W59_ERR"
+w59_run '{}' "COMMENT_BODY_ENV=$(node -e "process.stdout.write('x'.repeat(65537))")" -- api create-comment 24
+assert_exit_fail "W59 create-comment 65537文字: exit 1" "$W59_EC"
+assert_eq "W59 create-comment 65537文字: メッセージ" "$(printf '%s\nError: %s' "Error: Comment body exceeds the maximum length (65536 characters) (current: 65537 characters)" "Error: Comment body exceeds the maximum length (65536 characters) (current: 65537 characters)")" "$W59_ERR"
+w59_run '{"issues.createComment":[{"data":{"id":78,"html_url":"u78"}}]}' "COMMENT_BODY_ENV=$(node -e "process.stdout.write('y'.repeat(65536))")" -- api create-comment 25
+assert_exit_ok "W59 create-comment 65536文字（上限ちょうど）: exit 0" "$W59_EC"
+assert_eq "W59 create-comment 65536文字: 出力" '{"id":78,"url":"u78"}' "$W59_OUT"
+w59_run '{}' COMMENT_BODY_ENV=hi -- api create-comment
+assert_exit_fail "W59 create-comment 番号なし: exit 1" "$W59_EC"
+assert_eq "W59 create-comment 番号なし: メッセージ" "$(printf '%s\nError: %s' "Usage: api create-comment <number>" "Usage: api create-comment <number>")" "$W59_ERR"
+assert_eq "W59 create-comment 異常系: createComment は呼ばれていない" "0" "$(log_count "$W59_LOG" issues.createComment)"
+w59_run '{"issues.createComment":[{"__throw":true,"status":404,"message":"Not Found"}]}' COMMENT_BODY_ENV=hi -- api create-comment 26
+assert_exit_fail "W59 create-comment API 404: exit 1" "$W59_EC"
+assert_contains "W59 create-comment API 404: メッセージ伝播" "Not Found" "$W59_ERR"
+
+# done-issue: 出力 JSON のキー順・depends_on 昇格・番号なしの Usage
+w59_run '{"issues.get":[{"data":{"number":31,"id":9031,"title":"D","body":"","labels":[{"name":"🎯 next"}],"state":"open"}}],"issues.update":[{}],"issues.listForRepo":[{"data":[{"number":32,"id":9032,"title":"Dep","body":"depends_on: #31\n","labels":[{"name":"🌈 someday"}],"updated_at":""}]}],"issues.removeLabel":[{}],"issues.addLabels":[{}]}' -- api done-issue 31
+assert_exit_ok "W59 done-issue: exit 0" "$W59_EC"
+assert_contains "W59 done-issue: キー順 ok → recurLine → otherLines → newIssueNumber" '{"ok":true,"recurLine":null,"otherLines":[' "$W59_OUT"
+assert_contains "W59 done-issue: 末尾は newIssueNumber:null" '],"newIssueNumber":null}' "$W59_OUT"
+w59_run '{}' -- api done-issue
+assert_eq "W59 done-issue 番号なし: メッセージ" "$(printf '%s\nError: %s' "Usage: api done-issue <number>" "Usage: api done-issue <number>")" "$W59_ERR"
+
+W59_N=$((PASS - W59_P0))
+if [ "$W59_N" -lt 35 ]; then
+  printf "  ❌ §W59 アサーション数が少なすぎる (%s 件。35 件未満は検査の空振りとみなす)\n" "$W59_N"; FAIL=$((FAIL+1))
+fi
+rm -rf "$W59_HOME"
+
 echo ""
 echo "=========================================="
 W_TOTAL=$((PASS+FAIL))

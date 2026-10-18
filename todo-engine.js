@@ -2809,9 +2809,13 @@ async function apiMain(subArgs) {
         const state = (subArgs.includes('--state') ? subArgs[subArgs.indexOf('--state')+1] : null) || 'open';
         const limitIdx = subArgs.indexOf('--limit');
         const perPage = limitIdx >= 0 ? Math.min(parseInt(subArgs[limitIdx+1])||100, 100) : 100;
+        // #2102 R6: 上限は MAX_OPEN_ISSUES_LIMIT に一本化（取得上限と打ち切りの両方）。
+        // fetchAllOpen へは寄せない: 本サブコマンドは --state / --limit を受け、200件で打ち切るときも
+        // stderr に警告を出さない（外部インターフェース）。fetchAllOpen は open 固定・100件固定・警告ありで挙動が違う。
+        const maxIssues = limitIdx >= 0 ? parseInt(subArgs[limitIdx+1])||MAX_OPEN_ISSUES_LIMIT : MAX_OPEN_ISSUES_LIMIT;
         const allIssues = [];
         let page = 1;
-        while (allIssues.length < (limitIdx >= 0 ? parseInt(subArgs[limitIdx+1])||MAX_OPEN_ISSUES_LIMIT : MAX_OPEN_ISSUES_LIMIT)) {
+        while (allIssues.length < maxIssues) {
           const { data } = await octokit.issues.listForRepo({
             owner, repo, state, per_page: perPage, page,
             pulls: false
@@ -2822,7 +2826,7 @@ async function apiMain(subArgs) {
           allIssues.push(...issues);
           if (data.length < perPage) break;
           page++;
-          if (allIssues.length >= 200) break;
+          if (allIssues.length >= MAX_OPEN_ISSUES_LIMIT) break;
         }
         const result = allIssues.map(i => ({
           number: i.number,
@@ -2842,26 +2846,8 @@ async function apiMain(subArgs) {
         // fieldsオプション: --fields closedAt のみ or 全フィールド
         const fieldsIdx = subArgs.indexOf('--fields');
         const fields = fieldsIdx >= 0 ? subArgs[fieldsIdx+1].split(',') : null;
-        const allIssues = [];
-        let page = 1;
-        while (allIssues.length < limit) {
-          const { data } = await octokit.issues.listForRepo({
-            owner, repo, state: 'closed', per_page: Math.min(limit, 100), page
-          });
-          const issues = data.filter(i => !i.pull_request);
-          if (!issues.length) break;
-          allIssues.push(...issues);
-          if (data.length < 100 || allIssues.length >= limit) break;
-          page++;
-        }
-        const sliced = allIssues.slice(0, limit);
-        const result = sliced.map(i => {
-          const base = { number: i.number, closedAt: i.closed_at || null };
-          if (!fields || fields.includes('title')) base.title = i.title;
-          if (!fields || fields.includes('body')) base.body = i.body || '';
-          if (!fields || fields.includes('labels')) base.labels = i.labels.map(l => ({ name: l.name }));
-          return base;
-        });
+        // #2102 R6: ページング取得と整形は run 層の fetchRecentClosed と同一処理なので共用する
+        const result = await fetchRecentClosed(octokit, owner, repo, limit, fields);
         process.stdout.write(JSON.stringify(result));
         break;
       }
@@ -3063,15 +3049,13 @@ async function apiMain(subArgs) {
         // コメント本文は環境変数経由（セキュリティルール準拠）
         let body = process.env.COMMENT_BODY_ENV || '';
         if (!body) { throw apiErr('Error: COMMENT_BODY_ENV is not set'); }
-        // \r\n → \n, 残存 \r → \n に正規化（Windows環境での既知問題対策）
-        body = body.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-        // NULL バイト・制御文字（\x00-\x1F、\n 除く）を除去
-        body = body.replace(/[\x00-\x09\x0B-\x1F]/g, '');
-        // 最大文字数チェック（GitHub API 制限）
-        if (body.length > 65536) {
+        // #2102 R6: 正規化と長さ・空の判定は run 層と共用（sanitizeCommentBody）。エラー文言は api の英語固定のままここで出す
+        const sanitized = sanitizeCommentBody(body);
+        body = sanitized.body;
+        if (sanitized.error === 'too_long') {
           throw apiErr('Error: Comment body exceeds the maximum length (65536 characters) (current: '+body.length+' characters)');
         }
-        if (!body.trim()) { throw apiErr('Error: Comment body is empty'); }
+        if (sanitized.error === 'empty') { throw apiErr('Error: Comment body is empty'); }
         const { data: comment } = await octokit.issues.createComment({ owner, repo, issue_number: num, body });
         process.stdout.write(JSON.stringify({ id: comment.id, url: comment.html_url }));
         break;
@@ -4849,16 +4833,27 @@ async function runMove(octokit, owner, repo, tokens) {
 }
 
 // コメント本文をサニタイズして投稿する（runComment / runDone / runMove 共通）
-async function createCommentSanitized(octokit, owner, repo, num, rawText) {
+// コメント本文の正規化と検査（run 層 createCommentSanitized と api create-comment で共用。#2102 R6）。
+// エラーの出し方（run: t() + exit / api: 英語固定 + throw）は呼び出し側が持つので、ここは判定結果だけを返す。
+// 戻り値: { body: 正規化後の本文, error: null | 'too_long' | 'empty' }（判定順は長さ → 空）
+function sanitizeCommentBody(rawText) {
   // \r\n → \n, 残存 \r → \n に正規化（Windows環境での既知問題対策）
   let body = rawText.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   // NULL バイト・制御文字（\x00-\x1F、\n 除く）を除去
   body = body.replace(/[\x00-\x09\x0B-\x1F]/g, '');
-  if (body.length > 65536) {
+  // 最大文字数チェック（GitHub API 制限）
+  if (body.length > 65536) return { body, error: 'too_long' };
+  if (!body.trim()) return { body, error: 'empty' };
+  return { body, error: null };
+}
+
+async function createCommentSanitized(octokit, owner, repo, num, rawText) {
+  const { body, error } = sanitizeCommentBody(rawText);
+  if (error === 'too_long') {
     process.stderr.write(tpl('error.comment_too_long', { n: body.length })+'\n');
     process.exit(1);
   }
-  if (!body.trim()) {
+  if (error === 'empty') {
     process.stderr.write(t('error.comment_empty')+'\n');
     process.exit(1);
   }
@@ -6641,7 +6636,7 @@ module.exports = {
   guardExtraPositional, parseArgs, getToday, toJstDateStr, ensureLabel, fetchAndParseIssue,
   addSubIssue, listSubIssues, removeSubIssue, updateIssueBody, runOut, runAdd, runList,
   fetchAllOpen, fetchOpenByCategory, labelNamesForCategory, fetchRecentClosed, createRecurIssue, postDoneProcessing, runDone, execMoveGtd,
-  removeLabelIfPresent, execRemoveLabels, runMove, createCommentSanitized, runComment, runEdit,
+  removeLabelIfPresent, execRemoveLabels, runMove, sanitizeCommentBody, createCommentSanitized, runComment, runEdit,
   runDue, runDesc, runRecur, runLink, runRename, runPriority, normalizeTagTokens, renameCtxLabel,
   runTag, runUntag, runLabel, runSearch, runArchive, runDashboard, runToday, runEisenhower,
   runStats, runReport, runHelp, runTemplate, issueToJsonObj, runSchema, runShow, runView, runBulk,
