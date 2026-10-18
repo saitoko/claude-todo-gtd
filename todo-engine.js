@@ -1096,7 +1096,7 @@ function parseBody(body) {
 function extractIssueFields() {
   const raw = process.env.ISSUE_JSON_ENV || '{}';
   let obj;
-  try { obj = JSON.parse(raw); } catch(e) { process.stderr.write('error: invalid JSON\n'); process.exit(1); }
+  try { obj = JSON.parse(raw); } catch(e) { exitWith('error: invalid JSON'); }
   const title = obj.title || '';
   const labels = (obj.labels || []).map(l => l.name).join(',');
   const body = obj.body || '';
@@ -1374,13 +1374,11 @@ const HAS_LETTER_OR_DIGIT = /[\p{L}\p{N}]/u;
 
 function validateCtx(value) {
   if (!HAS_LETTER_OR_DIGIT.test(value)) {
-    process.stderr.write(t('error.ctx_symbol_only')+'\n');
-    process.exit(1);
+    exitWith(t('error.ctx_symbol_only'));
   }
   for (const c of value) {
     if (FORBIDDEN_CHARS.indexOf(c) >= 0 || c === ' ') {
-      process.stderr.write(t('error.ctx_invalid')+'\n');
-      process.exit(1);
+      exitWith(t('error.ctx_invalid'));
     }
   }
 }
@@ -1389,25 +1387,21 @@ function validateCtx(value) {
 function validateTag(value) {
   // value は '#' プレフィックスを除いた部分
   if (/^\d+$/.test(value)) {
-    process.stderr.write(t('error.tag_num_only')+'\n');
-    process.exit(1);
+    exitWith(t('error.tag_num_only'));
   }
   if (!HAS_LETTER_OR_DIGIT.test(value)) {
-    process.stderr.write(t('error.tag_symbol_only')+'\n');
-    process.exit(1);
+    exitWith(t('error.tag_symbol_only'));
   }
   for (const c of value) {
     if (FORBIDDEN_CHARS.indexOf(c) >= 0 || c === ' ') {
-      process.stderr.write(t('error.tag_invalid')+'\n');
-      process.exit(1);
+      exitWith(t('error.tag_invalid'));
     }
   }
 }
 
 function validateNumber(value) {
   if (!value || !/^\d+$/.test(value) || value === '0') {
-    process.stderr.write(t('error.positive_int')+'\n');
-    process.exit(1);
+    exitWith(t('error.positive_int'));
   }
 }
 
@@ -1427,8 +1421,7 @@ function parseIssueNumberArg(raw) {
 // 同じ error.positive_int で exit 1（従来 -1 や 0 に対して出していたエラーと同一）。
 function assertIssueNumberArg(raw) {
   if (parseIssueNumberArg(raw) === null) {
-    process.stderr.write(t('error.positive_int')+'\n');
-    process.exit(1);
+    exitWith(t('error.positive_int'));
   }
 }
 
@@ -1446,8 +1439,7 @@ function validateDue(value) {
     const mo = parseInt(m[1], 10), da = parseInt(m[2], 10);
     if (isValidCalendarDate(MD_VALIDATION_LEAP_YEAR, mo, da)) return;
   }
-  process.stderr.write(t('error.date_format')+'\n');
-  process.exit(1);
+  exitWith(t('error.date_format'));
 }
 
 // activate バリデーション（normalizeDue 済みの文字列を受け取る）。
@@ -1463,8 +1455,7 @@ function validateActivateFormat(activateRaw, originalRaw) {
     const y = parseInt(m[1], 10), mo = parseInt(m[2], 10), da = parseInt(m[3], 10);
     if (isValidCalendarDate(y, mo, da)) return;
   }
-  process.stderr.write(t('error.date_format') + ': ' + originalRaw + '\n');
-  process.exit(1);
+  exitWith(t('error.date_format') + ': ' + originalRaw);
 }
 
 // recur バリデーション（Issue #1676: weekly:<曜日> / monthly:<日> の固定サフィックスに対応）。
@@ -1474,14 +1465,12 @@ function validateRecur(value) {
   const { base, suffix } = splitRecurPattern(value);
 
   if (!['daily','weekly','monthly','weekdays'].includes(base)) {
-    process.stderr.write(t('error.recur_invalid')+'\n');
-    process.exit(1);
+    exitWith(t('error.recur_invalid'));
   }
 
   if (base === 'daily' || base === 'weekdays') {
     if (suffix !== null) {
-      process.stderr.write(t('error.recur_suffix_not_allowed')+'\n');
-      process.exit(1);
+      exitWith(t('error.recur_suffix_not_allowed'));
     }
     return;
   }
@@ -1489,8 +1478,7 @@ function validateRecur(value) {
   if (base === 'weekly') {
     if (suffix === null) return; // 後方互換: サフィックスなしは既存挙動のまま
     if (!Object.prototype.hasOwnProperty.call(RECUR_WEEKDAY_TO_DOW, suffix)) {
-      process.stderr.write(t('error.recur_weekday_invalid')+'\n');
-      process.exit(1);
+      exitWith(t('error.recur_weekday_invalid'));
     }
     return;
   }
@@ -1498,37 +1486,31 @@ function validateRecur(value) {
   // base === 'monthly'
   if (suffix === null) return; // 後方互換: サフィックスなしは既存挙動のまま
   if (!/^\d{1,2}$/.test(suffix)) {
-    process.stderr.write(t('error.recur_monthday_invalid')+'\n');
-    process.exit(1);
+    exitWith(t('error.recur_monthday_invalid'));
   }
   const day = parseInt(suffix, 10);
   if (day < 1 || day > 31) {
-    process.stderr.write(t('error.recur_monthday_invalid')+'\n');
-    process.exit(1);
+    exitWith(t('error.recur_monthday_invalid'));
   }
 }
 
 function validateColor(value) {
   if (/^[0-9A-Fa-f]{6}$/.test(value)) return;
-  process.stderr.write(t('error.color_invalid')+'\n');
-  process.exit(1);
+  exitWith(t('error.color_invalid'));
 }
 
 function validatePriority(value) {
   if (['p1','p2','p3'].includes(value)) return;
-  process.stderr.write(t('error.priority_invalid')+'\n');
-  process.exit(1);
+  exitWith(t('error.priority_invalid'));
 }
 
 function validateName(value) {
   if (!value) {
-    process.stderr.write(t('error.name_empty')+'\n');
-    process.exit(1);
+    exitWith(t('error.name_empty'));
   }
   for (const c of value) {
     if (FORBIDDEN_CHARS.indexOf(c) >= 0) {
-      process.stderr.write(t('error.name_invalid')+'\n');
-      process.exit(1);
+      exitWith(t('error.name_invalid'));
     }
   }
 }
@@ -1537,8 +1519,7 @@ function validateName(value) {
 // 文字種は制限しない（desc同様の自由記述のため）。
 function validateResumeCondition(value) {
   if (/[\r\n]/.test(value)) {
-    process.stderr.write(t('error.resume_condition_newline')+'\n');
-    process.exit(1);
+    exitWith(t('error.resume_condition_newline'));
   }
 }
 
@@ -1551,12 +1532,10 @@ function validateResumeCondition(value) {
 // Unicode Cc カテゴリ）のみを禁止し、丸括弧を含むそれ以外の記号は全て許可する。
 function validateTitle(value) {
   if (!value) {
-    process.stderr.write(t('error.name_empty')+'\n');
-    process.exit(1);
+    exitWith(t('error.name_empty'));
   }
   if (/\p{Cc}/u.test(value)) {
-    process.stderr.write(t('error.title_control_char')+'\n');
-    process.exit(1);
+    exitWith(t('error.title_control_char'));
   }
 }
 
@@ -2549,8 +2528,7 @@ function readJsonFile(fpath) {
   try { return JSON.parse(fs.readFileSync(fpath, 'utf8')); }
   catch(e) {
     if (e instanceof SyntaxError) {
-      process.stderr.write(t('error.file_corrupt')+'\n');
-      process.exit(1);
+      exitWith(t('error.file_corrupt'));
     }
     return {};
   }
@@ -2584,7 +2562,7 @@ function templateList() {
 // project, priority, desc }（文字列は省略可。省略時の既定値は各関数の中で補う）。
 function templateShow(name) {
   const data = readJsonFile(getTemplatePath());
-  if (!data[name]) { process.stderr.write(tpl('template.not_found', {name: name})+'\n'); process.exit(1); }
+  if (!data[name]) { exitWith(tpl('template.not_found', {name: name})); }
   const tmpl = data[name];
   const w = s => process.stdout.write(s);
   w(tpl('template.show_name', {name: name})+'\n');
@@ -2652,7 +2630,7 @@ function templateSaveFrom(name, fields, issueNumArg) {
 
 function templateUse(name) {
   const data = readJsonFile(getTemplatePath());
-  if (!data[name]) { process.stderr.write(tpl('template.not_found', {name: name})+'\n'); process.exit(1); }
+  if (!data[name]) { exitWith(tpl('template.not_found', {name: name})); }
   const t = data[name];
   const w = s => process.stdout.write(s);
   w('GTD='+(t.gtd||'inbox')+'\n');
@@ -2668,7 +2646,7 @@ function templateUse(name) {
 
 function templateDelete(name) {
   const data = readJsonFile(getTemplatePath());
-  if (!data[name]) { process.stderr.write(tpl('template.not_found', {name: name})+'\n'); process.exit(1); }
+  if (!data[name]) { exitWith(tpl('template.not_found', {name: name})); }
   delete data[name];
   writeJsonFile(getTemplatePath(), data);
   process.stdout.write(tpl('template.deleted', {name: name})+'\n');
@@ -2696,7 +2674,7 @@ function viewSave(name, filters) {
 
 function viewUse(name) {
   const data = readJsonFile(getViewPath());
-  if (!data[name]) { process.stderr.write(tpl('view.not_found', {name: name})+'\n'); process.exit(1); }
+  if (!data[name]) { exitWith(tpl('view.not_found', {name: name})); }
   const v = data[name];
   const parts = [];
   if (v.gtd) parts.push('GTD='+v.gtd);
@@ -2722,7 +2700,7 @@ function viewList() {
 function viewDelete(name) {
   const fpath = getViewPath();
   const data = readJsonFile(fpath);
-  if (!data[name]) { process.stderr.write(tpl('view.not_found', {name: name})+'\n'); process.exit(1); }
+  if (!data[name]) { exitWith(tpl('view.not_found', {name: name})); }
   delete data[name];
   writeJsonFile(fpath, data);
   process.stdout.write(tpl('view.deleted', {name: name})+'\n');
@@ -3230,10 +3208,10 @@ function main() {
         case 'title':     validateTitle(args[2]); break;
         case 'time': {
           const v = parseTime(args[2]);
-          if (v === null || v <= 0) { process.stderr.write(t('error.time_format')+'\n'); process.exit(1); }
+          if (v === null || v <= 0) { exitWith(t('error.time_format')); }
           break;
         }
-        default: process.stderr.write('Unknown validate type: '+args[1]+'\n'); process.exit(1);
+        default: exitWith('Unknown validate type: '+args[1]);
       }
       break;
 
@@ -3258,7 +3236,7 @@ function main() {
         case 'save-from': templateSaveFrom(process.env.TNAME_ENV, envTemplateFields(), process.env.ISSUE_NUM_ENV); break;
         case 'use':       templateUse(process.env.TNAME_ENV); break;
         case 'delete':    templateDelete(process.env.TNAME_ENV); break;
-        default: process.stderr.write('Unknown template subcommand: '+args[1]+'\n'); process.exit(1);
+        default: exitWith('Unknown template subcommand: '+args[1]);
       }
       break;
 
@@ -3269,7 +3247,7 @@ function main() {
         case 'use':    viewUse(process.env.VNAME_ENV); break;
         case 'list':   viewList(); break;
         case 'delete': viewDelete(process.env.VNAME_ENV); break;
-        default: process.stderr.write('Unknown view subcommand: '+args[1]+'\n'); process.exit(1);
+        default: exitWith('Unknown view subcommand: '+args[1]);
       }
       break;
 
@@ -3320,9 +3298,7 @@ function main() {
     }
 
     default:
-      process.stderr.write('Unknown command: '+cmd+'\n');
-      process.stderr.write('Usage: todo-engine.js <command> [args...]\n');
-      process.exit(1);
+      exitWith(['Unknown command: '+cmd, 'Usage: todo-engine.js <command> [args...]']);
   }
   } catch (e) {
     if (isCliExit(e)) process.exit(e.exitCode);
@@ -6023,7 +5999,11 @@ async function runBulk(octokit, owner, repo, tokens) {
         otherLines.forEach(line => runOut(`  ${line}`));
 
         doneCount++;
-      } catch(e) { runOut(tpl('bulk.item_error', { num, msg: e.message })); errCount++; }
+      } catch(e) {
+        // exitWith() が投げた例外（validateRecur の失敗など）は item_error にせず、従来どおり全体を止める
+        if (isCliExit(e)) throw e;
+        runOut(tpl('bulk.item_error', { num, msg: e.message })); errCount++;
+      }
     }
     {
       let summary = tpl('bulk.done_count', { n: doneCount });

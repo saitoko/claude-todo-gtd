@@ -5358,6 +5358,110 @@ fi
 rm -f "$_G58_TMP" "$_G58_TMP.err"
 
 # ──────────────────────────────────────────
+# §59  バリデータ・テンプレート/ビュー I/O・extractIssueFields のプロセス内テスト（Issue #2102 R5 PR-2）
+# 失敗時は process.exit ではなく exitWith の例外を投げるため、require() したエンジンから直接呼べる。
+# 文言は t()/tpl() の出力と完全一致を確かめる（言語は既定。ja/en の差は差分ハーネスが担う）。
+# ──────────────────────────────────────────
+echo ""
+echo "§59  バリデータ・I/O のプロセス内テスト（Issue #2102 R5 PR-2）"
+
+_G59_TMP=$(mktemp /tmp/todo-test-r5-validators-XXXXXX)
+_G59_HOME=$(mktemp -d /tmp/todo-test-r5-home-XXXXXX)
+cat > "$_G59_TMP" << 'R5_VALIDATORS_TEST_EOF'
+const E = require(process.argv[2]);
+const fs = require('fs'), path = require('path');
+const out = [];
+const check = (id, desc, cond, detail) => out.push((cond ? 'ok' : 'ng') + '\t' + id + ' ' + desc + '\t' + (cond ? '' : detail));
+const origWrite = process.stderr.write.bind(process.stderr);
+function capture(fn) {
+  const writes = []; let thrown = null;
+  process.stderr.write = (s) => { writes.push(String(s)); return true; };
+  try { fn(); } catch (e) { thrown = e; } finally { process.stderr.write = origWrite; }
+  return { writes, thrown };
+}
+// 無効値: CliExit・exitCode 1・stderr に msg + 改行が1回だけ書かれる
+function bad(id, label, fn, msg) {
+  const r = capture(fn);
+  const ok = E.isCliExit(r.thrown) && r.thrown.exitCode === 1 && r.writes.length === 1 && r.writes[0] === msg + '\n' && r.thrown.message === msg;
+  check(id, label + ' → CliExit', ok, JSON.stringify({ writes: r.writes, thrown: r.thrown && r.thrown.message }));
+}
+// 有効値: 何も書かず投げない
+function good(id, label, fn) {
+  const r = capture(fn);
+  check(id, label + ' → 投げない', r.thrown === null && r.writes.length === 0, JSON.stringify({ writes: r.writes, thrown: r.thrown && r.thrown.message }));
+}
+const t = E.t, tpl = E.tpl;
+let n = 0; const id = () => '59-' + (++n);
+bad(id(), 'validateCtx("---")', () => E.validateCtx('---'), t('error.ctx_symbol_only'));
+bad(id(), 'validateCtx("a b")', () => E.validateCtx('a b'), t('error.ctx_invalid'));
+good(id(), 'validateCtx("work")', () => E.validateCtx('work'));
+bad(id(), 'validateTag("123")', () => E.validateTag('123'), t('error.tag_num_only'));
+bad(id(), 'validateTag("--")', () => E.validateTag('--'), t('error.tag_symbol_only'));
+bad(id(), 'validateTag("a b")', () => E.validateTag('a b'), t('error.tag_invalid'));
+good(id(), 'validateTag("x1")', () => E.validateTag('x1'));
+bad(id(), 'validateNumber("0")', () => E.validateNumber('0'), t('error.positive_int'));
+bad(id(), 'validateNumber("")', () => E.validateNumber(''), t('error.positive_int'));
+good(id(), 'validateNumber("5")', () => E.validateNumber('5'));
+bad(id(), 'assertIssueNumberArg("42abc")', () => E.assertIssueNumberArg('42abc'), t('error.positive_int'));
+good(id(), 'assertIssueNumberArg("42")', () => E.assertIssueNumberArg('42'));
+bad(id(), 'validateDue("2026-02-30")', () => E.validateDue('2026-02-30'), t('error.date_format'));
+good(id(), 'validateDue("2026-02-28" / "clear" / "")', () => { E.validateDue('2026-02-28'); E.validateDue('clear'); E.validateDue(''); });
+bad(id(), 'validateActivateFormat("2026-02-30", "orig")（入力値つき）', () => E.validateActivateFormat('2026-02-30', 'orig'), t('error.date_format') + ': orig');
+good(id(), 'validateActivateFormat("2026-02-28", "x")', () => E.validateActivateFormat('2026-02-28', 'x'));
+bad(id(), 'validateRecur("bogus")', () => E.validateRecur('bogus'), t('error.recur_invalid'));
+bad(id(), 'validateRecur("daily:x")', () => E.validateRecur('daily:x'), t('error.recur_suffix_not_allowed'));
+bad(id(), 'validateRecur("weekly:xxx")', () => E.validateRecur('weekly:xxx'), t('error.recur_weekday_invalid'));
+bad(id(), 'validateRecur("monthly:abc")', () => E.validateRecur('monthly:abc'), t('error.recur_monthday_invalid'));
+bad(id(), 'validateRecur("monthly:32")', () => E.validateRecur('monthly:32'), t('error.recur_monthday_invalid'));
+good(id(), 'validateRecur("daily" / "weekly" / "weekly:mon" / "monthly:15")', () => { E.validateRecur('daily'); E.validateRecur('weekly'); E.validateRecur('weekly:mon'); E.validateRecur('monthly:15'); });
+bad(id(), 'validateColor("zz")', () => E.validateColor('zz'), t('error.color_invalid'));
+good(id(), 'validateColor("FF00aa")', () => E.validateColor('FF00aa'));
+bad(id(), 'validatePriority("p4")', () => E.validatePriority('p4'), t('error.priority_invalid'));
+good(id(), 'validatePriority("p1")', () => E.validatePriority('p1'));
+bad(id(), 'validateName("")', () => E.validateName(''), t('error.name_empty'));
+bad(id(), 'validateName("a;b")', () => E.validateName('a;b'), t('error.name_invalid'));
+good(id(), 'validateName("abc")', () => E.validateName('abc'));
+bad(id(), 'validateResumeCondition(改行入り)', () => E.validateResumeCondition('a\nb'), t('error.resume_condition_newline'));
+good(id(), 'validateResumeCondition("ok")', () => E.validateResumeCondition('ok'));
+bad(id(), 'validateTitle("")', () => E.validateTitle(''), t('error.name_empty'));
+bad(id(), 'validateTitle(制御文字入り)', () => E.validateTitle('a\tb'), t('error.title_control_char'));
+good(id(), 'validateTitle("a (b)")', () => E.validateTitle('a (b)'));
+
+// util: extractIssueFields（壊れた JSON は catch の中から CliExit）
+process.env.ISSUE_JSON_ENV = '{bad';
+bad(id(), 'extractIssueFields(壊れた JSON)', () => E.extractIssueFields(), 'error: invalid JSON');
+
+// I/O: テンプレート・ビュー（HOME を隔離ディレクトリへ向ける。homeDir() は呼び出し時に評価される）
+const home = process.argv[3];
+process.env.HOME = home;
+fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+bad(id(), 'templateShow(存在しない名前)', () => E.templateShow('nope'), tpl('template.not_found', { name: 'nope' }));
+bad(id(), 'templateUse(存在しない名前)', () => E.templateUse('nope'), tpl('template.not_found', { name: 'nope' }));
+bad(id(), 'templateDelete(存在しない名前)', () => E.templateDelete('nope'), tpl('template.not_found', { name: 'nope' }));
+bad(id(), 'viewUse(存在しない名前)', () => E.viewUse('nope'), tpl('view.not_found', { name: 'nope' }));
+bad(id(), 'viewDelete(存在しない名前)', () => E.viewDelete('nope'), tpl('view.not_found', { name: 'nope' }));
+fs.writeFileSync(E.getTemplatePath(), '{not json');
+bad(id(), 'readJsonFile(壊れた JSON は SyntaxError → CliExit)', () => E.readJsonFile(E.getTemplatePath()), t('error.file_corrupt'));
+check(id(), 'readJsonFile(ファイルなし)は {} を返し投げない', (() => { fs.unlinkSync(E.getTemplatePath()); const r = capture(() => { const v = E.readJsonFile(E.getTemplatePath()); if (Object.keys(v).length !== 0) throw new Error('not empty'); }); return r.thrown === null && r.writes.length === 0; })(), '');
+process.stdout.write(out.join('\n') + '\n');
+R5_VALIDATORS_TEST_EOF
+_G59_OUT=$(node "$_G59_TMP" "$ENGINE" "$_G59_HOME" 2>"$_G59_TMP.err"); _G59_EC=$?
+if [ "$_G59_EC" -ne 0 ]; then
+  printf "  ❌ §59 バリデータのテストの実行失敗: %s\n" "$(cat "$_G59_TMP.err" 2>/dev/null)"; FAIL=$((FAIL+1))
+else
+  while IFS=$'\t' read -r _st _desc _detail; do
+    [ -z "$_st" ] && continue
+    if [ "$_st" = "ok" ]; then
+      printf "  ✅ §59 %s\n" "$_desc"; PASS=$((PASS+1))
+    else
+      printf "  ❌ §59 %s\n     %s\n" "$_desc" "$_detail"; FAIL=$((FAIL+1))
+    fi
+  done <<< "$_G59_OUT"
+fi
+case "$_G59_HOME" in /tmp/todo-test-r5-home-??????) rm -rf "$_G59_HOME" ;; esac
+rm -f "$_G59_TMP" "$_G59_TMP.err"
+
+# ──────────────────────────────────────────
 # 書き込み系ハンドラのスタブベーステスト（run-tests-write.sh、Issue #1648）
 # 3,266行超に肥大化した本ファイルへの追記を避けるため別ファイルに分離し、
 # ここで子プロセスとして呼び出して結果を合算する。実行口は
