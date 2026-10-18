@@ -6578,13 +6578,17 @@ w59_run "{\"issues.listForRepo\":[{\"data\":[$W59_GN]}]}" -- api list-issues --s
 assert_eq "W59 list-issues --state closed --limit 7: state/per_page" "closed/7/1" "$(w59_pages)"
 assert_contains "W59 list-issues --state closed: 出力" '"number":12' "$W59_OUT"
 
-# list-issues: 100件ページ ×2 で 200 件に達すると 3ページ目を要求せず、警告も出さない
+# list-issues: 100件ページ ×2 で 200 件に達しても、open・引数なしは 3ページ目まで要求する（#2130: 上限 200 → 1000。3ページ目は空）。警告は出さない
 W59_P100=$(node -e "process.stdout.write(JSON.stringify(Array.from({length:100},(_,k)=>({number:100+k,title:'t',body:'',labels:[],closed_at:null,updated_at:null}))))")
 W59_P100B=$(node -e "process.stdout.write(JSON.stringify(Array.from({length:100},(_,k)=>({number:300+k,title:'t',body:'',labels:[],closed_at:null,updated_at:null}))))")
-w59_run "{\"issues.listForRepo\":[{\"data\":$W59_P100},{\"data\":$W59_P100B}]}" -- api list-issues
-assert_eq "W59 list-issues 200件: ページ呼び出しは2回で止まる" "open/100/1 open/100/2" "$(w59_pages)"
+w59_run "{\"issues.listForRepo\":[{\"data\":$W59_P100},{\"data\":$W59_P100B},{\"data\":[]}]}" -- api list-issues
+assert_eq "W59 list-issues 200件: ページ呼び出しは3回（3ページ目は空。#2130 で上限が1000になった）" "open/100/1 open/100/2 open/100/3" "$(w59_pages)"
 assert_eq "W59 list-issues 200件: 結果は200件" "200" "$(printf '%s' "$W59_OUT" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(String(JSON.parse(s).length)))")"
 assert_eq "W59 list-issues 200件: stderr は空（警告なし）" "" "$W59_ERR"
+# --state closed は従来どおり 200 件で止まる（3ページ目を要求しない）
+w59_run "{\"issues.listForRepo\":[{\"data\":$W59_P100},{\"data\":$W59_P100B}]}" -- api list-issues --state closed
+assert_eq "W59 list-issues --state closed 200件: ページ呼び出しは2回で止まる（変えない）" "closed/100/1 closed/100/2" "$(w59_pages)"
+assert_eq "W59 list-issues --state closed 200件: stderr は空（警告なし）" "" "$W59_ERR"
 
 # list-issues: --limit 120 でも 200 件で打ち切られる（slice しない）
 w59_run "{\"issues.listForRepo\":[{\"data\":$W59_P100},{\"data\":$W59_P100B}]}" -- api list-issues --limit 120
@@ -6915,6 +6919,159 @@ if [ "$W61_N" -lt 40 ]; then
   printf "  ❌ §W61 アサーション数が少なすぎる (%s 件。40 件未満は検査の空振りとみなす)\n" "$W61_N"; FAIL=$((FAIL+1))
 fi
 rm -rf "$W61_HOME"
+
+# ── §W62 Issue #2130: open Issue の取得上限を 200 → 1000 に引き上げ、上限で打ち切ったら必ず警告 ──
+# 型: 「固定の件数上限で取得を打ち切る」。fetchAllOpen（run list / dashboard 等）は 1000 件（100件×10ページ）で打ち切り、
+# 打ち切ったときだけ stderr に警告する（旧: 取得件数がちょうど 200 のときだけ警告。PR 混在で 200 をまたぐと無警告で 270 件を返していた）。
+# api list-issues は「open・--limit なし」だけ 1000。--state closed|all と --limit 指定時は従来の 200 のまま（警告は常に出さない）。
+# 検証は「取得件数 / 警告の有無 / listForRepo の呼び出し回数」。応答は 100 件ページの列＋末尾の空ページ2つ。
+# （listForRepo の呼び出し回数は、parallel の先読みで未採用の2ページ目も数える。末尾の空ページは「次ページが無いこと」の確認に使われる）
+# 安全条件: HOME を一時ディレクトリに隔離し、OCTOKIT_STUB_ENV でスタブを指定する。
+echo ""
+echo "§W62  open Issue の取得上限 1000（Issue #2130）"
+
+W62_P0=$PASS
+W62_HOME=$(mktemp -d /tmp/todo-test-w62-XXXXXX)
+W62_LOG="$W62_HOME/stub.jsonl"
+
+# w62_resp <total> <prEvery>: 100件ずつのページ（番号は降順、prEvery>0 なら k%prEvery==0 の要素が PR）＋空ページ2つ
+w62_resp() {
+  node -e '
+    const total = +process.argv[1], pe = +process.argv[2];
+    const mk = (start, n) => Array.from({ length: n }, (_, k) => ({ number: start - k, id: start - k + 9000, title: "W62 " + (start - k), body: "", labels: [{ name: "🎯 next" }], state: "open", updated_at: "2026-10-01T00:00:00Z", ...(pe && k % pe === 0 ? { pull_request: {} } : {}) }));
+    const pages = []; let left = total, start = 900000;
+    while (left > 0) { const n = Math.min(100, left); pages.push({ data: mk(start, n) }); left -= n; start -= 1000; }
+    pages.push({ data: [] }, { data: [] });
+    process.stdout.write(JSON.stringify({ "issues.listForRepo": pages }));
+  ' "$1" "$2"
+}
+# w62_run <total> <prEvery> <lang> -- <args...>: W62_OUT / W62_ERR / W62_EC / W62_COUNT（stdout の JSON 配列の長さ）/ W62_CALLS（listForRepo 回数）/ W62_FIRST / W62_LAST（番号）
+w62_run() {
+  case "$W62_HOME" in
+    /tmp/todo-test-w62-??????) : ;;
+    *) printf "  ❌ W62 隔離 HOME を作れていないため実行しない (%s)\n" "$W62_HOME"; FAIL=$((FAIL+1)); W62_COUNT=ERR; W62_CALLS=ERR; W62_EC=99; return 1 ;;
+  esac
+  : > "$W62_LOG"
+  local total="$1" pe="$2" lang="$3"; shift 4
+  local resp; resp=$(w62_resp "$total" "$pe")
+  W62_OUT=$(env -u LANG_ENV HOME="$W62_HOME" LANG_ENV="$lang" OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$resp" OCTOKIT_STUB_LOG_ENV="$W62_LOG" \
+    TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-10-18 \
+    node "$ENGINE" "$@" 2>"$W62_HOME/stderr"); W62_EC=$?
+  W62_ERR=$(cat "$W62_HOME/stderr")
+  W62_CALLS=$(log_count "$W62_LOG" issues.listForRepo)
+  local info; info=$(printf '%s' "$W62_OUT" | node -e '
+    let t = ""; process.stdin.on("data", d => t += d).on("end", () => {
+      try { const j = JSON.parse(t); process.stdout.write(j.length + " " + (j.length ? j[0].number : "-") + " " + (j.length ? j[j.length - 1].number : "-")); }
+      catch (e) { process.stdout.write("ERR - -"); }
+    });')
+  set -- $info; W62_COUNT="$1"; W62_FIRST="$2"; W62_LAST="$3"
+}
+w62_warned() { case "$W62_ERR" in *"limit of 1000"*|*"上限の 1000 件"*) echo 1 ;; *) echo 0 ;; esac; }
+
+# --- fetchAllOpen（run list --json。絞り込みなし = parallel で 1・2 ページ先読み）---
+# 件数: 131（現状）は変わらない / 200・201・350 は全件取得して警告なし / 1000・1001・1100 は 1000 で打ち切って警告
+w62_run 131 0 en -- run list --json
+assert_eq "W62-1 131件: 取得 131" "131" "$W62_COUNT"
+assert_eq "W62-1 131件: 警告なし" "0" "$(w62_warned)"
+assert_eq "W62-1 131件: listForRepo 2回（1ページ目＋先読みの2ページ目。従来と同じ）" "2" "$W62_CALLS"
+assert_eq "W62-1 131件: exit 0" "0" "$W62_EC"
+w62_run 200 0 en -- run list --json
+assert_eq "W62-2 200件: 取得 200（旧は200でも打ち切って警告していた）" "200" "$W62_COUNT"
+assert_eq "W62-2 200件: 警告なし" "0" "$(w62_warned)"
+assert_eq "W62-2 200件: listForRepo 3回（3ページ目は空）" "3" "$W62_CALLS"
+w62_run 201 0 en -- run list --json
+assert_eq "W62-3 201件: 取得 201（旧は200で欠落）" "201" "$W62_COUNT"
+assert_eq "W62-3 201件: 警告なし" "0" "$(w62_warned)"
+assert_eq "W62-3 201件: listForRepo 3回" "3" "$W62_CALLS"
+w62_run 350 0 en -- run list --json
+assert_eq "W62-4 350件: 取得 350" "350" "$W62_COUNT"
+assert_eq "W62-4 350件: 警告なし" "0" "$(w62_warned)"
+assert_eq "W62-4 350件: listForRepo 4回" "4" "$W62_CALLS"
+w62_run 1000 0 en -- run list --json
+assert_eq "W62-5 1000件ちょうど: 取得 1000" "1000" "$W62_COUNT"
+assert_eq "W62-5 1000件ちょうど: 警告あり（最後のページが満杯で先があるか判別できないため打ち切り扱い）" "1" "$(w62_warned)"
+assert_eq "W62-5 1000件ちょうど: listForRepo 10回（11ページ目は要求しない）" "10" "$W62_CALLS"
+w62_run 1001 0 en -- run list --json
+assert_eq "W62-6 1001件: 取得 1000（上限で切る）" "1000" "$W62_COUNT"
+assert_eq "W62-6 1001件: 警告あり" "1" "$(w62_warned)"
+assert_eq "W62-6 1001件: listForRepo 10回" "10" "$W62_CALLS"
+assert_eq "W62-6 1001件: 先頭は最新（番号降順の先頭）" "900000" "$W62_FIRST"
+assert_eq "W62-6 1001件: 末尾は10ページ目の最後（古い側が欠ける）" "890901" "$W62_LAST"
+w62_run 1100 0 en -- run list --json
+assert_eq "W62-7 1100件: 取得 1000" "1000" "$W62_COUNT"
+assert_eq "W62-7 1100件: 警告あり" "1" "$(w62_warned)"
+assert_eq "W62-7 1100件: listForRepo 10回" "10" "$W62_CALLS"
+# --- PR 混在（10件に1件が PR → 1ページ90件）---
+# 旧は 3 ページで 270 件に達して無警告・270 件を返していた（200 ちょうどでないと警告しない判定のため）
+w62_run 1100 10 en -- run list --json
+assert_eq "W62-8 PR混在 1100要素(Issue990件): 全件取得" "990" "$W62_COUNT"
+assert_eq "W62-8 PR混在 990件: 警告なし" "0" "$(w62_warned)"
+assert_eq "W62-8 PR混在 990件: listForRepo 12回（11ページ＋空1）" "12" "$W62_CALLS"
+w62_run 1200 10 en -- run list --json
+assert_eq "W62-9 PR混在で上限をまたぐ(11ページで990→12ページ目で1080): 1000で切る" "1000" "$W62_COUNT"
+assert_eq "W62-9 PR混在で上限をまたぐ: 警告あり（旧は無警告で全件を返していた）" "1" "$(w62_warned)"
+assert_eq "W62-9 PR混在で上限をまたぐ: listForRepo 12回" "12" "$W62_CALLS"
+w62_run 950 10 en -- run list --json
+assert_eq "W62-10 PR混在 855件(Issue): 全件取得" "855" "$W62_COUNT"
+assert_eq "W62-10 PR混在 855件: 警告なし" "0" "$(w62_warned)"
+# --- 警告文言（ja / en）---
+w62_run 1001 0 en -- run list --json
+assert_contains "W62-11 警告(en)" "Open issue fetching reached the limit of 1000, so this list does not show all open issues." "$W62_ERR"
+assert_not_contains "W62-11 警告(en): 「クローズ推奨」の文言を含まない" "Consider closing" "$W62_ERR"
+w62_run 1001 0 ja -- run list --json
+assert_contains "W62-12 警告(ja)" "オープン Issue の取得が上限の 1000 件に達したため、この一覧にはすべての Issue が表示されていません。" "$W62_ERR"
+assert_not_contains "W62-12 警告(ja): 「クローズ推奨」の文言を含まない" "推奨" "$W62_ERR"
+# --- 書き込み系（parallel なし = 逐次）も同じ判定: bulk done の依存確認など fetchAllOpen を呼ぶ経路 ---
+# 逐次（opts なし）でも 3 ページ目以降の取得が同じ上限・同じ警告になる（先読みの有無は結果に影響しない）。dashboard は parallel + closed 取得なので、ここでは migrate の対象取得（逐次）で確かめる
+w62_run 350 0 en -- run migrate sub-issue --dry-run
+assert_eq "W62-13 逐次(migrate sub-issue --dry-run) 350件: listForRepo 4回（先読みなしでも同じページ数）" "4" "$W62_CALLS"
+assert_eq "W62-13 逐次 350件: 警告なし" "0" "$(w62_warned)"
+w62_run 1001 0 en -- run migrate sub-issue --dry-run
+assert_eq "W62-14 逐次 1001件: listForRepo 10回（11ページ目は要求しない）" "10" "$W62_CALLS"
+assert_eq "W62-14 逐次 1001件: 警告あり" "1" "$(w62_warned)"
+
+# --- api list-issues ---
+# open・引数なし: 1000 まで（web が使う経路）。警告は stderr に出さない（外部インターフェース）
+w62_run 131 0 en -- api list-issues
+assert_eq "W62-20 api open 131件: 取得 131" "131" "$W62_COUNT"
+assert_eq "W62-20 api open 131件: listForRepo 2回（従来と同じ）" "2" "$W62_CALLS"
+w62_run 350 0 en -- api list-issues
+assert_eq "W62-21 api open 350件: 取得 350（旧は200）" "350" "$W62_COUNT"
+assert_eq "W62-21 api open 350件: listForRepo 4回" "4" "$W62_CALLS"
+w62_run 1001 0 en -- api list-issues
+assert_eq "W62-22 api open 1001件: 取得 1000" "1000" "$W62_COUNT"
+assert_eq "W62-22 api open 1001件: listForRepo 10回" "10" "$W62_CALLS"
+assert_eq "W62-22 api open 1001件: stderr は空（警告を出さない）" "" "$W62_ERR"
+w62_run 1200 10 en -- api list-issues
+assert_eq "W62-23 api open PR混在で上限をまたぐ: 1000で切る" "1000" "$W62_COUNT"
+assert_eq "W62-23 api open PR混在で上限をまたぐ: stderr は空" "" "$W62_ERR"
+w62_run 350 0 en -- api list-issues --state open
+assert_eq "W62-24 api --state open（明示）350件: 取得 350（引数なしと同じ）" "350" "$W62_COUNT"
+# 変えないもの: --state closed|all と --limit は従来の 200
+w62_run 350 0 en -- api list-issues --state closed
+assert_eq "W62-25 api --state closed 350件: 取得 200（変えない）" "200" "$W62_COUNT"
+assert_eq "W62-25 api --state closed 350件: listForRepo 2回（変えない）" "2" "$W62_CALLS"
+w62_run 1001 0 en -- api list-issues --state all
+assert_eq "W62-26 api --state all 1001件: 取得 200（変えない）" "200" "$W62_COUNT"
+assert_eq "W62-26 api --state all 1001件: listForRepo 2回（変えない）" "2" "$W62_CALLS"
+w62_run 1001 0 en -- api list-issues --limit 500
+assert_eq "W62-27 api --limit 500 (open) 1001件: 取得 200（変えない）" "200" "$W62_COUNT"
+assert_eq "W62-27 api --limit 500: listForRepo 2回（変えない）" "2" "$W62_CALLS"
+w62_run 350 0 en -- api list-issues --limit 120
+assert_eq "W62-28 api --limit 120 350件: 取得 200（変えない）" "200" "$W62_COUNT"
+w62_run 350 0 en -- api list-issues --limit 50
+assert_eq "W62-29 api --limit 50 350件: 取得 100（変えない。per_page は50だが応答をそのまま返す）" "100" "$W62_COUNT"
+assert_eq "W62-29 api --limit 50: listForRepo 1回（変えない）" "1" "$W62_CALLS"
+w62_run 350 0 en -- api list-issues --limit abc
+assert_eq "W62-30 api --limit abc 350件: 取得 200（無効値は従来の200）" "200" "$W62_COUNT"
+w62_run 350 0 en -- api list-issues --state closed --limit 500
+assert_eq "W62-31 api --state closed --limit 500 350件: 取得 200（変えない）" "200" "$W62_COUNT"
+
+W62_N=$((PASS-W62_P0))
+if [ "$W62_N" -lt 60 ]; then
+  printf "  ❌ §W62 アサーション数が少なすぎる (%s 件。60 件未満は検査の空振りとみなす)\n" "$W62_N"; FAIL=$((FAIL+1))
+fi
+rm -rf "$W62_HOME"
 
 echo ""
 echo "=========================================="

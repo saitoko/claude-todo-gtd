@@ -15,7 +15,8 @@ const GTD_DISPLAY = {
   someday: '🌈 someday', project: '📁 project', reference: '📎 reference'
 };
 const FORBIDDEN_CHARS = ';$`()\"\'' + String.fromCharCode(92) + '|&><{}';
-const MAX_OPEN_ISSUES_LIMIT = 200; // GitHub API ページネーション上限。これを超える場合は警告を出力
+const MAX_OPEN_ISSUES_LIMIT = 1000; // open Issue 取得の安全上限（100件×10ページ。#2130: 200 から引き上げ）。上限で打ち切ったときは警告を出す
+const API_LIST_ISSUES_LEGACY_CAP = 200; // api list-issues の --limit 指定時・--state closed|all の取得上限（#2130 以前の値のまま。open 引数なしだけが MAX_OPEN_ISSUES_LIMIT）
 const MAX_SUB_ISSUES_LIMIT = 500; // sub-issue 一覧のページネーション上限（#1881: 無限ループ防止の安全弁。GitHub の現行上限は親1つにつき100件なので通常は到達しない）
 const PRI_COLORS = { p1: 'B60205', p2: 'FBCA04', p3: '0075CA' };
 // ラベル作成時の色。PRI_COLORS と値が同じものがあるが意味が別なので共有しない
@@ -496,7 +497,7 @@ const MESSAGES = {
     'warn.sub_issue_unlink_failed': '⚠️ sub-issue 解除失敗: {msg}',
     'list.project_children_header': '## 📁 プロジェクト #{parent} の子タスク（{n}件）',
     'list.no_children': '  （子タスクなし）',
-    'warn.open_issue_limit': '⚠️ オープン Issue が {limit} 件の上限に達しました。古いタスクのクローズを推奨します。',
+    'warn.open_issue_limit': '⚠️ オープン Issue の取得が上限の {limit} 件に達したため、この一覧にはすべての Issue が表示されていません。',
     'warn.sub_issue_list_limit': '⚠️ #{parent} の sub-issue が {limit} 件の上限に達しました。一部が一覧から欠落している可能性があります。',
   },
   en: {
@@ -884,7 +885,7 @@ const MESSAGES = {
     'warn.sub_issue_unlink_failed': '⚠️ Failed to unlink sub-issue: {msg}',
     'list.project_children_header': '## 📁 Project #{parent} subtasks ({n})',
     'list.no_children': '  (No subtasks)',
-    'warn.open_issue_limit': '⚠️ Open issues reached the limit of {limit}. Consider closing older tasks.',
+    'warn.open_issue_limit': '⚠️ Open issue fetching reached the limit of {limit}, so this list does not show all open issues.',
     'warn.sub_issue_list_limit': '⚠️ Sub-issues for #{parent} reached the limit of {limit}. Some may be missing from the list.',
   }
 };
@@ -2805,10 +2806,13 @@ async function apiMain(subArgs) {
         const state = (subArgs.includes('--state') ? subArgs[subArgs.indexOf('--state')+1] : null) || 'open';
         const limitIdx = subArgs.indexOf('--limit');
         const perPage = limitIdx >= 0 ? Math.min(parseInt(subArgs[limitIdx+1])||100, 100) : 100;
-        // #2102 R6: 上限は MAX_OPEN_ISSUES_LIMIT に一本化（取得上限と打ち切りの両方）。
-        // fetchAllOpen へは寄せない: 本サブコマンドは --state / --limit を受け、200件で打ち切るときも
+        // #2130: 上限は「open かつ --limit なし」だけ MAX_OPEN_ISSUES_LIMIT（1000）。--state closed|all と --limit 指定時は
+        // 従来の API_LIST_ISSUES_LEGACY_CAP（200）のまま（closed は数千件規模で、上げると引数なしの --state all の呼び出しが増えるため）。
+        // fetchAllOpen へは寄せない: 本サブコマンドは --state / --limit を受け、上限で打ち切るときも
         // stderr に警告を出さない（外部インターフェース）。fetchAllOpen は open 固定・100件固定・警告ありで挙動が違う。
-        const maxIssues = limitIdx >= 0 ? parseInt(subArgs[limitIdx+1])||MAX_OPEN_ISSUES_LIMIT : MAX_OPEN_ISSUES_LIMIT;
+        const isOpenDefault = limitIdx < 0 && state === 'open';
+        const hardCap = isOpenDefault ? MAX_OPEN_ISSUES_LIMIT : API_LIST_ISSUES_LEGACY_CAP;
+        const maxIssues = limitIdx >= 0 ? parseInt(subArgs[limitIdx+1])||hardCap : hardCap;
         const allIssues = [];
         let page = 1;
         while (allIssues.length < maxIssues) {
@@ -2822,8 +2826,10 @@ async function apiMain(subArgs) {
           allIssues.push(...issues);
           if (data.length < perPage) break;
           page++;
-          if (allIssues.length >= MAX_OPEN_ISSUES_LIMIT) break;
+          if (allIssues.length >= hardCap) break;
         }
+        // open・引数なしは上限ちょうどで切る（fetchAllOpen と同じ。最終ページで超過した分は古い側）。それ以外は従来どおり切らない
+        if (isOpenDefault && allIssues.length > MAX_OPEN_ISSUES_LIMIT) allIssues.length = MAX_OPEN_ISSUES_LIMIT;
         const result = allIssues.map(i => ({
           number: i.number,
           title: i.title,
@@ -4434,11 +4440,11 @@ async function runList(octokit, owner, repo, tokens) {
 // opts.parallel = true: 1・2ページ目を同時に要求する（#2111。labels 指定時は1ページ目のみ）。
 //   従来は逐次（1ページ目の応答後に2ページ目）で、open が100件を超えると往復が2回直列になっていた。
 //   ページ処理（PR除外・「issues が空なら終了」・「data が100件未満なら終了」・
-//   MAX_OPEN_ISSUES_LIMIT 到達判定）は従来と同じ順序で行う。先読みした2ページ目は
+//   MAX_OPEN_ISSUES_LIMIT 到達判定）は従来と同じ順序で行う（#2130: 上限は 200 → 1000。到達判定は「取得件数が上限以上で、最後のページが満杯＝先がありうる」ときの打ち切り）。先読みした2ページ目は
 //   従来のループが実際に要求するときだけ結果を採用し、要求しない場合（1ページ目が100件未満）は
 //   結果もエラーも捨てる（従来そのページは要求されなかったため、成否は出力に影響しない）。
 //   採用したページが失敗した場合は従来どおり例外を投げる（欠けた一覧を正常結果として返さない）。
-//   3ページ目以降は従来どおり逐次（PR が混在して200件に届かない場合のみ到達する）。
+//   3ページ目以降は逐次（open が200件以上、または PR 混在で2ページに収まらない場合に到達する。最大でも上限 1000 件 = 10ページ強）。
 // opts.labels: GitHub の labels パラメータ（単一ラベル名。サーバ側絞り込み）。
 // 書き込み系の呼び出し元は opts を渡さない（従来の逐次・全件取得のまま、リクエスト数も変えない）。
 async function fetchAllOpen(octokit, owner, repo, opts = {}) {
@@ -4453,7 +4459,9 @@ async function fetchAllOpen(octokit, owner, repo, opts = {}) {
     : [];
   const allIssues = [];
   let page = 1;
-  while (allIssues.length < MAX_OPEN_ISSUES_LIMIT) {
+  let truncated = false; // 上限で打ち切った（最後に取得したページが満杯で、まだ先がありうる）
+  while (true) {
+    if (allIssues.length >= MAX_OPEN_ISSUES_LIMIT) { truncated = true; break; }
     let data;
     if (page <= pre.length) {
       const settled = await pre[page - 1];
@@ -4471,7 +4479,9 @@ async function fetchAllOpen(octokit, owner, repo, opts = {}) {
     if (data.length < 100) break;
     page++;
   }
-  if (allIssues.length === MAX_OPEN_ISSUES_LIMIT) {
+  if (truncated) {
+    // #2130: 件数が上限をまたいだ場合（PR 混在で 1000 を超えて取得した場合）も、上限ちょうどに揃えて必ず警告する
+    if (allIssues.length > MAX_OPEN_ISSUES_LIMIT) allIssues.length = MAX_OPEN_ISSUES_LIMIT;
     process.stderr.write(tpl('warn.open_issue_limit', { limit: MAX_OPEN_ISSUES_LIMIT })+'\n');
   }
   return allIssues;

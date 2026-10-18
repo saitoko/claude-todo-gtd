@@ -3501,7 +3501,7 @@ assert_contains "/todo view（引数なし）→ Usage 出力" "Usage" "$VIEW_NO
 MAX_CONST=$(node -e "const s=require('fs').readFileSync('$ENGINE','utf8'); \
   const m=s.match(/const MAX_OPEN_ISSUES_LIMIT\s*=\s*(\d+)/); \
   console.log(m?m[1]:'NOT_FOUND')")
-assert_eq "MAX_OPEN_ISSUES_LIMIT 定数が定義されている" "200" "$MAX_CONST"
+assert_eq "MAX_OPEN_ISSUES_LIMIT 定数が定義されている" "1000" "$MAX_CONST"
 
 # ──────────────────────────────────────────
 # Phase 3 レビュー修正テスト（🟡-2〜🟡-7）
