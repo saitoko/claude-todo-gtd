@@ -29,6 +29,12 @@
 //                           旧エンジンの行範囲が、いずれかのケースで実行されたことを確かめる
 //                           （NODE_V8_COVERAGE を使う。process.exit() で終わる経路も記録される）。
 //                           実行されていない行があれば失敗にする
+//   --coverage-exits        旧エンジンの process.exit( 呼び出し箇所（コメント行を除く）ごとに、いずれかのケースで
+//                           実行されたかを調べ、行番号・関数名つきで到達 / 未到達の全件を表示する。
+//                           --coverage-lines が「行の先頭」で判定するのに対し、こちらは呼び出し式そのものの位置で判定する
+//                           （`if (...) { write; process.exit(1); }` の1行形でも分岐の到達を取り違えない）。情報表示のみで、RESULT には影響しない
+//   --coverage-from <dir>   --coverage-exits に、別の実行（例: NODE_V8_COVERAGE=<dir> bash tests/run-tests.sh）で
+//                           集めた V8 カバレッジを足す。複数回指定できる。旧エンジンと同じファイルを対象にしたものだけが使われる
 //   --verbose               一致したケースも表示する
 //
 //   終了コード: 0=全件OK / 1=不一致・到達できなかったケースあり / 2=実行前の検査に失敗（1件も実行していない）
@@ -90,7 +96,7 @@ const E500 = { __throw: true, status: 500, message: 'boom' };
 function die(msg) { process.stderr.write('engine-diff-harness: ' + msg + '\n'); process.exit(2); }
 
 function parseCli(argv) {
-  const o = { lang: null, only: null, list: false, verbose: false, corpus: [], allow: [], cov: null };
+  const o = { lang: null, only: null, list: false, verbose: false, corpus: [], allow: [], cov: null, covExits: false, covFrom: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const val = () => { if (i + 1 >= argv.length) die(a + ' に値がありません'); return argv[++i]; };
@@ -105,6 +111,8 @@ function parseCli(argv) {
     else if (a === '--allow-diff') o.allow.push(...val().split(',').map(s => s.trim()).filter(Boolean));
     else if (a === '--allow-preset') { const n = val(); if (!ALLOW_PRESETS[n]) die('未知のプリセット: ' + n + '（' + Object.keys(ALLOW_PRESETS).join(', ') + '）'); o.allow.push(...ALLOW_PRESETS[n]); }
     else if (a === '--coverage-lines') o.cov = parseRanges(val());
+    else if (a === '--coverage-exits') o.covExits = true;
+    else if (a === '--coverage-from') o.covFrom.push(path.resolve(val()));
     else die('未知のオプション: ' + a);
   }
   return o;
@@ -209,6 +217,7 @@ function runOnce(engine, c, lang, stub, opts) {
     if (res.log) res.log = res.log.map(norm);
     for (const k of Object.keys(res.files)) res.files[k] = norm(res.files[k]);
     if (covDir) res.executedLines = collectExecutedLines(covDir, engine);
+    if (covDir && opts.offsets) res.executedOffsets = collectExecutedOffsets([covDir], engine, opts.offsets);
     return res;
   } finally { rmHome(home); }
 }
@@ -283,6 +292,55 @@ function codeLines(engine) {
   return out;
 }
 
+// ─── exit 呼び出し箇所のカバレッジ ────────────────────
+// 旧エンジンの `process.exit(` の出現位置（コメント行・行末コメント内を除く）を、オフセットと行番号と所属関数名で列挙する。
+function findExitSites(engine) {
+  const src = fs.readFileSync(engine, 'utf8');
+  const lines = src.split('\n');
+  const sites = [];
+  let off = 0, fn = '(top-level)';
+  lines.forEach((line, i) => {
+    const m = /^(?:async )?function (\w+)/.exec(line);
+    if (m) fn = m[1];
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('//')) {
+      const re = /process\.exit\(/g;
+      let x;
+      while ((x = re.exec(line))) {
+        const cm = line.indexOf('//');
+        if (cm !== -1 && cm < x.index && !/['"`]/.test(line.slice(0, cm))) continue;   // 行末コメントの中
+        sites.push({ offset: off + x.index, line: i + 1, fn });
+      }
+    }
+    off += line.length + 1;
+  });
+  return sites;
+}
+
+// 各オフセットを含む最も内側の範囲の count が 0 より大きければ、その位置は実行されたとみなす。
+function collectExecutedOffsets(covDirs, engine, sites) {
+  const hit = new Set();
+  const url = pathToFileURL(fs.realpathSync(engine)).href;
+  for (const covDir of covDirs) {
+    if (!fs.existsSync(covDir)) continue;
+    for (const f of fs.readdirSync(covDir)) {
+      let j;
+      try { j = JSON.parse(fs.readFileSync(path.join(covDir, f), 'utf8')); } catch (e) { continue; }
+      const script = (j.result || []).find(r => r.url === url);
+      if (!script) continue;
+      const ranges = [];
+      for (const fn of script.functions) for (const r of fn.ranges) ranges.push(r);
+      for (const s of sites) {
+        if (hit.has(s.offset)) continue;
+        let best = null;
+        for (const r of ranges) if (r.startOffset <= s.offset && s.offset < r.endOffset && (!best || (r.endOffset - r.startOffset) <= (best.endOffset - best.startOffset))) best = r;
+        if (best && best.count > 0) hit.add(s.offset);
+      }
+    }
+  }
+  return hit;
+}
+
 // ─── カナリア（隔離が実際に効いているかの確認）─────────
 function canary(engine, stub, label) {
   const issue = { data: { number: 1, id: 1001, title: 'canary', body: '', labels: [{ name: '🎯 next' }], state: 'open' } };
@@ -325,14 +383,17 @@ function main() {
   canary(o.old, stub, '旧エンジン');
   canary(o.new, stub, '新エンジン');
 
+  const exitSites = o.covExits ? findExitSites(o.old) : null;
+  const execOffsets = new Set();
   let identical = 0, reached = 0, unreached = 0, mismatched = 0, allowedOk = 0, allowedMissing = 0, broken = 0;
   const execLines = new Set();
   const report = [];
   for (const { c, lang } of jobs) {
     const tag = c.id + ' [' + lang + ']';
-    const a = runOnce(o.old, c, lang, stub, { coverage: !!o.cov });
+    const a = runOnce(o.old, c, lang, stub, { coverage: !!o.cov || o.covExits, offsets: exitSites });
     const b = runOnce(o.new, c, lang, stub);
     if (a.executedLines) for (const l of a.executedLines) execLines.add(l);
+    if (a.executedOffsets) for (const l of a.executedOffsets) execOffsets.add(l);
     if (a.problems.length || b.problems.length) { broken++; report.push('実行に問題 ' + tag + ': ' + a.problems.concat(b.problems).join(' / ')); continue; }
     const miss = checkMarker(c.marker, a, lang);
     if (miss.length) {
@@ -364,6 +425,18 @@ function main() {
     }
   }
 
+  if (exitSites) {
+    const extra = o.covFrom.length ? collectExecutedOffsets(o.covFrom, o.old, exitSites) : new Set();
+    let nH = 0, nE = 0, nAny = 0;
+    report.push('exit 呼び出し箇所の到達（旧エンジン ' + path.basename(o.old) + '、全 ' + exitSites.length + ' 箇所）:');
+    for (const s of exitSites) {
+      const h = execOffsets.has(s.offset), e = extra.has(s.offset);
+      if (h) nH++; if (e) nE++; if (h || e) nAny++;
+      report.push('  ' + String(s.line).padStart(5) + '  ' + s.fn.padEnd(28) + (h && e ? 'harness+extra' : h ? 'harness' : e ? 'extra' : '未到達'));
+    }
+    report.push('  到達: harness ' + nH + ' / extra(--coverage-from) ' + nE + ' / いずれか ' + nAny + ' / 未到達 ' + (exitSites.length - nAny) + ' （全 ' + exitSites.length + '）');
+  }
+
   for (const r of report) console.log(r);
   console.log('');
   console.log('実行 ' + jobs.length + ' 件 / marker 到達 ' + reached + ' / 到達できず ' + unreached + ' / 実行に問題 ' + broken);
@@ -390,6 +463,260 @@ const K_MARKERS = {
   'list-all': 'dup due', 'list-summary': '📊 next', 'weekly-summary': 'dup due', 'stats': { ja: '全タスク: 8件', en: 'Total tasks: 8' },
   'today': 'dup due', 'dashboard': 'dup due', 'eisenhower': 'dup due', 'report': { ja: '期間', en: 'Period' },
 };
+
+// ── R5（process.exit の例外化）の PR-0 で追加した x 系列 ──
+// 目的: エンジンの process.exit( 呼び出し箇所（全 119）を、ハーネス単独で旧エンジン上に到達させる。
+// R5 の各 PR（process.exit → 例外）が stderr の文言・行の順序・終了コード・スタブログを変えていないことを、
+// 全 exit 箇所について比較できるようにする。到達は `--coverage-exits` で測る（未到達の箇所は一覧に出る）。
+// x01-x30  直接サブコマンド（validate / extract-issue-fields / template / view / 未知コマンド）。ただし x03-x05（validateTag）は
+//          validate サブコマンドに tag がないため run tag 経由
+//          argv が 'run' / 'api' 以外で始まる異常系。これらは main() の同期 switch の中で exit する
+// x35-x38  ガード4種（guardUnknownFlag / guardBracketedGtdLabel / guardUnsupportedFlag / guardExtraPositional）
+// x40-x44  K1（bulk done で壊れた recur に当たる）と K6（api done-issue の recur エラーが日本語になる）の現状の固定
+// x50-     run 層（ハンドラの引数不足・検証エラー・取得後のエラー）
+// 英語固定の Usage 行は文字列で、t() 由来のメッセージは { ja, en } で書く。
+const M = {
+  pos: { ja: '正の整数が必要です', en: 'A positive integer is required' },
+  time: { ja: '時間は 30m', en: 'Time must be in' },
+  date: { ja: '不正な日付形式です', en: 'Invalid date format' },
+  nameEmpty: { ja: '名前が空です', en: 'Name is empty' },
+  nameInvalid: { ja: '名前に不正文字', en: 'Name contains invalid characters' },
+  titleCtl: { ja: 'タイトルに制御文字', en: 'Title must not contain control characters' },
+  tagNum: { ja: 'タグ名が数字のみです', en: 'Tag name must not be digits only' },
+  tagSym: { ja: 'タグ名に文字・数字が含まれていません', en: 'Tag name must contain at least one letter' },
+  tagInv: { ja: 'タグ名に不正文字', en: 'Tag name contains invalid characters' },
+  ctxSym: { ja: 'コンテキスト名に文字・数字が含まれていません', en: 'Context name must contain at least one letter' },
+  ctxInv: { ja: 'コンテキスト名に不正文字', en: 'Context name contains invalid characters' },
+  priInv: { ja: '--priority は p1/p2/p3 のみ有効です', en: '--priority must be p1/p2/p3' },
+  resume: { ja: 'resume_condition に改行を含めることはできません', en: 'resume_condition must not contain line breaks' },
+  color: { ja: 'カラーは6桁の16進数のみ有効です', en: 'Color must be a 6-digit hex code' },
+  recurBase: { ja: 'recur は daily/weekly/monthly/weekdays', en: 'recur must be daily/weekly/monthly/weekdays' },
+  recurSuffix: { ja: 'daily/weekdays にコロン付きサフィックス', en: 'daily/weekdays cannot have a colon suffix' },
+  recurWd: { ja: 'weekly の曜日サフィックスは mon/tue', en: 'weekly day suffix must be one of mon/tue' },
+  recurMd: { ja: 'monthly の日付サフィックスは 1〜31', en: 'monthly day suffix must be a number between 1 and 31' },
+  corrupt: { ja: 'ファイルが破損しています', en: 'File is corrupted' },
+  tplNF: { ja: 'テンプレート「nope」は存在しません', en: 'Template "nope" not found' },
+  viewNF: { ja: 'ビュー「nope」は存在しません', en: 'View "nope" not found' },
+  titleEmpty: { ja: 'タイトルが空です', en: 'Title is empty.' },
+  dueClear: { ja: '新規作成時に --due clear は指定できません', en: '--due clear cannot be used when creating a new issue' },
+  routineRecur: { ja: 'routine には --recur が必須です', en: 'routine requires --recur' },
+  beforeDue: { ja: '--before を使うには --due が必要です', en: '--before requires --due' },
+  beforeFmt: { ja: '--before は 14d / 2w 形式で指定してください', en: '--before must be in 14d / 2w format' },
+  commentLong: { ja: 'コメント本文が最大文字数（65536字）を超えています', en: 'Comment body exceeds the maximum length (65536 characters)' },
+  commentEmpty: { ja: 'コメント本文が空です', en: 'Comment body is empty' },
+  descReq: { ja: '説明テキストが必要です', en: 'Description text is required' },
+  optLike: { ja: '"--x" はオプション指定に見えます', en: '"--x" looks like an option' },
+  reportSub: { ja: '不正な期間指定です: bogus', en: 'invalid period: bogus' },
+  viewCtx: { ja: 'view save では @ctx は1つのみ指定できます', en: 'view save allows only one @ctx' },
+  issueNF: { ja: 'Issue #5 が見つかりません', en: 'Issue #5 not found' },
+  issueFetch: { ja: 'Issue の取得に失敗しました（boom）', en: 'Failed to fetch issue (boom)' },
+  moveProj: { ja: 'project への移動はできません', en: 'Cannot move to project' },
+  gtdMissing: { ja: 'GTDラベルを指定してください', en: 'Please specify a GTD label' },
+  notSomeday: { ja: '#5 はsomedayタスクではありません', en: '#5 is not a someday task' },
+  alreadyProj: { ja: '#6 は既にプロジェクトです', en: '#6 is already a project' },
+  unlinkList: { ja: 'sub-issue 一覧取得（親 #12）に失敗したため', en: 'Failed to fetch sub-issue list (parent #12)' },
+  unlinkMismatch: { ja: '#7 の body は project: #12 を指していますが', en: '#7 body points to project: #12' },
+  unlinkFail: { ja: '#8 の sub-issue 解除に失敗したため', en: 'Failed to unlink sub-issue for #8' },
+  reserved: { ja: '「list」はコマンド名です', en: '"list" is a command name' },
+  unknownCmd: { ja: '未知のコマンド「bogus」です', en: 'Unknown command "bogus"' },
+  multiword: { ja: '「list next」は先頭語「list」がコマンド名', en: '"list next" starts with the command name "list"' },
+  noLink: { ja: '#7 にプロジェクト紐付けがありません', en: '#7 has no project link' },
+  recurWdBulk: { ja: 'weekly の曜日サフィックスは mon/tue', en: 'weekly day suffix must be one of mon/tue' },
+};
+// 引数不足・検証エラーなど、API を呼ぶ前に落ちるケース（応答は不要）
+const xe = (id, argv, stderr, o = {}) => ({ id, argv, responses: {}, ...o, marker: { stderr, exit: 1 } });
+const TPL_BAD = '.claude/todo-templates.json';
+const X_CASES = [
+  // ── 直接サブコマンド ──
+  xe('x01-validate-ctx-symbol-only', ['validate', 'ctx', '--'], M.ctxSym),
+  xe('x02-validate-ctx-invalid', ['validate', 'ctx', 'a b'], M.ctxInv),
+  xe('x03-tag-num-only', ['run', 'tag', '5', '#123'], M.tagNum),
+  xe('x04-tag-symbol-only', ['run', 'tag', '5', '#!!'], M.tagSym),
+  xe('x05-tag-invalid', ['run', 'tag', '5', '#a;b'], M.tagInv),
+  xe('x06-validate-number-zero', ['validate', 'number', '0'], M.pos),
+  xe('x07-validate-due-impossible', ['validate', 'due', '2026-02-30'], M.date),
+  xe('x08-validate-recur-base', ['validate', 'recur', 'bogus'], M.recurBase),
+  xe('x09-validate-recur-suffix-not-allowed', ['validate', 'recur', 'daily:x'], M.recurSuffix),
+  xe('x10-validate-recur-weekday', ['validate', 'recur', 'weekly:xxx'], M.recurWd),
+  xe('x11-validate-recur-monthday-nondigit', ['validate', 'recur', 'monthly:ab'], M.recurMd),
+  xe('x12-validate-recur-monthday-range', ['validate', 'recur', 'monthly:32'], M.recurMd),
+  xe('x13-validate-color', ['validate', 'color', 'zz'], M.color),
+  xe('x14-validate-priority', ['validate', 'priority', 'p4'], M.priInv),
+  xe('x15-validate-name-empty', ['validate', 'name', ''], M.nameEmpty),
+  xe('x16-validate-name-invalid', ['validate', 'name', 'a;b'], M.nameInvalid),
+  xe('x17-validate-title-empty', ['validate', 'title', ''], M.nameEmpty),
+  xe('x18-validate-title-control-char', ['validate', 'title', 'a\tb'], M.titleCtl),
+  xe('x19-validate-time', ['validate', 'time', 'xyz'], M.time),
+  xe('x20-validate-unknown-type', ['validate', 'bogus'], 'Unknown validate type: bogus'),
+  xe('x21-extract-issue-fields-invalid-json', ['extract-issue-fields'], 'error: invalid JSON', { env: { ISSUE_JSON_ENV: '{bad' } }),
+  xe('x22-template-show-missing', ['template', 'show'], M.tplNF, { env: { TNAME_ENV: 'nope' } }),
+  xe('x23-template-use-missing', ['template', 'use'], M.tplNF, { env: { TNAME_ENV: 'nope' } }),
+  xe('x24-template-delete-missing', ['template', 'delete'], M.tplNF, { env: { TNAME_ENV: 'nope' } }),
+  xe('x25-view-use-missing', ['view', 'use'], M.viewNF, { env: { VNAME_ENV: 'nope' } }),
+  xe('x26-view-delete-missing', ['view', 'delete'], M.viewNF, { env: { VNAME_ENV: 'nope' } }),
+  xe('x27-template-list-corrupt-file', ['template', 'list'], M.corrupt, { files: { [TPL_BAD]: '{bad' } }),
+  xe('x28-template-unknown-sub', ['template', 'bogus'], 'Unknown template subcommand: bogus'),
+  xe('x29-view-unknown-sub', ['view', 'bogus'], 'Unknown view subcommand: bogus'),
+  xe('x30-unknown-top-level-command', ['bogus-command'], 'Unknown command: bogus-command'),
+
+  // ── ガード4種（いずれも API を呼ぶ前に落ちる。Usage 行つき）──
+  xe('x35-guard-unknown-flag', ['run', 'done', '5', '--bogus'], { ja: '不明なフラグです: --bogus', en: 'unknown flag: --bogus' }),
+  xe('x36-guard-bracketed-gtd-label', ['run', 'add', '[inbox]', 'タイトル'], { ja: 'タイトルの先頭語「[inbox]」', en: 'the first word of the title "[inbox]"' }),
+  xe('x37-guard-unsupported-flag', ['run', 'done', '5', '--due', '2026-10-20'], { ja: '--due はこのコマンドでは使えません', en: '--due is not supported by this command' }),
+  xe('x38-guard-extra-positional', ['run', 'due', '5', '2026-10-20', 'extra'], { ja: '余分な引数があります: extra', en: 'extra arguments: extra' }),
+
+  // ── K1 / K6: try/catch に吸われる経路（validateRecur）の現状の固定 ──
+  // K1: bulk done の途中で壊れた recur に当たると、validateRecur が stderr に書いて exit 1 する。
+  //     先に処理した #1 は閉じ済み（stdout に #1 の次周期 Issue の行が出る）、#3 は処理されず、集計行（bulk.done_count）は出ない。
+  { id: 'x40-bulk-done-broken-recur-stops-all', argv: ['run', 'bulk', 'done', '1201', '1202', '1203'],
+    responses: { 'issues.get': [iss(1201, { body: RECUR_BODY }), iss(1202, { body: 'due: 2026-10-10\nrecur: weekly:INVALID\n' })], 'issues.create': [{ data: { number: 9201 } }], 'issues.update': [{}], 'issues.listForRepo': [list()] },
+    marker: { stdout: '#9201', stderr: M.recurWd, logSeq: ['issues.get', 'issues.create', 'issues.update', 'issues.listForRepo', 'issues.get'], exit: 1 } },
+  // K1 の --actual つき: 壊れた recur の #1202 は、actual の更新（issues.update）まで済んだ後で止まる
+  { id: 'x41-bulk-done-broken-recur-with-actual', argv: ['run', 'bulk', 'done', '1211', '1212', '1213', '--actual', '30m'],
+    responses: { 'issues.get': [iss(1211), iss(1212, { body: 'due: 2026-10-10\nrecur: weekly:INVALID\n' })], 'issues.update': [{}, {}, {}], 'issues.listForRepo': [list()] },
+    marker: { stderr: M.recurWd, logSeq: ['actual: 30', '"state":"closed"', 'issues.listForRepo', 'issues.get', 'actual: 30'], exit: 1 } },
+  // 壊れた recur が先頭のとき: 何も閉じずに止まる
+  { id: 'x44-bulk-done-broken-recur-first', argv: ['run', 'bulk', 'done', '1221', '1222'],
+    responses: { 'issues.get': [iss(1221, { body: 'due: 2026-10-10\nrecur: daily:x\n' })] },
+    marker: { stderr: M.recurSuffix, exit: 1 } },
+  // K6: api done-issue で recur が壊れている。LANG_ENV なし（ja）では日本語、en では英語のメッセージが出る（api は英語固定のはずだが現状は t() 経由）
+  { id: 'x42-api-done-issue-broken-recur', argv: ['api', 'done-issue', '1231'],
+    responses: { 'issues.get': [iss(1231, { body: 'due: 2026-10-10\nrecur: weekly:INVALID\n' })] },
+    marker: { stderr: M.recurWd, exit: 1 } },
+  // run 経由の api（run の .catch を通る）
+  { id: 'x43-run-api-done-issue-broken-recur', argv: ['run', 'api', 'done-issue', '1232'],
+    responses: { 'issues.get': [iss(1232, { body: 'due: 2026-10-10\nrecur: weekly:INVALID\n' })] },
+    marker: { stderr: M.recurWd, exit: 1 } },
+  // 単体の done（W13-6 と同じ入力）。try の外なので exit 1 のまま終わる
+  { id: 'x45-done-broken-recur', argv: ['run', 'done', '1233'],
+    responses: { 'issues.get': [iss(1233, { body: 'due: 2026-10-10\nrecur: weekly:INVALID\n' })] },
+    marker: { stderr: M.recurWd, exit: 1 } },
+  // §1-3 の確認: bulk move / tag / untag / priority のループは、API の失敗を item_error にして exit 0 で続ける（exit 箇所に届かない）
+  { id: 'x46-bulk-move-api-fails-continues', argv: ['run', 'bulk', 'move', '1241', '1242', 'someday'],
+    responses: { 'issues.get': [E500, iss(1242)], 'issues.removeLabel': [{}], 'issues.addLabels': [{}] },
+    marker: { stdout: { ja: '  #1241 エラー: boom', en: '  #1241 error: boom' }, logSeq: ['issues.get', 'issues.get', 'issues.removeLabel', 'issues.addLabels'], exit: 0 } },
+  { id: 'x47-bulk-tag-api-fails-continues', argv: ['run', 'bulk', 'tag', '1243', '1244', '@x47a'],
+    responses: { [LBL]: [{}], 'issues.addLabels': [E500, {}] },
+    marker: { stdout: { ja: '  #1243 エラー: boom', en: '  #1243 error: boom' }, logSeq: ['issues.addLabels', 'issues.addLabels'], exit: 0 } },
+  { id: 'x48-bulk-untag-api-fails-continues', argv: ['run', 'bulk', 'untag', '1245', '1246', '@x48a'],
+    responses: { 'issues.removeLabel': [E500, {}] },
+    marker: { stdout: { ja: '  #1245 エラー: boom', en: '  #1245 error: boom' }, logSeq: ['issues.removeLabel', 'issues.removeLabel'], exit: 0 } },
+  { id: 'x49-bulk-priority-api-fails-continues', argv: ['run', 'bulk', 'priority', '1247', '1248', 'p2'],
+    responses: { [LBL]: [{}], 'issues.get': [E500, iss(1248)], 'issues.addLabels': [{}] },
+    marker: { stdout: { ja: '  #1247 エラー: boom', en: '  #1247 error: boom' }, logSeq: [LBL, 'issues.get', 'issues.get', 'issues.addLabels'], exit: 0 } },
+
+  // ── run 層: 引数不足・検証エラー（API を呼ぶ前）──
+  xe('x50-add-title-empty', ['run', 'add', 'next'], M.titleEmpty),
+  xe('x51-add-due-clear', ['run', 'add', 'next', 't51', '--due', 'clear'], M.dueClear),
+  xe('x52-add-routine-without-recur', ['run', 'add', 'routine', 't52'], M.routineRecur),
+  xe('x53-add-estimate-invalid', ['run', 'add', 'next', 't53', '--estimate', 'xyz'], M.time),
+  xe('x54-add-resume-condition-newline', ['run', 'add', 'someday', 't54', '--resume-condition', 'a\nb'], M.resume),
+  xe('x55-done-no-number', ['run', 'done'], M.pos),
+  xe('x56-done-number-with-trailing-text', ['run', 'done', '42abc'], M.pos),
+  xe('x57-move-usage', ['run', 'move', '5'], 'Usage: /todo move <#> <GTD>'),
+  xe('x58-comment-no-number', ['run', 'comment'], M.pos),
+  xe('x59-comment-no-text', ['run', 'comment', '5'], 'Usage: /todo comment'),
+  xe('x60-comment-too-long', ['run', 'comment', '5', 'x'.repeat(65537)], M.commentLong),
+  xe('x61-comment-empty-after-sanitize', ['run', 'comment', '5', '\u0001'], M.commentEmpty),
+  xe('x62-edit-no-number', ['run', 'edit'], M.pos),
+  xe('x63-due-usage', ['run', 'due'], 'Usage: /todo due <#> <date|clear>'),
+  xe('x64-desc-no-number', ['run', 'desc'], M.pos),
+  xe('x65-desc-no-text', ['run', 'desc', '5'], M.descReq),
+  xe('x66-recur-usage', ['run', 'recur'], 'Usage: /todo recur <#> <pattern|clear>'),
+  xe('x67-link-usage', ['run', 'link'], 'Usage: /todo link <#> <project-#>'),
+  xe('x68-rename-usage', ['run', 'rename'], 'Usage: /todo rename <#> <new-title>'),
+  xe('x69-priority-usage', ['run', 'priority'], 'Usage: /todo priority <#> <p1|p2|p3|clear>'),
+  xe('x70-tag-no-number', ['run', 'tag'], M.pos),
+  xe('x71-tag-no-labels', ['run', 'tag', '5'], 'Usage: run tag <number> @ctx/#tag ...'),
+  xe('x72-tag-option-like-token', ['run', 'tag', '5', '--x'], M.optLike),
+  xe('x73-untag-no-number', ['run', 'untag'], M.pos),
+  xe('x74-untag-no-labels', ['run', 'untag', '5'], 'Usage: run untag <number> @ctx/#tag ...'),
+  xe('x75-label-add-no-name', ['run', 'label', 'add'], 'Usage: /todo label list|add <name>'),
+  xe('x76-label-delete-no-name', ['run', 'label', 'delete'], 'Usage: /todo label list|add <name>'),
+  xe('x77-label-unknown-sub', ['run', 'label', 'bogus'], 'Usage: /todo label list|add <name>'),
+  xe('x78-label-rename-missing-new', ['run', 'label', 'rename', '@x78'], 'Usage: /todo label rename <old> <new>'),
+  xe('x79-search-no-keyword', ['run', 'search'], 'Usage: run search <keyword> [--json]'),
+  xe('x80-archive-search-no-keyword', ['run', 'archive', 'search'], 'Usage: run archive search <keyword>'),
+  xe('x81-archive-reopen-no-number', ['run', 'archive', 'reopen'], 'Usage: run archive reopen <number>'),
+  xe('x82-archive-unknown-sub', ['run', 'archive', 'bogus'], 'Usage: run archive [list|search|reopen]'),
+  xe('x83-report-invalid-period', ['run', 'report', 'bogus'], M.reportSub),
+  xe('x84-template-show-no-name', ['run', 'template', 'show'], 'Usage: /todo template list|show <name>'),
+  xe('x85-template-save-no-name', ['run', 'template', 'save'], 'Usage: /todo template list|show <name>'),
+  xe('x86-template-use-no-name', ['run', 'template', 'use'], 'Usage: /todo template list|show <name>'),
+  xe('x87-template-use-missing', ['run', 'template', 'use', 'nope'], M.tplNF),
+  xe('x88-template-delete-no-name', ['run', 'template', 'delete'], 'Usage: /todo template list|show <name>'),
+  xe('x89-template-unknown-sub', ['run', 'template', 'bogus'], 'Usage: /todo template list|show <name>'),
+  xe('x90-show-no-number', ['run', 'show'], 'Usage: /todo show <issue-number>'),
+  xe('x91-view-no-sub', ['run', 'view'], 'Usage: /todo view list|save|use|delete'),
+  xe('x92-view-save-no-name', ['run', 'view', 'save'], 'Usage: run view save <name> [filters...]'),
+  xe('x93-view-save-two-ctx', ['run', 'view', 'save', 'v93', '@a', '@b'], M.viewCtx),
+  xe('x94-view-delete-no-name', ['run', 'view', 'delete'], 'Usage: run view delete <name>'),
+  xe('x95-view-use-no-name', ['run', 'view', 'use'], 'Usage: run view use <name>'),
+  xe('x96-view-use-missing', ['run', 'view', 'use', 'nope'], M.viewNF),
+  xe('x97-view-flag-like-sub', ['run', 'view', '--x'], 'Usage: run view list|save|use|delete'),
+  xe('x98-bulk-unknown-sub', ['run', 'bulk', 'bogus'], 'Usage: /todo bulk <done|move|tag|untag|priority>'),
+  xe('x99-bulk-move-to-project', ['run', 'bulk', 'move', '5', 'project'], M.moveProj),
+  xe('xa0-bulk-move-no-target', ['run', 'bulk', 'move', '5'], M.gtdMissing),
+  xe('xa1-bulk-tag-no-labels', ['run', 'bulk', 'tag', '5'], 'Usage: /todo bulk <done|move|tag|untag|priority>'),
+  xe('xa2-bulk-untag-no-labels', ['run', 'bulk', 'untag', '5'], 'Usage: /todo bulk <done|move|tag|untag|priority>'),
+  xe('xa3-bulk-priority-no-level', ['run', 'bulk', 'priority', '5'], 'Usage: /todo bulk <done|move|tag|untag|priority>'),
+  xe('xa4-review-someday-no-number', ['run', 'review-someday'], 'Usage: /todo review-someday <number>'),
+  xe('xa5-promote-project-no-number', ['run', 'promote-project'], 'Usage: /todo promote-project <N>'),
+  xe('xa6-unlink-no-number', ['run', 'unlink'], 'Usage: /todo unlink <N> [--force]'),
+  xe('xa7-reserved-command-word-as-title', ['run', 'next', 'list'], M.reserved),
+  xe('xa8-migrate-no-sub', ['run', 'migrate'], 'Usage: run migrate sub-issue [--dry-run]'),
+  xe('xa9-activate-no-args', ['run', 'activate'], 'Usage: /todo activate <#> <date>'),
+  xe('xb0-unknown-command', ['run', 'bogus'], M.unknownCmd),
+  xe('xb1-reserved-multiword-title', ['run', 'list next'], M.multiword),
+
+  // ── run 層: 書き込みの後・取得の後に落ちるケース（応答つき）──
+  // runAdd の --before / --activate の検証は、優先度ラベルの確認（書き込みの可能性がある API）の後にある（K9）
+  { id: 'xc0-add-before-without-due', argv: ['run', 'add', 'next', 'tc0', '--before', '2d'],
+    responses: { [LBL]: [{}] }, marker: { stderr: M.beforeDue, log: LBL, exit: 1 } },
+  { id: 'xc1-add-before-invalid', argv: ['run', 'add', 'next', 'tc1', '--due', '2026-10-20', '--before', 'xyz'],
+    responses: { [LBL]: [{}] }, marker: { stderr: M.beforeFmt, log: LBL, exit: 1 } },
+  // runAdd の「正規化に失敗」の分岐（--activate のとき）は到達できない: 分岐の条件が parsed.activate が真であることで、
+  // normalizeDue は真の文字列に対して常に真の値を返す（解釈できなければ入力をそのまま返す）。ここは validateActivateFormat に届く
+  { id: 'xc2-add-activate-unparsable', argv: ['run', 'add', 'next', 'tc2', '--activate', 'zzz'],
+    responses: { [LBL]: [{}] }, marker: { stderr: { ja: '不正な日付形式です: zzz', en: 'Invalid date format: zzz' }, log: LBL, exit: 1 } },
+  { id: 'xc3-add-activate-impossible-date', argv: ['run', 'add', 'next', 'tc3', '--activate', '2026-02-30'],
+    responses: { [LBL]: [{}] }, marker: { stderr: { ja: '不正な日付形式です: 2026-02-30', en: 'Invalid date format: 2026-02-30' }, log: LBL, exit: 1 } },
+  { id: 'xc4-edit-estimate-invalid', argv: ['run', 'edit', '1301', '--estimate', 'xyz'],
+    responses: { 'issues.get': [iss(1301)] }, marker: { stderr: M.time, log: 'issues.get', exit: 1 } },
+  { id: 'xc5-edit-before-without-due', argv: ['run', 'edit', '1302', '--before', '2d'],
+    responses: { 'issues.get': [iss(1302)] }, marker: { stderr: M.beforeDue, log: 'issues.get', exit: 1 } },
+  { id: 'xc6-edit-before-invalid', argv: ['run', 'edit', '1303', '--before', 'xyz'],
+    responses: { 'issues.get': [iss(1303, { body: 'due: 2026-10-20\n' })] }, marker: { stderr: M.beforeFmt, log: 'issues.get', exit: 1 } },
+  // normalizeDue は解釈できない語をそのまま返す（空文字だけが空のまま返る）ので、edit の「正規化に失敗」の分岐に届くのは --activate '' だけ
+  { id: 'xc7-edit-activate-empty-string', argv: ['run', 'edit', '1304', '--activate', ''],
+    responses: { 'issues.get': [iss(1304)] }, marker: { stderr: { ja: '不正な日付形式です: ', en: 'Invalid date format: ' }, log: 'issues.get', exit: 1 } },
+  { id: 'xc7b-edit-activate-unparsable', argv: ['run', 'edit', '1307', '--activate', 'zzz'],
+    responses: { 'issues.get': [iss(1307)] }, marker: { stderr: { ja: '不正な日付形式です: zzz', en: 'Invalid date format: zzz' }, log: 'issues.get', exit: 1 } },
+  { id: 'xc8-edit-activate-impossible-date', argv: ['run', 'edit', '1305', '--activate', '2026-02-30'],
+    responses: { 'issues.get': [iss(1305)] }, marker: { stderr: { ja: '不正な日付形式です: 2026-02-30', en: 'Invalid date format: 2026-02-30' }, log: 'issues.get', exit: 1 } },
+  { id: 'xc9-edit-resume-condition-newline', argv: ['run', 'edit', '1306', '--resume-condition', 'a\nb'],
+    responses: { 'issues.get': [iss(1306, { labels: [SOMEDAY] })] }, marker: { stderr: M.resume, log: 'issues.get', exit: 1 } },
+  { id: 'xd0-show-issue-not-found', argv: ['run', 'show', '5'],
+    responses: { 'issues.get': [E404] }, marker: { stderr: M.issueNF, exit: 1 } },
+  { id: 'xd1-show-fetch-fails', argv: ['run', 'show', '5'],
+    responses: { 'issues.get': [E500] }, marker: { stderr: M.issueFetch, exit: 1 } },
+  { id: 'xd2-review-someday-not-someday', argv: ['run', 'review-someday', '5'],
+    responses: { 'issues.get': [iss(5)] }, marker: { stderr: M.notSomeday, log: 'issues.get', exit: 1 } },
+  { id: 'xd3-promote-project-already-project', argv: ['run', 'promote-project', '6'],
+    responses: { 'issues.get': [iss(6, { labels: [PROJ] })] }, marker: { stderr: M.alreadyProj, log: 'issues.get', exit: 1 } },
+  { id: 'xd4-unlink-no-project-link', argv: ['run', 'unlink', '7'],
+    responses: { 'issues.get': [iss(7, { body: 'hello\n' })] }, marker: { stderr: M.noLink, log: 'issues.get', exit: 1 } },
+  { id: 'xd5-unlink-list-fails', argv: ['run', 'unlink', '7'],
+    responses: { 'issues.get': [iss(7, { body: 'project: #12\n' })], 'GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues': [E500] },
+    marker: { stderr: M.unlinkList, exit: 1 } },
+  { id: 'xd6-unlink-not-registered-without-force', argv: ['run', 'unlink', '7'],
+    responses: { 'issues.get': [iss(7, { body: 'project: #12\n' })], 'GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues': [{ data: [] }] },
+    marker: { stderr: M.unlinkMismatch, exit: 1 } },
+  { id: 'xd7-unlink-delete-fails', argv: ['run', 'unlink', '8'],
+    responses: { 'issues.get': [iss(8, { body: 'project: #12\n' })], 'GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues': [{ data: [{ id: 9008 }] }],
+      'DELETE /repos/{owner}/{repo}/issues/{issue_number}/sub_issue': [E500] },
+    marker: { stderr: M.unlinkFail, exit: 1 } },
+];
 
 const CORPUS = [
   // ── (a) 完了フロー ──
@@ -853,6 +1180,8 @@ const CORPUS = [
   { id: 'm24-api-done-issue-plain', argv: ['api', 'done-issue', '1181'], langs: ['en'],
     responses: { 'issues.get': [iss(1181)], 'issues.update': [{}], 'issues.listForRepo': [list(openItem(1182, { body: 'depends_on: #1181\n', labels: [SOMEDAY] }))], 'issues.removeLabel': [{}], 'issues.addLabels': [{}] },
     marker: { stdout: '"ok":true', log: 'issues.addLabels', exit: 0 } },
+
+  ...X_CASES,
 ];
 
 // ─── 意図した挙動変更の許容リスト（--allow-preset で呼び出す）──────────

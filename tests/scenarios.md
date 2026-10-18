@@ -2355,3 +2355,30 @@ node tests/tools/engine-diff-harness.js --old /tmp/engine-old.js --new todo-engi
 ```
 
 期待: 許容リストのケースは差分が出て、それ以外は全件一致し `RESULT: OK`。許容リストの内訳（どのケースがどの J に対応するか）はハーネス末尾の `ALLOW_PRESETS` のコメントにある。
+
+## 52. `process.exit` の例外化の前準備（Issue #2102 R5 PR-0）
+
+エンジンの `process.exit(1)` を例外に置き換える内部整理の前に、現状を固定する。エンジン本体は変えない。自動テスト（`tests/run-tests-write.sh` §W60）と差分ハーネスの `x` 系列で確認する。実 GitHub・実 HOME には触れない。
+
+### 52-1. `bulk done` の途中で壊れた `recur:` に当たったとき
+
+- `bulk done 1201 1202 1203`（#1202 の本文が `recur: weekly:INVALID`）: #1201 は閉じられ、#1202 で `weekly の曜日サフィックス ...` を stderr に1行出して終了コード 1。集計行（`N completed`）も `item_error` の行も出ない。#1203 は取得もされない。#1202 の次周期 Issue は作られない
+- `--actual 30m` つき: #1202 の actual の更新（`issues.update`）まで済んだ後で止まる。#1202 は閉じられない
+- 壊れた `recur:` が先頭: 何も書き込まずに終了コード 1
+
+### 52-2. `api done-issue` の recur エラー表示
+
+- 本文の `recur:` が壊れているとき、`GitHub API error:` や `Error:` の接頭辞なしで、言語設定に従うメッセージが1行だけ stderr に出て終了コード 1（言語設定がなければ日本語。`api` は英語固定のはずだが現状は日本語になりうる）。close も周期再作成も行わない。`run api done-issue` 経由でも同じ
+- 単体の `done` も同じメッセージ・終了コード 1
+
+### 52-3. `bulk move` / `tag` / `untag` / `priority` のループ
+
+- 1件目で API が失敗しても、`#N error: ...`（`item_error`）を出して2件目を処理し、終了コード 0。`process.exit` に届く経路がないため、ループは止まらない
+
+### 52-4. 差分ハーネスの到達測定
+
+```
+node tests/tools/engine-diff-harness.js --old todo-engine.js --new todo-engine.js --coverage-exits
+```
+
+旧エンジンの `process.exit(` の呼び出し箇所ごとに、行番号・関数名・到達（`harness`）/ 未到達を一覧にし、末尾に件数を出す。`NODE_V8_COVERAGE=<dir> bash tests/run-tests.sh` で集めたカバレッジを `--coverage-from <dir>` で足すと、テストスイートの到達（`extra`）も合わせて数える。一覧は情報表示で、`RESULT` には影響しない。
