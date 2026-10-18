@@ -21,6 +21,8 @@ claude-todo-gtd/
     ├── run-tests.sh         ← ローカル単体テスト（GitHubには接続しない）
     ├── run-tests-write.sh   ← 書き込み系ハンドラのスタブベーステスト
     ├── gh-tests.sh          ← GitHub 実接続テスト（実 Issue を作成・削除する）
+    ├── tools/
+    │   └── engine-diff-harness.js  ← エンジンの内部整理で変更前後の出力を突き合わせる差分ハーネス
     └── fixtures/
         └── sample-templates.json  ← テスト用テンプレートデータ
 ```
@@ -66,6 +68,7 @@ cp todo.sh ~/.claude/todo.sh
 - テストランナー: `bash tests/run-tests.sh`（+ 書き込み系は `bash tests/run-tests-write.sh` として個別実行も可能。通常は `run-tests.sh` から自動的に呼び出される）
 - 自動テスト総件数: `bash tests/run-tests.sh` の最終行（`結果: N / N テスト通過`）を参照する。件数はテスト追加のたびに変わるため、このファイルには書かない。全件PASSが目安
 - シナリオ一覧: `tests/scenarios.md`
+- 差分ハーネス: `node tests/tools/engine-diff-harness.js --old <変更前のエンジン> --new todo-engine.js`。`todo-engine.js` の内部整理（挙動を変えない抽出・移動）で、stdout / stderr / 終了コード / スタブの呼び出しログ / HOME 配下のファイルが変更前後で1バイトも変わらないことを、70 ケース超を日英で確かめる。変更前のエンジンは `git show <変更前のコミット>:todo-engine.js > /tmp/engine-old.js` で書き出す。各ケースは「狙った分岐を通ったときだけ現れる印（marker）」を持ち、変更前のエンジンで印が現れないケースは失敗にする（届いていない分岐の一致は何も保証しないため）。**書き込み系コマンドを実行するので、HOME は毎回一時ディレクトリに隔離し、スタブ（`OCTOKIT_STUB_ENV`）を必ず指定する**。ハーネスは起動時にこの2つが実際に効いていることを確かめ、確かめられなければ1件も実行しない。ケースの追加方法・`--coverage-lines`（行範囲が実行されたことの確認）・`--allow-diff`（意図した挙動変更のケースを許可する）はファイル冒頭に書いてある。「現在の挙動が何か」を固定するのは `tests/run-tests-write.sh` で、ハーネスは「前後で同じか」だけを見る
 - 全件 PASS が Pull Request マージの必須条件
 - 件数を更新する際は README.md の記載も合わせて更新する
 
