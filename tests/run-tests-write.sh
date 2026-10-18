@@ -6666,7 +6666,7 @@ rm -rf "$W59_HOME"
 # R5（process.exit を例外に置き換える）は、exit が例外になると try/catch に吸われる経路で挙動が変わりうる。
 # 吸われる経路は2つだけ（apiMain の try と bulk done のループの try。どちらも createRecurIssue → validateRecur 経由）。
 # 変更の前に現状を固定する（K1: bulk done の全体停止 / K6: api done-issue の recur エラーが日本語になりうる表示）。
-# R5 の PR-4（K1 を揃える）で、K1 のアサーション（W60-1〜W60-3）は期待値を書き換える前提。それ以外は変わらない。
+# R5 PR-4（K1 を揃える）で、K1 のアサーション（W60-1〜W60-4）は item_error で続行する期待値に書き換え済み。
 # 安全条件: HOME を一時ディレクトリに隔離し、OCTOKIT_STUB_ENV でスタブを指定する。
 echo ""
 echo "§W60  R5 PR-0 固定テスト（Issue #2102 R5）"
@@ -6700,36 +6700,45 @@ w60_issue() { # <num> <body-with-\n-escapes>
 }
 w60_lines() { printf '%s\n' "$1" | wc -l | tr -d ' '; }
 
-# W60-1 K1（現状）: bulk done の途中で壊れた recur に当たると、全体が止まる（exit 1・集計行なし・item_error なし・後続は未処理）
-w60_run en "{\"issues.get\":[$(w60_issue 1201 ''),$(w60_issue 1202 'due: 2026-10-10\nrecur: weekly:INVALID\n')],\"issues.update\":[{}],\"issues.listForRepo\":[{\"data\":[]}]}" -- run bulk done 1201 1202 1203
-assert_eq "W60-1 K1: bulk done 途中の壊れた recur → exit 1（item_error で続行しない）" "1" "$W60_EC"
-assert_eq "W60-1 K1: stderr は validateRecur のメッセージ1行だけ" "$W60_MSG_EN" "$W60_ERR"
-assert_not_contains "W60-1 K1: 集計行（bulk.done_count）が出ない" "completed" "$W60_OUT"
-assert_not_contains "W60-1 K1: item_error の行が出ない" "error:" "$W60_OUT"
-assert_eq "W60-1 K1: 壊れた Issue より前の #1201 は閉じられている（issues.update は close の1回）" "1" "$(log_count "$W60_LOG" issues.update)"
+# W60-1 K1（R5 PR-4 で変更）: bulk done の途中で壊れた recur に当たっても全体を止めず、item_error にして次の Issue へ進む（exit 0・集計行に err_suffix）
+w60_run en "{\"issues.get\":[$(w60_issue 1201 ''),$(w60_issue 1202 'due: 2026-10-10\nrecur: weekly:INVALID\n'),$(w60_issue 1203 '')],\"issues.update\":[{},{}],\"issues.listForRepo\":[{\"data\":[]},{\"data\":[]}]}" -- run bulk done 1201 1202 1203
+assert_eq "W60-1 K1: bulk done 途中の壊れた recur → exit 0（item_error で続行する）" "0" "$W60_EC"
+assert_eq "W60-1 K1: stderr は validateRecur のメッセージ1行（exitWith が書く。stdout の item_error と二重になる）" "$W60_MSG_EN" "$W60_ERR"
+assert_contains "W60-1 K1: 集計行は 2 completed" "✅ 2 completed (errors: 1)" "$W60_OUT"
+assert_contains "W60-1 K1: 集計行に失敗件数の suffix" "(errors: 1)" "$W60_OUT"
+assert_contains "W60-1 K1: item_error の行が #1202 の分だけ出る（同じ文言）" "#1202 error: $W60_MSG_EN" "$W60_OUT"
+assert_eq "W60-1 K1: item_error の行は1つだけ" "1" "$(printf '%s\n' "$W60_OUT" | grep -c 'weekly day suffix')"
+assert_eq "W60-1 K1: issues.update は #1201 と #1203 の close の2回" "2" "$(log_count "$W60_LOG" issues.update)"
 assert_contains "W60-1 K1: #1201 は state closed で更新" '"issue_number":1201,"state":"closed"' "$(log_lines_for_method "$W60_LOG" issues.update)"
-assert_eq "W60-1 K1: 取得は #1201 と #1202 の2回だけ（#1203 は処理されない）" "2" "$(log_count "$W60_LOG" issues.get)"
-assert_not_contains "W60-1 K1: #1203 の取得なし" '"issue_number":1203' "$(log_lines_for_method "$W60_LOG" issues.get)"
-assert_eq "W60-1 K1: 壊れた #1202 では次周期 Issue を作らない" "0" "$(log_count "$W60_LOG" issues.create)"
+assert_contains "W60-1 K1: #1203 も state closed で更新（続行された）" '"issue_number":1203,"state":"closed"' "$(log_lines_for_method "$W60_LOG" issues.update)"
+assert_not_contains "W60-1 K1: 壊れた #1202 は閉じられない" '"issue_number":1202' "$(log_lines_for_method "$W60_LOG" issues.update)"
+assert_eq "W60-1 K1: 取得は3回（#1203 も処理される）" "3" "$(log_count "$W60_LOG" issues.get)"
+assert_eq "W60-1 K1: 壊れた #1202 では次周期 Issue を作らない（issues.create なし）" "0" "$(log_count "$W60_LOG" issues.create)"
 
-# W60-2 K1（現状・日本語）: 同じ入力で、言語を変えても exit 1・メッセージ1行
-w60_run ja "{\"issues.get\":[$(w60_issue 1201 ''),$(w60_issue 1202 'due: 2026-10-10\nrecur: weekly:INVALID\n')],\"issues.update\":[{}],\"issues.listForRepo\":[{\"data\":[]}]}" -- run bulk done 1201 1202 1203
-assert_eq "W60-2 K1(ja): exit 1" "1" "$W60_EC"
-assert_eq "W60-2 K1(ja): stderr は validateRecur のメッセージ1行だけ" "$W60_MSG_JA" "$W60_ERR"
-assert_not_contains "W60-2 K1(ja): 集計行（件完了）が出ない" "件完了" "$W60_OUT"
+# W60-2 K1（日本語）: 同じ入力で、言語を変えても exit 0・メッセージ1行（stderr）と item_error（stdout）
+w60_run ja "{\"issues.get\":[$(w60_issue 1201 ''),$(w60_issue 1202 'due: 2026-10-10\nrecur: weekly:INVALID\n'),$(w60_issue 1203 '')],\"issues.update\":[{},{}],\"issues.listForRepo\":[{\"data\":[]},{\"data\":[]}]}" -- run bulk done 1201 1202 1203
+assert_eq "W60-2 K1(ja): exit 0" "0" "$W60_EC"
+assert_eq "W60-2 K1(ja): stderr は validateRecur のメッセージ1行" "$W60_MSG_JA" "$W60_ERR"
+assert_contains "W60-2 K1(ja): 集計行（2件完了）が出る" "2件完了（エラー: 1件）" "$W60_OUT"
+assert_contains "W60-2 K1(ja): item_error の行が出る" "#1202 エラー: $W60_MSG_JA" "$W60_OUT"
 
-# W60-3 K1（現状・--actual つき）: 壊れた #1212 は actual の更新（issues.update）まで済んだ後で止まる
-w60_run en "{\"issues.get\":[$(w60_issue 1211 ''),$(w60_issue 1212 'due: 2026-10-10\nrecur: weekly:INVALID\n')],\"issues.update\":[{},{},{}],\"issues.listForRepo\":[{\"data\":[]}]}" -- run bulk done 1211 1212 1213 --actual 30m
-assert_eq "W60-3 K1: --actual つきでも exit 1" "1" "$W60_EC"
+# W60-3 K1（--actual つき）: 壊れた #1212 は actual の更新（issues.update）まで済んだ後で item_error になり、閉じられず、#1213 へ進む
+w60_run en "{\"issues.get\":[$(w60_issue 1211 ''),$(w60_issue 1212 'due: 2026-10-10\nrecur: weekly:INVALID\n'),$(w60_issue 1213 '')],\"issues.update\":[{},{},{},{},{}],\"issues.listForRepo\":[{\"data\":[]},{\"data\":[]}]}" -- run bulk done 1211 1212 1213 --actual 30m
+assert_eq "W60-3 K1: --actual つきでも exit 0" "0" "$W60_EC"
 assert_eq "W60-3 K1: stderr は1行" "$W60_MSG_EN" "$W60_ERR"
-assert_eq "W60-3 K1: issues.update は3回（#1211 の actual / #1211 の close / #1212 の actual）" "3" "$(log_count "$W60_LOG" issues.update)"
+assert_eq "W60-3 K1: issues.update は5回（#1211 の actual と close / #1212 の actual / #1213 の actual と close）" "5" "$(log_count "$W60_LOG" issues.update)"
 assert_contains "W60-3 K1: #1212 の actual 更新は済んでいる" '"issue_number":1212,"body":"due: 2026-10-10\nrecur: weekly:INVALID\nactual: 30' "$(log_lines_for_method "$W60_LOG" issues.update)"
 assert_not_contains "W60-3 K1: #1212 は閉じられていない" '"issue_number":1212,"state":"closed"' "$(log_lines_for_method "$W60_LOG" issues.update)"
+assert_contains "W60-3 K1: #1213 は state closed で更新（続行された）" '"issue_number":1213,"state":"closed"' "$(log_lines_for_method "$W60_LOG" issues.update)"
+assert_eq "W60-3 K1: issues.create なし" "0" "$(log_count "$W60_LOG" issues.create)"
+assert_contains "W60-3 K1: 集計行" "2 completed (errors: 1)" "$W60_OUT"
 
-# W60-4 壊れた recur が先頭: 何も閉じずに exit 1
-w60_run en "{\"issues.get\":[$(w60_issue 1221 'due: 2026-10-10\nrecur: daily:x\n')]}" -- run bulk done 1221 1222
-assert_eq "W60-4 先頭の壊れた recur: exit 1" "1" "$W60_EC"
-assert_eq "W60-4 先頭の壊れた recur: 書き込みなし" "0" "$(log_count "$W60_LOG" issues.update)"
+# W60-4 壊れた recur が先頭: 何も閉じずに item_error、後続は処理され exit 0
+w60_run en "{\"issues.get\":[$(w60_issue 1221 'due: 2026-10-10\nrecur: daily:x\n'),$(w60_issue 1222 '')],\"issues.update\":[{}],\"issues.listForRepo\":[{\"data\":[]},{\"data\":[]}]}" -- run bulk done 1221 1222
+assert_eq "W60-4 先頭の壊れた recur: exit 0" "0" "$W60_EC"
+assert_eq "W60-4 先頭の壊れた recur: 書き込みは後続 #1222 の close の1回だけ" "1" "$(log_count "$W60_LOG" issues.update)"
+assert_contains "W60-4 先頭の壊れた recur: #1222 は処理される" '"issue_number":1222,"state":"closed"' "$(log_lines_for_method "$W60_LOG" issues.update)"
+assert_contains "W60-4 先頭の壊れた recur: 集計行" "1 completed" "$W60_OUT"
 
 # W60-5 K6（現状）: api done-issue で recur が壊れているとき、stderr に t() のメッセージが出る。言語は LANG_ENV に従い（api は英語固定のはずだが現状は日本語になりうる）、
 #       'GitHub API error:' や 'Error:' の接頭辞は付かず、1行だけ（apiMain の catch は _msgWritten を見て何も足さない）

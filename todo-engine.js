@@ -5980,8 +5980,8 @@ async function runBulk(octokit, owner, repo, tokens) {
 
         doneCount++;
       } catch(e) {
-        // exitWith() が投げた例外（validateRecur の失敗など）は item_error にせず、従来どおり全体を止める
-        if (isCliExit(e)) throw e;
+        // exitWith() が投げた例外（validateRecur の失敗など）も他のエラーと同じく item_error にして次の Issue へ進む
+        // （R5 K1。validateRecur は次周期 Issue の作成と close の前に失敗するので、その Issue は何も壊れず open のまま残る）
         runOut(tpl('bulk.item_error', { num, msg: e.message })); errCount++;
       }
     }
