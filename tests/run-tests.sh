@@ -5251,6 +5251,26 @@ check('57-d5', '優先度の色 PRI_COLORS は据え置き', E.PRI_COLORS.p1 ===
     await E.fetchParentProject(mk(['🎯 next']), 'o', 'r', 7); await E.fetchParentProject({ issues: { get: async () => { calls++; throw boom; } } }, 'o', 'r', 7);
     process.stderr.write = ow;
     check('57-e4', 'fetchParentProject: stderr に何も出さない', out.length === 0 && calls === 1, out.join('')); }
+  // (a) completeIssue: 作成 → close → 後処理の順。close 失敗時のエラーはコールバックで作る
+  { const log = [];
+    const mkO = (updErr) => ({ issues: {
+      create: async (a) => { log.push('create'); return { data: { number: 9001, id: 9101 } }; },
+      update: async (a) => { log.push('update ' + a.state); if (updErr) throw updErr; return {}; },
+      listForRepo: async () => { log.push('listForRepo'); return { data: [] }; },
+    } });
+    const recurIssue = { number: 5, id: 9005, title: 'T', body: 'due: 2026-10-10\nrecur: weekly\n', labels: ['🔁 routine', 'p2'], state: 'open', due: '2026-10-10', recur: 'weekly' };
+    const r1 = await E.completeIssue(mkO(null), 'o', 'r', 5, recurIssue, () => { throw new Error('unused'); });
+    check('57-a1', 'completeIssue: 作成 → close → 後処理の順で、recurLine / newIssueNumber / otherLines を返す', log.join(' | ') === 'create | update closed | listForRepo' && r1.newIssueNumber === 9001 && !!r1.recurLine && Array.isArray(r1.otherLines), log.join(' | ') + ' / ' + JSON.stringify(r1));
+    log.length = 0;
+    const r2 = await E.completeIssue(mkO(null), 'o', 'r', 6, { number: 6, id: 9006, title: 'T', body: '', labels: ['🎯 next'], state: 'open' }, () => { throw new Error('unused'); });
+    check('57-a2', 'completeIssue: recur なしなら作成せず close と後処理だけ', log.join(' | ') === 'update closed | listForRepo' && r2.newIssueNumber === null && !r2.recurLine, log.join(' | ') + ' / ' + JSON.stringify(r2));
+    log.length = 0;
+    const boom = new Error('boom'); let args = null; let thrown = null;
+    try { await E.completeIssue(mkO(boom), 'o', 'r', 5, recurIssue, (n, nn, e) => { args = [n, nn, e]; return new Error('wrapped'); }); } catch (e) { thrown = e; }
+    check('57-a3', 'completeIssue: 作成済みで close 失敗 → コールバックの返したエラーを投げ、後処理はしない', thrown && thrown.message === 'wrapped' && args[0] === 5 && args[1] === 9001 && args[2] === boom && log.join(' | ') === 'create | update closed', log.join(' | ') + ' / ' + (thrown && thrown.message));
+    log.length = 0; thrown = null; args = null;
+    try { await E.completeIssue(mkO(boom), 'o', 'r', 6, { number: 6, id: 9006, title: 'T', body: '', labels: ['🎯 next'], state: 'open' }, (n, nn, e) => { args = 'called'; return new Error('wrapped'); }); } catch (e) { thrown = e; }
+    check('57-a4', 'completeIssue: 作成なしで close 失敗 → 元の例外をそのまま投げる（コールバックは呼ばない）', thrown === boom && args === null, String(thrown && thrown.message)); }
   // 以降のブロックは追記される
   process.stdout.write(out.join('\n') + '\n');
 })().catch(e => { process.stdout.write('ng\t57-x 例外\t' + e.message + '\n'); });

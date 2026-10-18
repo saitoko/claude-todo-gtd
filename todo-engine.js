@@ -2973,16 +2973,9 @@ async function apiMain(subArgs) {
         if (!num) { throw apiErr('Usage: api done-issue <number>'); }
         const issue = await fetchAndParseIssue(octokit, owner, repo, num);
         // #1652: create-before-close — 次周期Issueの作成をcloseより先に行う（詳細はcreateRecurIssue定義部のコメント参照）
-        const { recurLine, newIssueNumber } = await createRecurIssue(octokit, owner, repo, issue);
-        try {
-          await octokit.issues.update({ owner, repo, issue_number: num, state: 'closed' });
-        } catch (e) {
-          if (newIssueNumber) {
-            throw apiErr('Error: Failed to close issue #'+num+' (a new recurring issue #'+newIssueNumber+' was already created): '+e.message+'. There may now be two open issues for the same task (original #'+num+' and new #'+newIssueNumber+'). Please check manually.');
-          }
-          throw e;
-        }
-        const { otherLines } = await postDoneProcessing(octokit, owner, repo, num, issue);
+        // api の文言は外部インターフェース（英語固定）なので MESSAGES へは寄せず、ここで直書きのまま渡す
+        const { recurLine, newIssueNumber, otherLines } = await completeIssue(octokit, owner, repo, num, issue,
+          (n, newNum, e) => apiErr('Error: Failed to close issue #'+n+' (a new recurring issue #'+newNum+' was already created): '+e.message+'. There may now be two open issues for the same task (original #'+n+' and new #'+newNum+'). Please check manually.'));
         process.stdout.write(JSON.stringify({
           ok: true,
           recurLine: recurLine || null,
@@ -4668,6 +4661,26 @@ async function postDoneProcessing(octokit, owner, repo, num, issue) {
   return { otherLines };
 }
 
+// 完了フローの中核: 次周期 Issue の作成 → close → 後処理（#1652 create-before-close）。
+// close が失敗し、かつ次周期 Issue を作成済みなら throw makeCloseErrorAfterRecur(num, newIssueNumber, e)
+// （作成していなければ元の例外をそのまま投げる）。エラーの作り方は呼び出し側ごとに違う
+// （run: apiErr / bulk: new Error / api: 英語直書きの apiErr）ので、コールバックで受ける。
+// apiErr は作った時点で stderr に書くため、コールバックは catch の中で呼ぶ。
+// actual の検証・更新（前段）と出力（後段）は呼び出し側に残す
+async function completeIssue(octokit, owner, repo, num, issue, makeCloseErrorAfterRecur) {
+  const { recurLine, newIssueNumber } = await createRecurIssue(octokit, owner, repo, issue);
+  try {
+    await octokit.issues.update({ owner, repo, issue_number: num, state: 'closed' });
+  } catch (e) {
+    if (newIssueNumber) {
+      throw makeCloseErrorAfterRecur(num, newIssueNumber, e);
+    }
+    throw e;
+  }
+  const { otherLines } = await postDoneProcessing(octokit, owner, repo, num, issue);
+  return { recurLine, newIssueNumber, otherLines };
+}
+
 async function runDone(octokit, owner, repo, tokens) {
   const num = parseInt(tokens[0]);
   if (!num) { process.stderr.write(t('error.positive_int')+'\n'); process.exit(1); }
@@ -4693,17 +4706,9 @@ async function runDone(octokit, owner, repo, tokens) {
   }
 
   // #1652: create-before-close — 次周期Issueの作成をcloseより先に行う（詳細はcreateRecurIssue定義部のコメント参照）
-  const { recurLine, newIssueNumber } = await createRecurIssue(octokit, owner, repo, issue);
-  try {
-    await octokit.issues.update({ owner, repo, issue_number: num, state: 'closed' });
-  } catch (e) {
-    if (newIssueNumber) {
-      throw apiErr(tpl('error.close_failed_after_recur', { num, newNum: newIssueNumber, msg: e.message }));
-    }
-    throw e;
-  }
-
-  const { otherLines } = await postDoneProcessing(octokit, owner, repo, num, issue);
+  // close 失敗時のエラーは apiErr（作った時点で stderr に書く。catch の中で呼ばれる）
+  const { recurLine, otherLines } = await completeIssue(octokit, owner, repo, num, issue,
+    (n, newNum, e) => apiErr(tpl('error.close_failed_after_recur', { num: n, newNum, msg: e.message })));
   if (recurLine) {
     runOut(tpl('done.completed', { num }) + recurLine);
   } else {
@@ -5958,18 +5963,10 @@ async function runBulk(octokit, owner, repo, tokens) {
         }
 
         // #1652: create-before-close — 次周期Issueの作成をcloseより先に行う（詳細はcreateRecurIssue定義部のコメント参照）
-        const { recurLine, newIssueNumber } = await createRecurIssue(octokit, owner, repo, issue);
-        try {
-          await octokit.issues.update({ owner, repo, issue_number: num, state: 'closed' });
-        } catch (e) {
-          if (newIssueNumber) {
-            throw new Error(tpl('error.close_failed_after_recur', { num, newNum: newIssueNumber, msg: e.message }));
-          }
-          throw e;
-        }
-
-        // #1642: depends_on昇格を runDone と共通の後処理で実施
-        const { otherLines } = await postDoneProcessing(octokit, owner, repo, num, issue);
+        // close 失敗時のエラーは new Error（stderr に書かず、下の catch が bulk.item_error として stdout に出す）
+        // #1642: depends_on昇格を runDone と共通の後処理（completeIssue 内の postDoneProcessing）で実施
+        const { recurLine, otherLines } = await completeIssue(octokit, owner, repo, num, issue,
+          (n, newNum, e) => new Error(tpl('error.close_failed_after_recur', { num: n, newNum, msg: e.message })));
         if (recurLine) {
           recurCreated++;
           runOut(`  #${num}: ${recurLine}`);
@@ -6629,7 +6626,7 @@ module.exports = {
   runReviewSomeday, runPromote, runPromoteProject, runUnlink, runWeeklyProjectAudit,
   runMigrateSubIssue, reservedTitleGuardWord, reservedMultiwordFirstWord, runMain,
   envOpen, envClosed, envListFilters, envTemplateFields, envViewFilters,
-  fetchParentProject, swapGtdLabel, replacePriorityLabel, getReviewedAt, getRecurValue, getBodyProjectNum,
+  completeIssue, fetchParentProject, swapGtdLabel, replacePriorityLabel, getReviewedAt, getRecurValue, getBodyProjectNum,
   readBodyFileOrExit, ensureCtxLabel, ensureTagLabel,
   CTX_LABEL_COLOR, TAG_LABEL_COLOR, EXTRA_LABEL_COLOR, PROJECT_LABEL_COLOR,
 };
