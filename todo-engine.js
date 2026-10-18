@@ -3962,6 +3962,21 @@ async function fetchAndParseIssue(octokit, owner, repo, num) {
   };
 }
 
+// 親 project の取得と判定だけを行う。メッセージの出力・exit / return / skip / 続行といった
+// 失敗時の扱いは呼び出し側（add / template use / link / migrate sub-issue）で決める。
+// 戻り値: { status: 'ok', issue } / { status: 'not_project', issue } / { status: 'fetch_failed', error }
+// try/catch の範囲は取得だけ（ラベルの判定中に起きた例外は握りつぶさず呼び出し側へ伝える）
+async function fetchParentProject(octokit, owner, repo, num) {
+  let issue;
+  try {
+    issue = await fetchAndParseIssue(octokit, owner, repo, num);
+  } catch (error) {
+    return { status: 'fetch_failed', error };
+  }
+  if (!issue.labels.some(l => normLabel(l) === PROJECT_LABEL)) return { status: 'not_project', issue };
+  return { status: 'ok', issue };
+}
+
 // ─── sub-issue ヘルパ（Phase 1 互換レイヤ） ───
 
 // 親 Issue に子を sub-issue として登録
@@ -4184,14 +4199,11 @@ async function runAdd(octokit, owner, repo, tokens) {
   let parentVerified = false;
   if (parsed.project) {
     const parentNum = parseInt(parsed.project);
-    let parentIssue = null;
-    try {
-      parentIssue = await fetchAndParseIssue(octokit, owner, repo, parentNum);
-    } catch (e) {
-      process.stderr.write(tpl('warn.project_fetch_failed', { num: parentNum, msg: e.message })+'\n');
-    }
-    if (parentIssue) {
-      if (!parentIssue.labels.some(l => normLabel(l) === PROJECT_LABEL)) {
+    const parent = await fetchParentProject(octokit, owner, repo, parentNum);
+    if (parent.status === 'fetch_failed') {
+      process.stderr.write(tpl('warn.project_fetch_failed', { num: parentNum, msg: parent.error.message })+'\n');
+    } else {
+      if (parent.status === 'not_project') {
         process.stderr.write(tpl('error.not_a_project', { num: parentNum })+'\n');
         process.exit(1);
       }
@@ -5134,15 +5146,12 @@ async function runLink(octokit, owner, repo, tokens) {
   const issue = await fetchAndParseIssue(octokit, owner, repo, num);
 
   // 親プロジェクトの存在・ラベル確認
-  let parentIssue;
-  try {
-    parentIssue = await fetchAndParseIssue(octokit, owner, repo, proj);
-  } catch (e) {
-    process.stderr.write(tpl('error.project_fetch_failed', { num: proj, msg: e.message })+'\n');
+  const parent = await fetchParentProject(octokit, owner, repo, proj);
+  if (parent.status === 'fetch_failed') {
+    process.stderr.write(tpl('error.project_fetch_failed', { num: proj, msg: parent.error.message })+'\n');
     process.exit(1);
   }
-  const isProject = parentIssue.labels.some(l => normLabel(l) === PROJECT_LABEL);
-  if (!isProject) {
+  if (parent.status === 'not_project') {
     process.stderr.write(tpl('error.not_a_project', { num: proj })+'\n');
     process.exit(1);
   }
@@ -5619,15 +5628,12 @@ async function runTemplate(octokit, owner, repo, tokens) {
     // sub-issue 登録（テンプレートに project が含まれる場合）
     if (proj) {
       const parentNum = parseInt(proj);
-      let parentIssue;
-      try {
-        parentIssue = await fetchAndParseIssue(octokit, owner, repo, parentNum);
-      } catch (e) {
-        process.stderr.write(tpl('warn.project_fetch_failed', { num: parentNum, msg: e.message })+'\n');
+      const parent = await fetchParentProject(octokit, owner, repo, parentNum);
+      if (parent.status === 'fetch_failed') {
+        process.stderr.write(tpl('warn.project_fetch_failed', { num: parentNum, msg: parent.error.message })+'\n');
         return;
       }
-      const isProject = parentIssue.labels.some(l => normLabel(l) === PROJECT_LABEL);
-      if (!isProject) {
+      if (parent.status === 'not_project') {
         process.stderr.write(tpl('warn.not_a_project', { num: parentNum })+'\n');
         return;
       }
@@ -6398,16 +6404,13 @@ async function runMigrateSubIssue(octokit, owner, repo, tokens) {
 
   for (const { issue, parentNum } of targets) {
     // 親が 📁 project ラベルを持つか確認
-    let parentIssue;
-    try {
-      parentIssue = await fetchAndParseIssue(octokit, owner, repo, parentNum);
-    } catch (e) {
-      process.stderr.write(tpl('warn.parent_fetch_failed', { num: parentNum, msg: e.message })+'\n');
+    const parent = await fetchParentProject(octokit, owner, repo, parentNum);
+    if (parent.status === 'fetch_failed') {
+      process.stderr.write(tpl('warn.parent_fetch_failed', { num: parentNum, msg: parent.error.message })+'\n');
       errors++;
       continue;
     }
-    const isProject = parentIssue.labels.some(l => normLabel(l) === PROJECT_LABEL);
-    if (!isProject) {
+    if (parent.status === 'not_project') {
       process.stderr.write(tpl('warn.parent_no_project_label', { parent: parentNum, num: issue.number })+'\n');
       skipped++;
       continue;
@@ -6626,7 +6629,7 @@ module.exports = {
   runReviewSomeday, runPromote, runPromoteProject, runUnlink, runWeeklyProjectAudit,
   runMigrateSubIssue, reservedTitleGuardWord, reservedMultiwordFirstWord, runMain,
   envOpen, envClosed, envListFilters, envTemplateFields, envViewFilters,
-  swapGtdLabel, replacePriorityLabel, getReviewedAt, getRecurValue, getBodyProjectNum,
+  fetchParentProject, swapGtdLabel, replacePriorityLabel, getReviewedAt, getRecurValue, getBodyProjectNum,
   readBodyFileOrExit, ensureCtxLabel, ensureTagLabel,
   CTX_LABEL_COLOR, TAG_LABEL_COLOR, EXTRA_LABEL_COLOR, PROJECT_LABEL_COLOR,
 };

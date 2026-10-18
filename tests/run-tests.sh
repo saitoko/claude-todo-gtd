@@ -5236,6 +5236,21 @@ check('57-d5', '優先度の色 PRI_COLORS は据え置き', E.PRI_COLORS.p1 ===
   { const r = rec(); r.octokit.issues.createLabel = async () => { const e = new Error('boom'); e.status = 500; throw e; };
     let thrown = null; try { await E.swapGtdLabel(r.octokit, 'o', 'r', 1, ['📥 inbox'], '📁 project', { ensureBeforeAdd: { color: '0052CC', description: 'd' } }); } catch (e) { thrown = e; }
     check('57-b6', 'swapGtdLabel: ensureLabel の失敗は伝播し、付与しない（削除は済んでいる＝現行どおり）', thrown && thrown.message === 'boom' && r.log.join(' | ') === 'removeLabel 📥 inbox | GET label 📁 project', r.log.join(' | ')); }
+  // (e) fetchParentProject: 取得と判定だけ。メッセージも exit もしない
+  { const mk = (labels) => ({ issues: { get: async () => ({ data: { number: 7, id: 9007, title: 'P', body: '', labels: labels.map(name => ({ name })), state: 'open' } }) } });
+    const ok1 = await E.fetchParentProject(mk(['📁 project']), 'o', 'r', 7);
+    const ok2 = await E.fetchParentProject(mk(['project']), 'o', 'r', 7);
+    const np = await E.fetchParentProject(mk(['🎯 next']), 'o', 'r', 7);
+    check('57-e1', 'fetchParentProject: 絵文字付き・なしの project ラベルは ok（issue を返す）', ok1.status === 'ok' && ok1.issue.number === 7 && ok2.status === 'ok', JSON.stringify([ok1.status, ok2.status]));
+    check('57-e2', 'fetchParentProject: project ラベルがなければ not_project（issue を返す）', np.status === 'not_project' && np.issue.number === 7, np.status);
+    const boom = new Error('Not Found'); boom.status = 404;
+    const ff = await E.fetchParentProject({ issues: { get: async () => { throw boom; } } }, 'o', 'r', 7);
+    check('57-e3', 'fetchParentProject: 取得失敗は fetch_failed（元の例外を返し、投げない）', ff.status === 'fetch_failed' && ff.error === boom, ff.status);
+    let calls = 0;
+    const out = []; const ow = process.stderr.write; process.stderr.write = (x) => { out.push(String(x)); return true; };
+    await E.fetchParentProject(mk(['🎯 next']), 'o', 'r', 7); await E.fetchParentProject({ issues: { get: async () => { calls++; throw boom; } } }, 'o', 'r', 7);
+    process.stderr.write = ow;
+    check('57-e4', 'fetchParentProject: stderr に何も出さない', out.length === 0 && calls === 1, out.join('')); }
   // 以降のブロックは追記される
   process.stdout.write(out.join('\n') + '\n');
 })().catch(e => { process.stdout.write('ng\t57-x 例外\t' + e.message + '\n'); });
