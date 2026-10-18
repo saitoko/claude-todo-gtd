@@ -5188,6 +5188,17 @@ check('57-d5', '優先度の色 PRI_COLORS は据え置き', E.PRI_COLORS.p1 ===
   const cl = calls.filter(c => c[0] === 'createLabel');
   check('57-d6', 'ensureCtxLabel は ctx の色・説明で作成し true を返す', c1 === true && cl[0] && cl[0][1] === '@x' && cl[0][2] === 'FBCA04' && cl[0][3] === E.t('label.desc_context'), JSON.stringify(calls));
   check('57-d7', 'ensureTagLabel は tag の色・説明で作成し true を返す', c2 === true && cl[1] && cl[1][1] === '#y' && cl[1][2] === '0075CA' && cl[1][3] === E.t('label.desc_tag'), JSON.stringify(calls));
+  // (k) body アクセサ: 既存の正規表現と同じ結果（最初の行を採る・形式が崩れた値は拾わない・\r を含めない）
+  const b = (body) => ({ body });
+  check('57-k1', 'getReviewedAt: 日付を返す / なければ空文字', E.getReviewedAt(b('reviewed_at: 2026-09-01\n')) === '2026-09-01' && E.getReviewedAt(b('')) === '' && E.getReviewedAt({}) === '', '');
+  check('57-k2', 'getReviewedAt: 形式が崩れた値は拾わない', E.getReviewedAt(b('reviewed_at: 9/1\n')) === '', E.getReviewedAt(b('reviewed_at: 9/1\n')));
+  check('57-k3', 'getReviewedAt: CRLF でも日付だけ / 重複キーは最初の行', E.getReviewedAt(b('reviewed_at: 2026-09-01\r\n')) === '2026-09-01' && E.getReviewedAt(b('reviewed_at: 2026-09-01\nreviewed_at: 2026-09-05\n')) === '2026-09-01', '');
+  check('57-k4', 'getRecurValue: 1トークンを返す（weekly:sat を切り詰めない）', E.getRecurValue(b('recur: weekly:sat\n')) === 'weekly:sat', String(E.getRecurValue(b('recur: weekly:sat\n'))));
+  check('57-k5', 'getRecurValue: CRLF でも \\r を含めない / なければ null', E.getRecurValue(b('due: 2026-10-01\r\nrecur: weekly\r\n')) === 'weekly' && E.getRecurValue(b('')) === null && E.getRecurValue({}) === null, '');
+  check('57-k6', 'getRecurValue: 行頭以外の recur: は拾わない', E.getRecurValue(b('x recur: weekly\n')) === null, '');
+  check('57-k7', 'getBodyProjectNum: 数字列を文字列で返す（#12 と #123 を区別する）', E.getBodyProjectNum('project: #12\n') === '12' && E.getBodyProjectNum('project: #123\n') === '123', '');
+  check('57-k8', 'getBodyProjectNum: # なし・行頭以外・空は null', E.getBodyProjectNum('project: 12\n') === null && E.getBodyProjectNum(' project: #12\n') === null && E.getBodyProjectNum('') === null && E.getBodyProjectNum(undefined) === null, '');
+  check('57-k9', 'getBodyProjectNum: 2行あれば最初の行 / 2行目以降の行頭も拾う', E.getBodyProjectNum('project: #12\nproject: #13\n') === '12' && E.getBodyProjectNum('x\nproject: #7\n') === '7', '');
   // 以降のブロックは追記される
   process.stdout.write(out.join('\n') + '\n');
 })().catch(e => { process.stdout.write('ng\t57-x 例外\t' + e.message + '\n'); });

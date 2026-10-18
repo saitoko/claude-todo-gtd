@@ -1567,6 +1567,12 @@ function normLabel(name) {
 }
 function getLnames(issue) { return issue.labels.map(l => normLabel(l.name)); }
 function getDue(issue) { const m = (issue.body||'').match(/^due: (\d{4}-\d{2}-\d{2})/m); return m ? m[1] : null; }
+// reviewed_at の日付（なければ ''）。getDue と同じく表示・集計用に形式の正しい値だけを拾う
+function getReviewedAt(issue) { return (issue.body||'').match(/^reviewed_at: (\d{4}-\d{2}-\d{2})/m)?.[1] || ''; }
+// recur の値（空白を含まない1トークン。なければ null）
+function getRecurValue(issue) { const m = (issue.body||'').match(/^recur: (\S+)/m); return m ? m[1] : null; }
+// body の project: #N 行の N（文字列。なければ null）
+function getBodyProjectNum(body) { const m = (body||'').match(/^project: #(\d+)/m); return m ? m[1] : null; }
 function getPri(lnames) { return lnames.find(l => /^p[123]$/.test(l)) || 'p9'; }
 function priIcon(p) { return p==='p1' ? '🔴 ' : p==='p2' ? '🟡 ' : ''; }
 function getCtx(lnames) { return lnames.filter(l => l.startsWith('@')); }
@@ -1589,9 +1595,6 @@ function sortByPriDue(a, b) {
 
 function sortByReviewedAtThenPri(a, b, today) {
   const STALE_DAYS = 30;
-  const getReviewedAt = (issue) => {
-    return (issue.body||'').match(/^reviewed_at: (\d{4}-\d{2}-\d{2})/m)?.[1] || '';
-  };
   const isStale = (issue) => {
     const r = getReviewedAt(issue);
     return !r || daysBetween(r, today) >= STALE_DAYS;
@@ -1610,8 +1613,8 @@ function renderIssueList(issue, today) {
   // \w+ はコロンにマッチしないため、weekly:sat のようなサフィックス付き値が
   // weekly に切り詰められて表示されるバグがあった（Issue #1676 対応時に発見・修正）。
   // recur の値は行末までの1トークン（空白を含まない）なので \S+ で全体を拾う。
-  const recur = (issue.body||'').match(/^recur: (\S+)/m);
-  const proj = (issue.body||'').match(/^project: #(\d+)/m);
+  const recur = getRecurValue(issue);
+  const proj = getBodyProjectNum(issue.body);
   const est = estimateMinutesFromBody(issue.body||'');
   let line = '  '+priIcon(getPri(lnames))+'#'+issue.number+'  '+issue.title;
   if (ctx.length) line += '  ['+ctx.join(' ')+']';
@@ -1620,11 +1623,11 @@ function renderIssueList(issue, today) {
   // #1854: parseTime() が解釈できない不正な estimate 値は "⏱0m" のように黙って握りつぶさず、
   // ⚠️ 付きで生値を表示して気づけるようにする（無視すると「静かな期待値乖離」になるため）。
   if (est.raw !== null) line += est.minutes !== null ? '  ⏱'+formatTime(est.minutes) : '  ⏱⚠️'+est.raw;
-  if (proj) line += '  [project:#'+proj[1]+']';
-  if (recur) line += '  🔄'+recur[1];
+  if (proj) line += '  [project:#'+proj+']';
+  if (recur) line += '  🔄'+recur;
   // someday かつ長期未見直しの場合にマーカーを付ける
   if (today && (lnames.includes('someday') || lnames.includes('🌈 someday'))) {
-    const reviewedAt = (issue.body||'').match(/^reviewed_at: (\d{4}-\d{2}-\d{2})/m)?.[1] || '';
+    const reviewedAt = getReviewedAt(issue);
     if (!reviewedAt || daysBetween(reviewedAt, today) >= 30) {
       line = '  ⚠️' + line.slice(2);
     }
@@ -1633,7 +1636,7 @@ function renderIssueList(issue, today) {
   // （renderToday の routineStale と同一の計算・閾値を再利用。Issue #1776）
   if (today && lnames.includes('routine') && due) {
     if (recur) {
-      const cycles = computeCyclesOverdue(recur[1], due, today);
+      const cycles = computeCyclesOverdue(recur, due, today);
       if (cycles >= STALE_CYCLE_THRESHOLD) {
         line = '  🕰' + line.slice(2);
       }
@@ -1912,10 +1915,10 @@ function listAll({ open: issues, today, filters = {} }) {
   const d7 = new Date(today); d7.setDate(d7.getDate()+7);
   const d7str = d7.toISOString().slice(0,10);
   for (const issue of issues) {
-    const dueMatch = (issue.body||'').match(/^due: (\d{4}-\d{2}-\d{2})/m);
-    if (dueMatch) {
-      if (dueMatch[1] < today) overdue++;
-      else if (dueMatch[1] <= d7str) thisWeek++;
+    const dueStr = getDue(issue);
+    if (dueStr) {
+      if (dueStr < today) overdue++;
+      else if (dueStr <= d7str) thisWeek++;
     }
   }
   w('---\n');
@@ -1937,10 +1940,10 @@ function listSummary({ open: issues, today }) {
     const lnames = getLnames(issue);
     for (const gl of GTD_LABELS) { if (lnames.includes(gl)) counts[gl]++; }
     if (lnames.includes(PROJECT_LABEL)) counts[PROJECT_LABEL]++;
-    const dueMatch = (issue.body||'').match(/^due: (\d{4}-\d{2}-\d{2})/m);
-    if (dueMatch) {
-      if (dueMatch[1] < today) overdue++;
-      else if (dueMatch[1] <= d7str) thisWeek++;
+    const dueStr = getDue(issue);
+    if (dueStr) {
+      if (dueStr < today) overdue++;
+      else if (dueStr <= d7str) thisWeek++;
     }
   }
   const parts = [...GTD_LABELS, PROJECT_LABEL].filter(l => counts[l] > 0).map(l => l+': '+cnt(counts[l]));
@@ -1963,9 +1966,8 @@ function weeklySummary({ open: issues, today }) {
     const lnames = getLnames(issue);
     for (const gl of GTD_LABELS) { if (lnames.includes(gl)) counts[gl]++; }
     if (lnames.includes(PROJECT_LABEL)) counts[PROJECT_LABEL]++;
-    const dueMatch = (issue.body||'').match(/^due: (\d{4}-\d{2}-\d{2})/m);
-    if (dueMatch) {
-      const due = dueMatch[1];
+    const due = getDue(issue);
+    if (due) {
       if (due < today) { overdue++; overdueList.push('    #'+issue.number+' '+issue.title+' ('+due+')'); }
       else if (due <= d7str) { thisWeek++; thisWeekList.push('    #'+issue.number+' '+issue.title+' ('+due+')'); }
     }
@@ -1996,10 +1998,10 @@ function stats({ open: issues, closed, today }) {
     if (lnames.includes(PROJECT_LABEL)) gtdCounts[PROJECT_LABEL]++;
     const pri = lnames.find(l => /^p[123]$/.test(l));
     if (pri) priCounts[pri]++; else priCounts.none++;
-    const dueMatch = (issue.body||'').match(/^due: (\d{4}-\d{2}-\d{2})/m);
-    if (dueMatch) {
-      if (dueMatch[1] < today) overdue++;
-      else if (dueMatch[1] <= d7str) thisWeek++;
+    const dueStr = getDue(issue);
+    if (dueStr) {
+      if (dueStr < today) overdue++;
+      else if (dueStr <= d7str) thisWeek++;
     }
   }
   // 完了実績
@@ -2125,9 +2127,9 @@ function renderToday({ open: issues, today: todayStr, closed }) {
     const due = getDue(issue);
     if (lnames.includes('routine')) {
       if (due && due < todayStr) {
-        const recurMatch = (issue.body||'').match(/^recur: (\S+)/m);
-        if (recurMatch) {
-          const cycles = computeCyclesOverdue(recurMatch[1], due, todayStr);
+        const recurValue = getRecurValue(issue);
+        if (recurValue) {
+          const cycles = computeCyclesOverdue(recurValue, due, todayStr);
           if (cycles >= STALE_CYCLE_THRESHOLD) routineStale.push({ issue, cycles });
           else routineOverdue.push(issue);
         } else {
@@ -2443,8 +2445,8 @@ function report({ open, closed, today, days: daysRaw }) {
     const lnames = getLnames(issue);
     for (const gl of GTD_LABELS) { if (lnames.includes(gl)) openByGtd[gl]++; }
     if (lnames.includes(PROJECT_LABEL)) openByGtd[PROJECT_LABEL]++;
-    const dueMatch = (issue.body||'').match(/^due: (\d{4}-\d{2}-\d{2})/m);
-    if (dueMatch && dueMatch[1] < today) overdueCount++;
+    const dueStr = getDue(issue);
+    if (dueStr && dueStr < today) overdueCount++;
   }
 
   const maxCount = Math.max(...Object.values(dailyCounts), 1);
@@ -6202,12 +6204,12 @@ async function runUnlink(octokit, owner, repo, tokens) {
   const issue = await fetchAndParseIssue(octokit, owner, repo, num);
 
   // body に project: #N がなければエラー
-  const projMatch = (issue.body||'').match(/^project: #(\d+)/m);
-  if (!projMatch) {
+  const bodyProjectNum = getBodyProjectNum(issue.body);
+  if (!bodyProjectNum) {
     process.stderr.write(tpl('error.no_project_link', { num })+'\n');
     process.exit(1);
   }
-  const parentNum = parseInt(projMatch[1]);
+  const parentNum = parseInt(bodyProjectNum);
 
   // body の親が実際に GitHub 上でも親であるかを事前確認する。
   // body の project: #N は「そうあるべき」という記述に過ぎず、実態と食い違うことがある
@@ -6373,9 +6375,9 @@ async function runMigrateSubIssue(octokit, owner, repo, tokens) {
   // body に "project: #N" を持つ Issue を抽出
   const targets = [];
   for (const issue of allIssues) {
-    const m = (issue.body || '').match(/^project: #(\d+)/m);
-    if (!m) continue;
-    const parentNum = parseInt(m[1]);
+    const bodyProjectNum = getBodyProjectNum(issue.body);
+    if (!bodyProjectNum) continue;
+    const parentNum = parseInt(bodyProjectNum);
     targets.push({ issue, parentNum });
   }
 
@@ -6625,6 +6627,7 @@ module.exports = {
   runReviewSomeday, runPromote, runPromoteProject, runUnlink, runWeeklyProjectAudit,
   runMigrateSubIssue, reservedTitleGuardWord, reservedMultiwordFirstWord, runMain,
   envOpen, envClosed, envListFilters, envTemplateFields, envViewFilters,
+  getReviewedAt, getRecurValue, getBodyProjectNum,
   readBodyFileOrExit, ensureCtxLabel, ensureTagLabel,
   CTX_LABEL_COLOR, TAG_LABEL_COLOR, EXTRA_LABEL_COLOR, PROJECT_LABEL_COLOR,
 };
