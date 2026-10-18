@@ -472,7 +472,7 @@ const K_MARKERS = {
 //          validate サブコマンドに tag がないため run tag 経由
 //          argv が 'run' / 'api' 以外で始まる異常系。これらは main() の同期 switch の中で exit する
 // x35-x38  ガード4種（guardUnknownFlag / guardBracketedGtdLabel / guardUnsupportedFlag / guardExtraPositional）
-// x40-x44  K1（bulk done で壊れた recur に当たる）と K6（api done-issue の recur エラーが日本語になる）の現状の固定
+// x40-x44  K1（bulk done で壊れた recur に当たる。PR-4 で item_error 続行に変更、marker は PR-3 までの旧挙動を固定、ALLOW_PRESETS['r5-k1']）と K6（api done-issue の recur エラーが日本語になる）の現状の固定
 // x50-     run 層（ハンドラの引数不足・検証エラー・取得後のエラー）
 // 英語固定の Usage 行は文字列で、t() 由来のメッセージは { ja, en } で書く。
 const M = {
@@ -1204,6 +1204,10 @@ const ALLOW_PRESETS = {
     'l01-bulk-done-mixed-number', 'l02-bulk-tag-mixed-number', 'l03-bulk-untag-mixed-number', 'l04-bulk-done-mixed-after-numbers',
     'l10-bulk-done-stray-word', 'l11-bulk-done-number-after-flag',
   ],
+  // r5-k1: R5 PR-4（K1）。旧 = PR-3 までの main、新 = PR-4 の版。
+  //   bulk done で壊れた recur に当たっても全体を止めず、item_error にして次の Issue へ進む（集計行に err_suffix・終了コード 0）。
+  //   x40 x41 x44 の3件だけが変わる（x42 x43 は api done-issue の K6 で、変わらないはず）。
+  'r5-k1': ['x40-bulk-done-broken-recur-stops-all', 'x41-bulk-done-broken-recur-with-actual', 'x44-bulk-done-broken-recur-first'],
 };
 
 if (require.main === module) process.exit(main());
