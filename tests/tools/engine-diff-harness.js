@@ -570,15 +570,15 @@ const X_CASES = [
   //     先に処理した #1 は閉じ済み（stdout に #1 の次周期 Issue の行が出る）、#3 は処理されず、集計行（bulk.done_count）は出ない。
   { id: 'x40-bulk-done-broken-recur-stops-all', argv: ['run', 'bulk', 'done', '1201', '1202', '1203'],
     responses: { 'issues.get': [iss(1201, { body: RECUR_BODY }), iss(1202, { body: 'due: 2026-10-10\nrecur: weekly:INVALID\n' })], 'issues.create': [{ data: { number: 9201 } }], 'issues.update': [{}], 'issues.listForRepo': [list()] },
-    marker: { stdout: '#9201', stderr: M.recurWd, logSeq: ['issues.get', 'issues.create', 'issues.update', 'issues.listForRepo', 'issues.get'], exit: 1 } },
+    marker: { stdout: '#1202', stderr: M.recurWd, logSeq: ['issues.get', 'issues.create', 'issues.update', 'issues.listForRepo', 'issues.get'], exit: 0 } },
   // K1 の --actual つき: 壊れた recur の #1202 は、actual の更新（issues.update）まで済んだ後で止まる
   { id: 'x41-bulk-done-broken-recur-with-actual', argv: ['run', 'bulk', 'done', '1211', '1212', '1213', '--actual', '30m'],
     responses: { 'issues.get': [iss(1211), iss(1212, { body: 'due: 2026-10-10\nrecur: weekly:INVALID\n' })], 'issues.update': [{}, {}, {}], 'issues.listForRepo': [list()] },
-    marker: { stderr: M.recurWd, logSeq: ['actual: 30', '"state":"closed"', 'issues.listForRepo', 'issues.get', 'actual: 30'], exit: 1 } },
+    marker: { stdout: '#1212', stderr: M.recurWd, logSeq: ['actual: 30', '"state":"closed"', 'issues.listForRepo', 'issues.get'], exit: 0 } },
   // 壊れた recur が先頭のとき: 何も閉じずに止まる
   { id: 'x44-bulk-done-broken-recur-first', argv: ['run', 'bulk', 'done', '1221', '1222'],
     responses: { 'issues.get': [iss(1221, { body: 'due: 2026-10-10\nrecur: daily:x\n' })] },
-    marker: { stderr: M.recurSuffix, exit: 1 } },
+    marker: { stdout: '#1221', stderr: M.recurSuffix, exit: 0 } },
   // K6: api done-issue で recur が壊れている。LANG_ENV なし（ja）では日本語、en では英語のメッセージが出る（api は英語固定のはずだが現状は t() 経由）
   { id: 'x42-api-done-issue-broken-recur', argv: ['api', 'done-issue', '1231'],
     responses: { 'issues.get': [iss(1231, { body: 'due: 2026-10-10\nrecur: weekly:INVALID\n' })] },
@@ -670,17 +670,18 @@ const X_CASES = [
   xe('xb1-reserved-multiword-title', ['run', 'list next'], M.multiword),
 
   // ── run 層: 書き込みの後・取得の後に落ちるケース（応答つき）──
-  // runAdd の --before / --activate の検証は、優先度ラベルの確認（書き込みの可能性がある API）の後にある（K9）
+  // runAdd の --before / --activate の検証は、#2135 までは優先度ラベルの確認（書き込みの可能性がある API）の後にあった（K9）。
+  // 以後は前に移った。marker は検証前後どちらの版でも成り立つ形（stderr + exit）にしてある
   { id: 'xc0-add-before-without-due', argv: ['run', 'add', 'next', 'tc0', '--before', '2d'],
-    responses: { [LBL]: [{}] }, marker: { stderr: M.beforeDue, log: LBL, exit: 1 } },
+    responses: { [LBL]: [{}] }, marker: { stderr: M.beforeDue, exit: 1 } },
   { id: 'xc1-add-before-invalid', argv: ['run', 'add', 'next', 'tc1', '--due', '2026-10-20', '--before', 'xyz'],
-    responses: { [LBL]: [{}] }, marker: { stderr: M.beforeFmt, log: LBL, exit: 1 } },
+    responses: { [LBL]: [{}] }, marker: { stderr: M.beforeFmt, exit: 1 } },
   // runAdd の「正規化に失敗」の分岐（--activate のとき）は到達できない: 分岐の条件が parsed.activate が真であることで、
   // normalizeDue は真の文字列に対して常に真の値を返す（解釈できなければ入力をそのまま返す）。ここは validateActivateFormat に届く
   { id: 'xc2-add-activate-unparsable', argv: ['run', 'add', 'next', 'tc2', '--activate', 'zzz'],
-    responses: { [LBL]: [{}] }, marker: { stderr: { ja: '不正な日付形式です: zzz', en: 'Invalid date format: zzz' }, log: LBL, exit: 1 } },
+    responses: { [LBL]: [{}] }, marker: { stderr: { ja: '不正な日付形式です: zzz', en: 'Invalid date format: zzz' }, exit: 1 } },
   { id: 'xc3-add-activate-impossible-date', argv: ['run', 'add', 'next', 'tc3', '--activate', '2026-02-30'],
-    responses: { [LBL]: [{}] }, marker: { stderr: { ja: '不正な日付形式です: 2026-02-30', en: 'Invalid date format: 2026-02-30' }, log: LBL, exit: 1 } },
+    responses: { [LBL]: [{}] }, marker: { stderr: { ja: '不正な日付形式です: 2026-02-30', en: 'Invalid date format: 2026-02-30' }, exit: 1 } },
   { id: 'xc4-edit-estimate-invalid', argv: ['run', 'edit', '1301', '--estimate', 'xyz'],
     responses: { 'issues.get': [iss(1301)] }, marker: { stderr: M.time, log: 'issues.get', exit: 1 } },
   { id: 'xc5-edit-before-without-due', argv: ['run', 'edit', '1302', '--before', '2d'],
@@ -718,6 +719,47 @@ const X_CASES = [
     marker: { stderr: M.unlinkFail, exit: 1 } },
 ];
 
+// ── Issue #2135: 検証を GitHub への書き込みより前に移す ──
+// 型: 「exit 1 で終わるのに、それより前に書き込み系 API（createLabel / update / addLabels / removeLabel 等）が呼ばれている」。
+// 応答は「ラベルが無い（404）→ 作成」を返す形にして、書き込みが実際に起きる条件を作る（xc0〜xc3 は「ラベルが既にある」応答なので、
+// 読み取りの GET だけが残り、書き込みの有無は見えなかった）。marker は stderr + exit のみ（修正の前後どちらの版でも成り立つ）。
+// 差分（ALLOW_PRESETS['i2135']）は stub-log だけ: 書き込み系の呼び出しが消える。
+const V_CASES = [
+  { id: 'v01-add-before-invalid-with-new-labels', argv: ['run', 'add', 'next', 'tv1', '@v1ctx', '#v1tag', '--label', 'v1x', '--due', '2026-10-20', '--before', 'xyz'],
+    responses: { [LBL]: [E404, E404, E404, E404], 'issues.createLabel': [{}, {}, {}, {}] }, marker: { stderr: M.beforeFmt, exit: 1 } },
+  { id: 'v02-add-before-without-due-with-new-labels', argv: ['run', 'add', 'next', 'tv2', '@v2ctx', '--before', '2d'],
+    responses: { [LBL]: [E404, E404], 'issues.createLabel': [{}, {}] }, marker: { stderr: M.beforeDue, exit: 1 } },
+  { id: 'v03-add-activate-unparsable-with-new-labels', argv: ['run', 'add', 'next', 'tv3', '#v3tag', '--activate', 'zzz'],
+    responses: { [LBL]: [E404, E404], 'issues.createLabel': [{}, {}] }, marker: { stderr: { ja: '不正な日付形式です: zzz', en: 'Invalid date format: zzz' }, exit: 1 } },
+  { id: 'v04-add-activate-impossible-date-with-new-labels', argv: ['run', 'add', 'next', 'tv4', '@v4ctx', '--activate', '2026-02-30'],
+    responses: { [LBL]: [E404, E404], 'issues.createLabel': [{}, {}] }, marker: { stderr: { ja: '不正な日付形式です: 2026-02-30', en: 'Invalid date format: 2026-02-30' }, exit: 1 } },
+  { id: 'v05-add-body-file-missing-with-new-labels', argv: ['run', 'add', 'next', 'tv5', '@v5ctx', '--body-file', '{HOME}/none.txt'],
+    responses: { [LBL]: [E404, E404], 'issues.createLabel': [{}, {}] },
+    marker: { stderr: { ja: '--body-file のパスが見つかりません: <HOME>/none.txt', en: '--body-file path not found: <HOME>/none.txt' }, exit: 1 } },
+  { id: 'v06-done-note-too-long-after-actual-and-close', argv: ['run', 'done', '1401', '--actual', '30m', '--note', 'x'.repeat(65537)],
+    responses: { 'issues.get': [iss(1401)], 'issues.update': [{}, {}], 'issues.listForRepo': [list()] }, marker: { stderr: M.commentLong, exit: 1 } },
+  { id: 'v07-done-note-empty-after-close', argv: ['run', 'done', '1402', '--note', '\u0001'],
+    responses: { 'issues.get': [iss(1402)], 'issues.update': [{}], 'issues.listForRepo': [list()] }, marker: { stderr: M.commentEmpty, exit: 1 } },
+  { id: 'v08-move-note-empty-after-label-swap', argv: ['run', 'move', '1403', 'next', '--note', '\u0001'],
+    responses: { 'issues.get': [iss(1403, { labels: [INBOX] })], 'issues.removeLabel': [{}], [LBL]: [{}], 'issues.addLabels': [{}] }, marker: { stderr: M.commentEmpty, exit: 1 } },
+  { id: 'v09-move-note-too-long-after-label-swap', argv: ['run', 'move', '1404', 'someday', '--note', 'x'.repeat(65537)],
+    responses: { 'issues.get': [iss(1404, { labels: [NEXT] })], 'issues.removeLabel': [{}], [LBL]: [{}], 'issues.addLabels': [{}] }, marker: { stderr: M.commentLong, exit: 1 } },
+  { id: 'v10-promote-project-outcome-invalid-after-label-swap', argv: ['run', 'promote-project', '1405', '--outcome', 'a\tb'],
+    responses: { 'issues.get': [iss(1405, { labels: [NEXT] })], [LBL]: [E404], 'issues.createLabel': [{}], 'issues.removeLabel': [{}], 'issues.addLabels': [{}] }, marker: { stderr: M.titleCtl, exit: 1 } },
+  { id: 'v11-tag-second-label-invalid-after-first-created', argv: ['run', 'tag', '1406', '@v11ok', '#123'],
+    responses: { [LBL]: [E404], 'issues.createLabel': [{}] }, marker: { stderr: M.tagNum, exit: 1 } },
+  { id: 'v12-bulk-tag-second-label-invalid-after-first-created', argv: ['run', 'bulk', 'tag', '1407', '1408', '@v12ok', '#123'],
+    responses: { [LBL]: [E404], 'issues.createLabel': [{}] }, marker: { stderr: M.tagNum, exit: 1 } },
+  { id: 'v13-done-broken-recur-after-actual-update', argv: ['run', 'done', '1409', '--actual', '30m'],
+    responses: { 'issues.get': [iss(1409, { body: 'due: 2026-10-10\nrecur: weekly:INVALID\n' })], 'issues.update': [{}] }, marker: { stderr: M.recurWd, exit: 1 } },
+  // 対照（変わらないはず）: 正しい入力では従来どおり書き込みが走る
+  { id: 'v20-add-before-valid-with-new-labels', argv: ['run', 'add', 'next', 'tv20', '@v20ctx', '--due', '2026-10-20', '--before', '2d'],
+    responses: { [LBL]: [E404, E404], 'issues.createLabel': [{}, {}], 'issues.create': [{ data: { number: 1410, id: 10410, html_url: 'x' } }] }, marker: { logSeq: ['issues.createLabel', 'issues.createLabel', 'issues.create'], exit: 0 } },
+  { id: 'v21-done-note-valid-after-actual', argv: ['run', 'done', '1411', '--actual', '30m', '--note', 'memo'],
+    responses: { 'issues.get': [iss(1411)], 'issues.update': [{}, {}], 'issues.listForRepo': [list()], 'issues.createComment': [{}] }, marker: { logSeq: ['issues.update', 'issues.update', 'issues.createComment'], exit: 0 } },
+  { id: 'v22-tag-two-new-labels-valid', argv: ['run', 'tag', '1412', '@v22a', '#v22b'],
+    responses: { [LBL]: [E404, E404], 'issues.createLabel': [{}, {}], 'issues.addLabels': [{}] }, marker: { logSeq: ['issues.createLabel', 'issues.createLabel', 'issues.addLabels'], exit: 0 } },
+];
 const CORPUS = [
   // ── (a) 完了フロー ──
   { id: 'a01-done-plain', argv: ['run', 'done', '301'],
@@ -1182,6 +1224,7 @@ const CORPUS = [
     marker: { stdout: '"ok":true', log: 'issues.addLabels', exit: 0 } },
 
   ...X_CASES,
+  ...V_CASES,
 ];
 
 // ─── 意図した挙動変更の許容リスト（--allow-preset で呼び出す）──────────
@@ -1207,6 +1250,17 @@ const ALLOW_PRESETS = {
   // r5-k1: R5 PR-4（K1）。旧 = PR-3 までの main、新 = PR-4 の版。
   //   bulk done で壊れた recur に当たっても全体を止めず、item_error にして次の Issue へ進む（集計行に err_suffix・終了コード 0）。
   //   x40 x41 x44 の3件だけが変わる（x42 x43 は api done-issue の K6 で、変わらないはず）。
+  // i2135: Issue #2135（検証を GitHub への書き込みより前へ）。旧 = #2135 の前の main、新 = #2135 の版。
+  //   差分の種類は stub-log が主（stderr / 終了コードは変わらない）。失敗するケースで、書き込み系の API 呼び出しが消える。
+  //   v06〜v09・v11・v12 は stdout も変わる: 旧は失敗の前に成功行（done.completed / move.done / label.created）を出していたが、新は出さない。
+  //   x41 は bulk done の壊れた recur で、#1212 の actual 更新が消える（item_error と集計は同じ）。
+  //   xc0〜xc3・f02・f03 は runAdd の検証の前にあった「ラベルの存在確認 GET」（読み取り）が消える。
+  'i2135': [
+    'v01-', 'v02-', 'v03-', 'v04-', 'v05-', 'v06-', 'v07-', 'v08-', 'v09-', 'v10-', 'v11-', 'v12-', 'v13-',
+    'x41-bulk-done-broken-recur-with-actual',
+    'xc0-add-before-without-due', 'xc1-add-before-invalid', 'xc2-add-activate-unparsable', 'xc3-add-activate-impossible-date',
+    'f02-add-body-file-missing', 'f03-add-body-file-is-directory',
+  ],
   'r5-k1': ['x40-bulk-done-broken-recur-stops-all', 'x41-bulk-done-broken-recur-with-actual', 'x44-bulk-done-broken-recur-first'],
 };
 

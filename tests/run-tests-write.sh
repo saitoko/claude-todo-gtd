@@ -6726,8 +6726,8 @@ assert_contains "W60-2 K1(ja): item_error の行が出る" "#1202 エラー: $W6
 w60_run en "{\"issues.get\":[$(w60_issue 1211 ''),$(w60_issue 1212 'due: 2026-10-10\nrecur: weekly:INVALID\n'),$(w60_issue 1213 '')],\"issues.update\":[{},{},{},{},{}],\"issues.listForRepo\":[{\"data\":[]},{\"data\":[]}]}" -- run bulk done 1211 1212 1213 --actual 30m
 assert_eq "W60-3 K1: --actual つきでも exit 0" "0" "$W60_EC"
 assert_eq "W60-3 K1: stderr は1行" "$W60_MSG_EN" "$W60_ERR"
-assert_eq "W60-3 K1: issues.update は5回（#1211 の actual と close / #1212 の actual / #1213 の actual と close）" "5" "$(log_count "$W60_LOG" issues.update)"
-assert_contains "W60-3 K1: #1212 の actual 更新は済んでいる" '"issue_number":1212,"body":"due: 2026-10-10\nrecur: weekly:INVALID\nactual: 30' "$(log_lines_for_method "$W60_LOG" issues.update)"
+assert_eq "W60-3 K1: issues.update は4回（#1211 の actual と close / #1213 の actual と close。#1212 は #2135 で actual も更新しない）" "4" "$(log_count "$W60_LOG" issues.update)"
+assert_not_contains "W60-3 K1(#2135): 壊れた #1212 の actual は更新されない" '"issue_number":1212' "$(log_lines_for_method "$W60_LOG" issues.update)"
 assert_not_contains "W60-3 K1: #1212 は閉じられていない" '"issue_number":1212,"state":"closed"' "$(log_lines_for_method "$W60_LOG" issues.update)"
 assert_contains "W60-3 K1: #1213 は state closed で更新（続行された）" '"issue_number":1213,"state":"closed"' "$(log_lines_for_method "$W60_LOG" issues.update)"
 assert_eq "W60-3 K1: issues.create なし" "0" "$(log_count "$W60_LOG" issues.create)"
@@ -6787,6 +6787,134 @@ if [ "$W60_N" -lt 40 ]; then
   printf "  ❌ §W60 アサーション数が少なすぎる (%s 件。40 件未満は検査の空振りとみなす)\n" "$W60_N"; FAIL=$((FAIL+1))
 fi
 rm -rf "$W60_HOME"
+
+# ── §W61 Issue #2135: 検証を GitHub への書き込みより前に移す ──
+# 型: 「exit 1 で終わるのに、それより前に書き込み系 API が呼ばれている」。入力が不正なら、書き込み系 API（issues.create / update /
+# addLabels / removeLabel / createLabel / createComment）は1回も呼ばれない。応答は「ラベルが無い（404）→ 作成」を返す形にして、
+# 書き込みが起きる条件を作ってある（「ラベルが既にある」応答では GET だけで書き込みが見えない）。
+# 検証・文言・終了コードは変えていない（stderr と exit 1 は従来どおり）。
+# 安全条件: HOME を一時ディレクトリに隔離し、OCTOKIT_STUB_ENV でスタブを指定する。
+echo ""
+echo "§W61  検証は書き込みより前（Issue #2135）"
+
+W61_P0=$PASS
+W61_HOME=$(mktemp -d /tmp/todo-test-w61-XXXXXX)
+W61_LOG="$W61_HOME/stub.jsonl"
+W61_E404='{"__throw":true,"status":404,"message":"Not Found"}'
+W61_LBL='GET /repos/{owner}/{repo}/labels/{name}'
+
+# w61_run <responses-json> -- <args...>: W61_OUT=stdout / W61_ERR=stderr / W61_EC=終了コード（言語は en 固定）
+w61_run() {
+  case "$W61_HOME" in
+    /tmp/todo-test-w61-??????) : ;;
+    *) printf "  ❌ W61 隔離 HOME を作れていないため実行しない (%s)\n" "$W61_HOME"; FAIL=$((FAIL+1)); W61_OUT=""; W61_ERR=""; W61_EC=99; return 1 ;;
+  esac
+  : > "$W61_LOG"
+  local resp="$1"; shift
+  shift  # --
+  W61_OUT=$(env -u LANG_ENV HOME="$W61_HOME" LANG_ENV=en OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$resp" OCTOKIT_STUB_LOG_ENV="$W61_LOG" \
+    TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-10-18 \
+    node "$ENGINE" "$@" 2>"$W61_HOME/stderr"); W61_EC=$?
+  W61_ERR=$(cat "$W61_HOME/stderr")
+}
+# 書き込み系 API の呼び出し回数の合計
+w61_writes() {
+  local n=0 m
+  for m in issues.create issues.update issues.addLabels issues.removeLabel issues.createLabel issues.deleteLabel issues.createComment; do
+    n=$((n + $(log_count "$W61_LOG" "$m")))
+  done
+  echo "$n"
+}
+w61_issue() { # <num> <label> <body-with-\n-escapes>
+  printf '{"data":{"number":%s,"id":%s,"title":"W61 %s","body":"%s","labels":[{"name":"%s"}],"state":"open"}}' "$1" "$((1000+$1))" "$1" "$3" "$2"
+}
+LONG_NOTE=$(printf 'x%.0s' $(seq 1 65537))
+
+# W61-1 add: --before / --activate / --body-file の検証は、ラベル作成より前
+w61_run "{\"$W61_LBL\":[$W61_E404,$W61_E404,$W61_E404,$W61_E404],\"issues.createLabel\":[{},{},{},{}]}" -- run add next t1 @w61ctx '#w61tag' --label w61x --due 2026-10-20 --before xyz
+assert_eq "W61-1 add --before 不正: exit 1" "1" "$W61_EC"
+assert_contains "W61-1 add --before 不正: 文言は従来どおり" "--before must be in 14d / 2w format" "$W61_ERR"
+assert_eq "W61-1 add --before 不正: 書き込み系 API は0回（ラベルも作らない）" "0" "$(w61_writes)"
+assert_eq "W61-1 add --before 不正: API 呼び出し自体が0回（読み取りも不要）" "0" "$(wc -l < "$W61_LOG" | tr -d ' ')"
+w61_run "{\"$W61_LBL\":[$W61_E404,$W61_E404],\"issues.createLabel\":[{},{}]}" -- run add next t2 @w61ctx --before 2d
+assert_eq "W61-2 add --before（--due なし）: exit 1" "1" "$W61_EC"
+assert_contains "W61-2 add --before（--due なし）: 文言" "--before requires --due" "$W61_ERR"
+assert_eq "W61-2 add --before（--due なし）: 書き込み0回" "0" "$(w61_writes)"
+w61_run "{\"$W61_LBL\":[$W61_E404,$W61_E404],\"issues.createLabel\":[{},{}]}" -- run add next t3 '#w61tag' --activate zzz
+assert_eq "W61-3 add --activate 不正: exit 1" "1" "$W61_EC"
+assert_contains "W61-3 add --activate 不正: 文言" "Invalid date format: zzz" "$W61_ERR"
+assert_eq "W61-3 add --activate 不正: 書き込み0回" "0" "$(w61_writes)"
+w61_run "{\"$W61_LBL\":[$W61_E404,$W61_E404],\"issues.createLabel\":[{},{}]}" -- run add next t4 @w61ctx --activate 2026-02-30
+assert_eq "W61-4 add --activate 実在しない日付: exit 1" "1" "$W61_EC"
+assert_eq "W61-4 add --activate 実在しない日付: 書き込み0回" "0" "$(w61_writes)"
+w61_run "{\"$W61_LBL\":[$W61_E404,$W61_E404],\"issues.createLabel\":[{},{}]}" -- run add next t5 @w61ctx --body-file "$W61_HOME/none.txt"
+assert_eq "W61-5 add --body-file 読めない: exit 1" "1" "$W61_EC"
+assert_contains "W61-5 add --body-file 読めない: 文言" "--body-file path not found" "$W61_ERR"
+assert_eq "W61-5 add --body-file 読めない: 書き込み0回" "0" "$(w61_writes)"
+# 対照: 正しい入力ならラベル作成 → Issue 作成（書き込みは従来どおり走る）
+w61_run "{\"$W61_LBL\":[$W61_E404,$W61_E404],\"issues.createLabel\":[{},{}],\"issues.create\":[{\"data\":{\"number\":1410,\"id\":10410,\"html_url\":\"x\"}}]}" -- run add next t6 @w61ctx --due 2026-10-20 --before 2d
+assert_eq "W61-6 add 正常: exit 0" "0" "$W61_EC"
+assert_eq "W61-6 add 正常: createLabel 2回（ctx と優先度）+ create 1回" "3" "$(w61_writes)"
+
+# W61-7 done: --note の検証は actual の更新・close より前
+w61_run "{\"issues.get\":[$(w61_issue 1401 '🎯 next' '')],\"issues.update\":[{},{}],\"issues.listForRepo\":[{\"data\":[]}]}" -- run done 1401 --actual 30m --note "$LONG_NOTE"
+assert_eq "W61-7 done --note 長すぎ: exit 1" "1" "$W61_EC"
+assert_contains "W61-7 done --note 長すぎ: 文言" "Comment body exceeds the maximum length" "$W61_ERR"
+assert_eq "W61-7 done --note 長すぎ: 書き込み0回（actual 更新も close もしない）" "0" "$(w61_writes)"
+assert_not_contains "W61-7 done --note 長すぎ: 完了メッセージを出さない" "completed" "$W61_OUT"
+w61_run "{\"issues.get\":[$(w61_issue 1402 '🎯 next' '')],\"issues.update\":[{}],\"issues.listForRepo\":[{\"data\":[]}]}" -- run done 1402 --note $'\x01'
+assert_eq "W61-8 done --note 空: exit 1" "1" "$W61_EC"
+assert_contains "W61-8 done --note 空: 文言" "Comment body is empty" "$W61_ERR"
+assert_eq "W61-8 done --note 空: 書き込み0回" "0" "$(w61_writes)"
+# 壊れた recur: は actual の更新より前に検出
+w61_run "{\"issues.get\":[$(w61_issue 1409 '🎯 next' 'due: 2026-10-10\nrecur: weekly:INVALID\n')],\"issues.update\":[{}]}" -- run done 1409 --actual 30m
+assert_eq "W61-9 done 壊れた recur + --actual: exit 1" "1" "$W61_EC"
+assert_contains "W61-9 done 壊れた recur + --actual: 文言" "weekly day suffix must be one of" "$W61_ERR"
+assert_eq "W61-9 done 壊れた recur + --actual: 書き込み0回（actual を更新しない）" "0" "$(w61_writes)"
+# 対照: 正しい --note は従来どおり actual 更新 → close → コメント
+w61_run "{\"issues.get\":[$(w61_issue 1411 '🎯 next' '')],\"issues.update\":[{},{}],\"issues.listForRepo\":[{\"data\":[]}],\"issues.createComment\":[{}]}" -- run done 1411 --actual 30m --note memo
+assert_eq "W61-10 done 正常: exit 0" "0" "$W61_EC"
+assert_eq "W61-10 done 正常: update 2回 + createComment 1回" "3" "$(w61_writes)"
+
+# W61-11 move: --note の検証は GTD ラベルの付け替えより前
+w61_run "{\"issues.get\":[$(w61_issue 1403 '📥 inbox' '')],\"issues.removeLabel\":[{}],\"$W61_LBL\":[{}],\"issues.addLabels\":[{}]}" -- run move 1403 next --note $'\x01'
+assert_eq "W61-11 move --note 空: exit 1" "1" "$W61_EC"
+assert_contains "W61-11 move --note 空: 文言" "Comment body is empty" "$W61_ERR"
+assert_eq "W61-11 move --note 空: 書き込み0回（ラベルを付け替えない）" "0" "$(w61_writes)"
+assert_not_contains "W61-11 move --note 空: 移動メッセージを出さない" "#1403" "$W61_OUT"
+w61_run "{\"issues.get\":[$(w61_issue 1404 '🎯 next' '')],\"issues.removeLabel\":[{}],\"$W61_LBL\":[{}],\"issues.addLabels\":[{}]}" -- run move 1404 someday --note "$LONG_NOTE"
+assert_eq "W61-12 move --note 長すぎ: exit 1" "1" "$W61_EC"
+assert_eq "W61-12 move --note 長すぎ: 書き込み0回" "0" "$(w61_writes)"
+
+# W61-13 promote-project: --outcome のタイトル検証は、ラベル作成・付け替えより前
+w61_run "{\"issues.get\":[$(w61_issue 1405 '🎯 next' '')],\"$W61_LBL\":[$W61_E404],\"issues.createLabel\":[{}],\"issues.removeLabel\":[{}],\"issues.addLabels\":[{}]}" -- run promote-project 1405 --outcome $'a\tb'
+assert_eq "W61-13 promote-project --outcome 制御文字: exit 1" "1" "$W61_EC"
+assert_contains "W61-13 promote-project --outcome 制御文字: 文言" "Title must not contain control characters" "$W61_ERR"
+assert_eq "W61-13 promote-project --outcome 制御文字: 書き込み0回" "0" "$(w61_writes)"
+# 優先順位は従来どおり: 既に project なら、タイトルが不正でも already_project が先に出る
+w61_run "{\"issues.get\":[$(w61_issue 1406 '📁 project' '')]}" -- run promote-project 1406 --outcome $'a\tb'
+assert_contains "W61-14 promote-project: already_project が先（優先順位は従来どおり）" "already a project" "$W61_ERR"
+
+# W61-15 tag / bulk tag: 2個目以降の不正なラベルでも、1個目のラベルを作らない
+w61_run "{\"$W61_LBL\":[$W61_E404],\"issues.createLabel\":[{}],\"issues.addLabels\":[{}]}" -- run tag 1406 @w61ok '#123'
+assert_eq "W61-15 tag 2個目が不正: exit 1" "1" "$W61_EC"
+assert_contains "W61-15 tag 2個目が不正: 文言" "Tag name must not be digits only" "$W61_ERR"
+assert_eq "W61-15 tag 2個目が不正: 書き込み0回（1個目のラベルも作らない）" "0" "$(w61_writes)"
+assert_not_contains "W61-15 tag 2個目が不正: 新規ラベル作成の行を出さない" "Created new label" "$W61_OUT"
+w61_run "{\"$W61_LBL\":[$W61_E404],\"issues.createLabel\":[{}],\"issues.addLabels\":[{},{}]}" -- run bulk tag 1407 1408 @w61ok '#123'
+assert_eq "W61-16 bulk tag 2個目が不正: exit 1" "1" "$W61_EC"
+assert_eq "W61-16 bulk tag 2個目が不正: 書き込み0回" "0" "$(w61_writes)"
+# 対照: 正しい2個は従来どおり作成 → 付与
+w61_run "{\"$W61_LBL\":[$W61_E404,$W61_E404],\"issues.createLabel\":[{},{}],\"issues.addLabels\":[{}]}" -- run tag 1412 @w61a '#w61b'
+assert_eq "W61-17 tag 正常: exit 0" "0" "$W61_EC"
+assert_eq "W61-17 tag 正常: createLabel 2回 + addLabels 1回" "3" "$(w61_writes)"
+assert_contains "W61-17 tag 正常: 新規ラベル作成の行が2つ出る" "Created new label" "$W61_OUT"
+
+W61_N=$((PASS-W61_P0))
+if [ "$W61_N" -lt 40 ]; then
+  printf "  ❌ §W61 アサーション数が少なすぎる (%s 件。40 件未満は検査の空振りとみなす)\n" "$W61_N"; FAIL=$((FAIL+1))
+fi
+rm -rf "$W61_HOME"
 
 echo ""
 echo "=========================================="
