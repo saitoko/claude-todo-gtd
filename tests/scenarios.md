@@ -2289,8 +2289,8 @@ bash ~/.claude/todo.sh search --keywrd foo
 
 ### 50-3. API 呼び出しの順序（T-b2 / T-c1）
 
-- `promote-project`: 旧 GTD ラベルの削除 → ラベル存在確認 → 付与
-- `priority` / `edit --priority`: 旧優先度の削除 → ラベル存在確認 → 付与（`edit` はその後に本文を更新）。`bulk priority` はラベル存在確認を最初に1回だけ行う
+- `promote-project`: ラベル存在確認 → 旧 GTD ラベルの削除 → 付与（PR-B の J4 で順序を変更。§51-3）
+- `priority` / `edit --priority`: ラベル存在確認 → 旧優先度の削除 → 付与（`edit` はその後に本文を更新。PR-B の J5 で順序を変更。§51-3）。`bulk priority` はラベル存在確認を最初に1回だけ行う
 
 ### 50-4. ラベル作成時の色（T-d1）
 
@@ -2302,12 +2302,12 @@ bash ~/.claude/todo.sh search --keywrd foo
 
 ### 50-6. `bulk` の番号列に数字でない語が混ざったとき・`--actual` の不正値（T-a1）
 
-- `bulk done 42 43abc 44` は #42 だけを処理して exit 0（`43abc` と `44` は黙って無視される）。`bulk tag 42 43abc @x` は `43abc` を `@43abc` ラベルとして作る。`bulk move` / `bulk priority` は不正な引数としてエラーにする。これらは現状の固定であり、数字でない語が混ざったら何も処理せずエラーにする変更の前提になる
-- `bulk done 43 44 --actual xyz` は actual を書かずに2件を閉じて exit 0（単体の `done --actual xyz` は exit 1）
+- `bulk move` / `bulk priority` は `43abc` を不正な引数としてエラーにする（従来どおり。書き込みなし）。`bulk done 43abc 42` は先頭が数字でないので番号なしで exit 1（従来どおり）
+- `bulk done` / `bulk tag` / `bulk untag` と `--actual` の不正値は、PR-B で挙動を変更した（§51-1 / §51-2）
 
 ### 50-7. `show --json` / `list --json` の出力全体（T-i1）
 
-- 絵文字付きラベルと絵文字なしラベルの Issue を、`show --json`（`state` / `closedAt` を含み、`labels` は生の名前）と `list --json`（`labels` は正規化済み）で出力し、全文を固定する
+- 絵文字付きラベルと絵文字なしラベルの Issue を、`show --json`（`state` / `closedAt` を含む）と `list --json` で出力し、全文を固定する。`labels` は PR-B の J7 でどちらも正規化済み（§51-4）
 
 ### 50-8. 差分ハーネス
 
@@ -2317,3 +2317,40 @@ node tests/tools/engine-diff-harness.js --old /tmp/engine-old.js --new todo-engi
 ```
 
 期待: 全ケースで変更前のエンジンの marker が現れ（到達）、新旧の stdout / stderr / 終了コード / スタブログ / HOME 配下のファイルが一致して `RESULT: OK`。意図的にずれを入れたエンジンのコピーでは不一致が報告される。隔離が効いていない（HOME が一時ディレクトリ配下でない・スタブが効かない）ときは1件も実行せず exit 2。
+
+## 51. 意図した挙動変更（Issue #2102 R3 PR-B。J1 / J2 / J4 / J5 / J7 / J8 / J12）
+
+自動テスト（`tests/run-tests-write.sh` §W58）と、差分ハーネスの許容リスト（`--allow-preset pr-b`）で確認する。実 GitHub・実 HOME には触れない。
+
+### 51-1. `--actual` の検証位置（J1 / J2）
+
+- `bulk done 43 44 --actual xyz`: API を1回も呼ばず、`Time must be in 30m / 1h / 1h30m format` で exit 1（何も閉じない）。`--actual 30m` なら従来どおり actual が書かれる
+- `done 99946 --actual xyz`（存在しない Issue）: Issue の取得より前に落ちるので、取得エラーではなく `Time must be in ...` で exit 1。API 呼び出しなし
+
+### 51-2. 番号の並びに数字でない語が混ざったとき（J12）
+
+- `bulk done 42 43abc 44` / `bulk tag 42 43abc @x` / `bulk untag 42 43abc @x` / `bulk tag 42 43 44abc @x`: `'43abc' is not an issue number. ...` で exit 1。書き込み系 API（`issues.update` / `addLabels` / `removeLabel` / `createLabel`）を1回も呼ばない。API 呼び出し自体がない
+- 対照: `bulk done 42`、`bulk tag 42 @x`、`bulk untag 42 @x`、`bulk tag 42 43 @x` は従来どおり処理される。`bulk tag 42 home`（数字で始まらない語）は従来どおり `@home` として扱う
+
+### 51-3. ラベル存在確認の位置（J4 / J5）
+
+- `promote-project` / `priority` / `edit --priority`: ラベルの存在確認・作成が失敗しても、旧 GTD ラベル・旧優先度ラベルは外れない（`edit` では本文も更新しない）。ラベル作成の失敗も同じ
+
+### 51-4. `show` の正規化したラベルでの判定（J7）
+
+- `show <N> --json` の `labels`: `"🎯 next"` が `"next"`、`"📁 project"` が `"project"` になる（`list --json` と同じ）
+- 絵文字なしの GTD ラベル（`next` 等）だけを持つ Issue: `gtd` が `"next"`、`tags` に `next` / `project` が入らない。通常表示は `GTD Category: 🎯 next`、`Other Labels` に `next` / `project` が出ない
+- 絵文字付きラベルの Issue の `gtd` / `tags` / 通常表示は変わらない
+
+### 51-5. `template save <名> from <#>` のタグ抽出（J8）
+
+- 絵文字なしの GTD / project ラベルを持つ Issue から保存したテンプレートの `tags` に、`next` / `project` が入らない。絵文字付きラベルの Issue から保存したものと同じ内容になる
+
+### 51-6. 差分ハーネス
+
+```
+git show <PR-B の前のコミット>:todo-engine.js > /tmp/engine-old.js
+node tests/tools/engine-diff-harness.js --old /tmp/engine-old.js --new todo-engine.js --allow-preset pr-b
+```
+
+期待: 許容リストのケースは差分が出て、それ以外は全件一致し `RESULT: OK`。許容リストの内訳（どのケースがどの J に対応するか）はハーネス末尾の `ALLOW_PRESETS` のコメントにある。
