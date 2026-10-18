@@ -2168,6 +2168,27 @@ for key in requestHasEndpoint requestHasDefaults issuesGetHasEndpoint issuesGetH
   assert_contains "W25-10 【核心】wrapOctokitTiming後も $key が保持されている（スタブ）" "\"$key\":true" "$W25_10_OUT"
 done
 
+# W25-11 / W25-12 【R5 PR-2】exitWith が例外としてトップレベルへ届く経路でも [timing] 行が「1行だけ」出る
+# （printTiming は process.on('exit') で出す。トップレベルの catch が別に書いて二重化していないことを検出する）。
+# 番号は既存の W25-7 〜 W25-10 と重複しないよう 11 / 12 から振った。
+# W25-11: バリデータ経由（validateDue が runAdd 内から CliExit を投げる）
+W25_11_ERR=$(OCTOKIT_STUB_ENV="$STUB" TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODO_TIMING=1 \
+  node "$ENGINE" run add next t --due 2026-02-30 2>&1 1>/dev/null); W25_11_EC=$?
+assert_exit_fail "W25-11 run add(不正な --due・バリデータ経由): exit非0" "$W25_11_EC"
+assert_eq "W25-11: [timing]行がちょうど1行" "1" "$(printf '%s\n' "$W25_11_ERR" | grep -c '^\[timing\]')"
+assert_eq "W25-11: [timing]行は stderr の最終行（エラー文言の後ろに出る）" "1" "$(printf '%s\n' "$W25_11_ERR" | tail -n 1 | grep -c '^\[timing\]')"
+assert_eq "W25-11: エラー文言は1回だけ（exitWith が書いた後にトップレベルが書き足さない）" "1" "$(printf '%s\n' "$W25_11_ERR" | grep -vc '^\[timing\]')"
+# W25-12: api 経由（apiMain の try → api の .catch が CliExit を受ける。validateRecur）
+W25_12_RESP='{"issues.get":[{"data":{"number":1251,"id":2251,"title":"W25 12","body":"due: 2026-10-10\nrecur: weekly:INVALID\n","labels":[{"name":"🎯 next"}],"state":"open"}}]}'
+W25_12_ERR=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W25_12_RESP" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODO_TIMING=1 \
+  node "$ENGINE" api done-issue 1251 2>&1 1>/dev/null); W25_12_EC=$?
+assert_exit_fail "W25-12 api done-issue(壊れた recur・CliExit): exit非0" "$W25_12_EC"
+assert_eq "W25-12: [timing]行がちょうど1行" "1" "$(printf '%s\n' "$W25_12_ERR" | grep -c '^\[timing\]')"
+assert_eq "W25-12: [timing]行は stderr の最終行" "1" "$(printf '%s\n' "$W25_12_ERR" | tail -n 1 | grep -c '^\[timing\]')"
+assert_eq "W25-12: エラー文言は1行だけ（'Error:' の行が増えない）" "1" "$(printf '%s\n' "$W25_12_ERR" | grep -vc '^\[timing\]')"
+assert_not_contains "W25-12: 'Error: ' 行を足していない" "Error: " "$W25_12_ERR"
+
 # ──────────────────────────────────────────
 # §W26  runComment — --body/--body-file 対応 + 未知フラグのエラー化（Issue #1919）
 # 事故: `comment <#> --body-file <path>` を実行すると「--body-file」という文字列
