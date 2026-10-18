@@ -18,6 +18,11 @@ const FORBIDDEN_CHARS = ';$`()\"\'' + String.fromCharCode(92) + '|&><{}';
 const MAX_OPEN_ISSUES_LIMIT = 200; // GitHub API ページネーション上限。これを超える場合は警告を出力
 const MAX_SUB_ISSUES_LIMIT = 500; // sub-issue 一覧のページネーション上限（#1881: 無限ループ防止の安全弁。GitHub の現行上限は親1つにつき100件なので通常は到達しない）
 const PRI_COLORS = { p1: 'B60205', p2: 'FBCA04', p3: '0075CA' };
+// ラベル作成時の色。PRI_COLORS と値が同じものがあるが意味が別なので共有しない
+const CTX_LABEL_COLOR = 'FBCA04';     // @context ラベル
+const TAG_LABEL_COLOR = '0075CA';     // #tag ラベル
+const EXTRA_LABEL_COLOR = 'EDEDED';   // add --label で指定した追加ラベル
+const PROJECT_LABEL_COLOR = '0052CC'; // GTD: project ラベル
 // GitHub REST API バージョン（Issue #2031）。2022-11-28 は2028-03-10に sunset 予定
 // （廃止対象はエンドポイントではなくバージョンそのもの。書き込み系リクエストで
 // Deprecation 警告が出る）。移行先は破壊的変更を含む初のカレンダーバージョン
@@ -4206,12 +4211,12 @@ async function runAdd(octokit, owner, repo, tokens) {
   const labels = [GTD_DISPLAY[gtd]];
   // コンテキストラベル作成
   for (const ctx of parsed.contexts) {
-    await ensureLabel(octokit, owner, repo, ctx, 'FBCA04', t('label.desc_context'));
+    await ensureCtxLabel(octokit, owner, repo, ctx);
     labels.push(ctx);
   }
   // タグラベル作成（#tag: 色 0075CA でコンテキストと区別）
   for (const tag of parsed.tags) {
-    await ensureLabel(octokit, owner, repo, tag, '0075CA', t('label.desc_tag'));
+    await ensureTagLabel(octokit, owner, repo, tag);
     labels.push(tag);
   }
   // 優先度ラベル作成
@@ -4220,7 +4225,7 @@ async function runAdd(octokit, owner, repo, tokens) {
   labels.push(priority);
   // --label オプションで指定された追加ラベル
   for (const lbl of parsed.labels) {
-    await ensureLabel(octokit, owner, repo, lbl, 'EDEDED', '');
+    await ensureLabel(octokit, owner, repo, lbl, EXTRA_LABEL_COLOR, '');
     labels.push(lbl);
   }
 
@@ -4746,6 +4751,17 @@ async function execRemoveLabels(octokit, owner, repo, num, labels) {
   }
 }
 
+// @context ラベルを（無ければ）作成する。戻り値は ensureLabel と同じ（新規作成なら true）。
+// '@' / '#' による ctx・tag の振り分けは呼び出し側で行う（テンプレートの context は '#' 始まりでも ctx の色で作る）
+async function ensureCtxLabel(octokit, owner, repo, name) {
+  return ensureLabel(octokit, owner, repo, name, CTX_LABEL_COLOR, t('label.desc_context'));
+}
+
+// #tag ラベルを（無ければ）作成する。戻り値は ensureLabel と同じ
+async function ensureTagLabel(octokit, owner, repo, name) {
+  return ensureLabel(octokit, owner, repo, name, TAG_LABEL_COLOR, t('label.desc_tag'));
+}
+
 async function runMove(octokit, owner, repo, tokens) {
   const num = parseInt(tokens[0]);
   const target = tokens[1];
@@ -5200,7 +5216,7 @@ async function renameCtxLabel(octokit, owner, repo, raw1, raw2, usage) {
   const oldName = raw1.startsWith('@') ? raw1 : '@'+raw1;
   const newName = raw2.startsWith('@') ? raw2 : '@'+raw2;
   validateCtx(oldName.slice(1)); validateCtx(newName.slice(1));
-  await ensureLabel(octokit, owner, repo, newName, 'FBCA04', t('label.desc_context'));
+  await ensureCtxLabel(octokit, owner, repo, newName);
   const allIssues = await fetchAllOpen(octokit, owner, repo);
   const targets = allIssues.filter(i => i.labels.some(l => l.name === oldName));
   for (const i of targets) {
@@ -5224,10 +5240,10 @@ async function runTag(octokit, owner, repo, tokens) {
     let created;
     if (lbl.startsWith('#')) {
       validateTag(lbl.slice(1));
-      created = await ensureLabel(octokit, owner, repo, lbl, '0075CA', t('label.desc_tag'));
+      created = await ensureTagLabel(octokit, owner, repo, lbl);
     } else {
       validateCtx(lbl.slice(1));
-      created = await ensureLabel(octokit, owner, repo, lbl, 'FBCA04', t('label.desc_context'));
+      created = await ensureCtxLabel(octokit, owner, repo, lbl);
     }
     // 既存ラベルに無い名前は打ち間違いの可能性があるため明示する（Issue #1686）
     if (created) runOut(tpl('label.created', { name: lbl }));
@@ -5276,7 +5292,7 @@ async function runLabel(octokit, owner, repo, tokens) {
     // #1934 パート1: label add が実際に読むのは color のみ（配線直前にコードを再確認済み）。
     guardUnsupportedFlag(parsed, COMMAND_SPECS['label add'].supportedFields, LABEL_USAGE);
     validateCtx(name.slice(1));
-    const color = parsed.color || 'FBCA04';
+    const color = parsed.color || CTX_LABEL_COLOR;
     if (parsed.color) validateColor(parsed.color);
     await ensureLabel(octokit, owner, repo, name, color, t('label.desc_context'));
     runOut(tpl('label.created_named', { name }));
@@ -5559,12 +5575,12 @@ async function runTemplate(octokit, owner, repo, tokens) {
 
     const labels = [GTD_DISPLAY[gtd]];
     for (const ctx of contexts) {
-      await ensureLabel(octokit, owner, repo, ctx, 'FBCA04', t('label.desc_context'));
+      await ensureCtxLabel(octokit, owner, repo, ctx);
       labels.push(ctx);
     }
     // #1936: タグラベル作成（runAdd と同じ色 0075CA でコンテキストと区別）
     for (const tag of tags) {
-      await ensureLabel(octokit, owner, repo, tag, '0075CA', t('label.desc_tag'));
+      await ensureTagLabel(octokit, owner, repo, tag);
       labels.push(tag);
     }
     const pcolor = priorityColor(priority);
@@ -5991,8 +6007,8 @@ async function runBulk(octokit, owner, repo, tokens) {
     if (!labelList.length) { process.stderr.write(`${BULK_USAGE}\n`); process.exit(1); }
     for (const lbl of labelList) {
       let created;
-      if (lbl.startsWith('#')) { validateTag(lbl.slice(1)); created = await ensureLabel(octokit, owner, repo, lbl, '0075CA', t('label.desc_tag')); }
-      else { validateCtx(lbl.slice(1)); created = await ensureLabel(octokit, owner, repo, lbl, 'FBCA04', t('label.desc_context')); }
+      if (lbl.startsWith('#')) { validateTag(lbl.slice(1)); created = await ensureTagLabel(octokit, owner, repo, lbl); }
+      else { validateCtx(lbl.slice(1)); created = await ensureCtxLabel(octokit, owner, repo, lbl); }
       // 既存ラベルに無い名前は打ち間違いの可能性があるため明示する（Issue #1686）
       if (created) runOut(tpl('label.created', { name: lbl }));
     }
@@ -6145,7 +6161,7 @@ async function runPromoteProject(octokit, owner, repo, tokens) {
   }
 
   // 📁 project ラベルを付与
-  await ensureLabel(octokit, owner, repo, GTD_DISPLAY[PROJECT_LABEL], '0052CC', 'GTD: project');
+  await ensureLabel(octokit, owner, repo, GTD_DISPLAY[PROJECT_LABEL], PROJECT_LABEL_COLOR, 'GTD: project');
   await octokit.issues.addLabels({ owner, repo, issue_number: num, labels: [GTD_DISPLAY[PROJECT_LABEL]] });
 
   // --outcome 指定時はタイトルを書き換え（outcomeIdx は関数冒頭のガードで算出済み）
@@ -6609,7 +6625,8 @@ module.exports = {
   runReviewSomeday, runPromote, runPromoteProject, runUnlink, runWeeklyProjectAudit,
   runMigrateSubIssue, reservedTitleGuardWord, reservedMultiwordFirstWord, runMain,
   envOpen, envClosed, envListFilters, envTemplateFields, envViewFilters,
-  readBodyFileOrExit,
+  readBodyFileOrExit, ensureCtxLabel, ensureTagLabel,
+  CTX_LABEL_COLOR, TAG_LABEL_COLOR, EXTRA_LABEL_COLOR, PROJECT_LABEL_COLOR,
 };
 
 if (require.main === module) main();

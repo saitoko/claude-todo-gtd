@@ -5155,6 +5155,59 @@ fi
 rm -f "$_G56_TMP" "$_G56_TMP.err"
 
 # ──────────────────────────────────────────
+# §57  ドメインヘルパ（Issue #2102 R3 PR-A）
+# 挙動を変えない抽出で新設した関数・定数を require() で直接確かめる。
+# 呼び出し順・失敗時の扱いなど外から見える挙動の不変は差分ハーネス
+# （tests/tools/engine-diff-harness.js）と run-tests-write.sh が担う。
+# ──────────────────────────────────────────
+echo ""
+echo "§57  ドメインヘルパ（Issue #2102 R3 PR-A）"
+
+_G57_TMP=$(mktemp /tmp/todo-test-r3-helpers-XXXXXX)
+cat > "$_G57_TMP" << 'R3_HELPER_TEST_EOF'
+const E = require(process.argv[2]);
+const out = [];
+const check = (id, desc, cond, detail) => out.push((cond ? 'ok' : 'ng') + '\t' + id + ' ' + desc + '\t' + (cond ? '' : detail));
+
+// (d) 色の定数: 値の固定と、PRI_COLORS との分離（値が同じでも別の定数であること）
+check('57-d1', 'ctx ラベルの色は FBCA04', E.CTX_LABEL_COLOR === 'FBCA04', E.CTX_LABEL_COLOR);
+check('57-d2', 'tag ラベルの色は 0075CA', E.TAG_LABEL_COLOR === '0075CA', E.TAG_LABEL_COLOR);
+check('57-d3', '追加ラベルの色は EDEDED', E.EXTRA_LABEL_COLOR === 'EDEDED', E.EXTRA_LABEL_COLOR);
+check('57-d4', 'project ラベルの色は 0052CC', E.PROJECT_LABEL_COLOR === '0052CC', E.PROJECT_LABEL_COLOR);
+check('57-d5', '優先度の色 PRI_COLORS は据え置き', E.PRI_COLORS.p1 === 'B60205' && E.PRI_COLORS.p2 === 'FBCA04' && E.PRI_COLORS.p3 === '0075CA', JSON.stringify(E.PRI_COLORS));
+
+// (d) ensureCtxLabel / ensureTagLabel: 色と説明を渡して ensureLabel の戻り値をそのまま返す
+(async () => {
+  const calls = [];
+  const octokit = {
+    request: async (route, p) => { calls.push(['request', route, p.name]); const e = new Error('Not Found'); e.status = 404; throw e; },
+    issues: { createLabel: async (a) => { calls.push(['createLabel', a.name, a.color, a.description]); return {}; } },
+  };
+  const c1 = await E.ensureCtxLabel(octokit, 'o', 'r', '@x');
+  const c2 = await E.ensureTagLabel(octokit, 'o', 'r', '#y');
+  const cl = calls.filter(c => c[0] === 'createLabel');
+  check('57-d6', 'ensureCtxLabel は ctx の色・説明で作成し true を返す', c1 === true && cl[0] && cl[0][1] === '@x' && cl[0][2] === 'FBCA04' && cl[0][3] === E.t('label.desc_context'), JSON.stringify(calls));
+  check('57-d7', 'ensureTagLabel は tag の色・説明で作成し true を返す', c2 === true && cl[1] && cl[1][1] === '#y' && cl[1][2] === '0075CA' && cl[1][3] === E.t('label.desc_tag'), JSON.stringify(calls));
+  // 以降のブロックは追記される
+  process.stdout.write(out.join('\n') + '\n');
+})().catch(e => { process.stdout.write('ng\t57-x 例外\t' + e.message + '\n'); });
+R3_HELPER_TEST_EOF
+_G57_OUT=$(node "$_G57_TMP" "$ENGINE" 2>"$_G57_TMP.err"); _G57_EC=$?
+if [ "$_G57_EC" -ne 0 ]; then
+  printf "  ❌ §57 ドメインヘルパのテストの実行失敗: %s\n" "$(cat "$_G57_TMP.err" 2>/dev/null)"; FAIL=$((FAIL+1))
+else
+  while IFS=$'\t' read -r _st _desc _detail; do
+    [ -z "$_st" ] && continue
+    if [ "$_st" = "ok" ]; then
+      printf "  ✅ §57 %s\n" "$_desc"; PASS=$((PASS+1))
+    else
+      printf "  ❌ §57 %s\n     %s\n" "$_desc" "$_detail"; FAIL=$((FAIL+1))
+    fi
+  done <<< "$_G57_OUT"
+fi
+rm -f "$_G57_TMP" "$_G57_TMP.err"
+
+# ──────────────────────────────────────────
 # 書き込み系ハンドラのスタブベーステスト（run-tests-write.sh、Issue #1648）
 # 3,266行超に肥大化した本ファイルへの追記を避けるため別ファイルに分離し、
 # ここで子プロセスとして呼び出して結果を合算する。実行口は
