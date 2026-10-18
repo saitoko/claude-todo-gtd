@@ -439,6 +439,8 @@ const MESSAGES = {
     'show.desc_header': '### 説明',
     'view.viewing': '## 👁 ビュー: {name} [{parts}]',
     'error.no_issue_numbers': 'エラー: Issue番号が指定されていません。',
+    'error.bulk_non_numeric_number': "エラー: '{token}' は Issue 番号ではありません。番号は数字だけで指定してください（何も処理していません）。",
+    'error.bulk_done_stray_arg': "エラー: bulk done に '{token}' は指定できません。番号（数字だけ）のあとに指定できるのは --actual <時間> だけです（何も処理していません）。",
     'bulk.item_error': '  #{num} エラー: {msg}',
     'bulk.done_count': '✅ {n}件完了',
     'bulk.done_recur_suffix': '（うち繰り返し再作成: {n}件）',
@@ -825,6 +827,8 @@ const MESSAGES = {
     'show.desc_header': '### Description',
     'view.viewing': '## 👁 View: {name} [{parts}]',
     'error.no_issue_numbers': 'Error: No issue numbers specified.',
+    'error.bulk_non_numeric_number': "Error: '{token}' is not an issue number. Specify issue numbers as digits only (nothing was processed).",
+    'error.bulk_done_stray_arg': "Error: '{token}' is not allowed in bulk done. After the issue numbers, only --actual <time> is accepted (nothing was processed).",
     'bulk.item_error': '  #{num} error: {msg}',
     'bulk.done_count': '✅ {n} completed',
     'bulk.done_recur_suffix': ' (recurring recreated: {n})',
@@ -4661,6 +4665,15 @@ async function postDoneProcessing(octokit, owner, repo, num, issue) {
   return { otherLines };
 }
 
+// --actual の値を検証して、本文に書く文字列（分の整数）を返す。--actual が無ければ null。
+// 解釈できない値は error.time_format を出して exit 1（呼び出し側は API を呼ぶ前にこれを実行すること）
+function parseActualOrExit(parsed) {
+  if (!parsed.actual) return null;
+  const a = parseTime(parsed.actual);
+  if (a === null) { process.stderr.write(t('error.time_format')+'\n'); process.exit(1); }
+  return String(a);
+}
+
 // 完了フローの中核: 次周期 Issue の作成 → close → 後処理（#1652 create-before-close）。
 // close が失敗し、かつ次周期 Issue を作成済みなら throw makeCloseErrorAfterRecur(num, newIssueNumber, e)
 // （作成していなければ元の例外をそのまま投げる）。エラーの作り方は呼び出し側ごとに違う
@@ -4693,13 +4706,12 @@ async function runDone(octokit, owner, repo, tokens) {
   // #1934 パート1: runDone が実際に読むのは actual/note のみ（配線直前にコードを再確認済み）。
   guardUnsupportedFlag(parsed, COMMAND_SPECS['done'].supportedFields, DONE_USAGE);
 
+  // --actual の検証は Issue の取得（API 呼び出し）より前に行う
+  const actualValue = parseActualOrExit(parsed);
+
   const issue = await fetchAndParseIssue(octokit, owner, repo, num);
   let actual = issue.actual;
-  if (parsed.actual) {
-    const a = parseTime(parsed.actual);
-    if (a === null) { process.stderr.write(t('error.time_format')+'\n'); process.exit(1); }
-    actual = String(a);
-  }
+  if (actualValue !== null) actual = actualValue;
   if (actual !== issue.actual) {
     const body = buildBody({ ...issue, actual });
     await octokit.issues.update({ owner, repo, issue_number: num, body });
@@ -4790,9 +4802,16 @@ async function swapGtdLabel(octokit, owner, repo, num, labelNames, newLabel, opt
   return oldGtd || null;
 }
 
+// 優先度ラベル（level）の存在確認・作成。'clear' のときは何もしない。
+// 旧ラベルの削除より前に呼ぶこと（replacePriorityLabel には { ensure: false } を渡す）
+async function ensurePriorityLabel(octokit, owner, repo, level) {
+  if (level === 'clear') return;
+  await ensureLabel(octokit, owner, repo, level, priorityColor(level), t('label.desc_priority'));
+}
+
 // 優先度ラベル（p1/p2/p3）を付け替える。旧ラベルがあれば削除 → level が 'clear' でなければ
 // （opts.ensure が真なら ensureLabel のうえで）付与する。level の検証は呼び出し側で先に済ませること。
-// bulk はラベルの作成をループの前で1回済ませるため { ensure: false } を渡す
+// 呼び出し側が削除より前にラベルの作成を済ませている場合（edit / priority / bulk priority）は { ensure: false } を渡す
 async function replacePriorityLabel(octokit, owner, repo, num, labelNames, level, opts = { ensure: true }) {
   const oldPri = labelNames.find(l => /^p[123]$/.test(l));
   if (oldPri) {
@@ -5037,7 +5056,9 @@ async function runEdit(octokit, owner, repo, tokens) {
     // #1652: validate-before-mutate — 旧priorityラベルを削除する前にparsed.priorityを検証する。
     // 逆順だとtypo時に旧ラベルだけ削除された中途半端な状態でエラー終了してしまう。
     if (parsed.priority !== 'clear') validatePriority(parsed.priority);
-    await replacePriorityLabel(octokit, owner, repo, num, issue.labels, parsed.priority);
+    // ラベルの存在確認・作成は旧優先度ラベルの削除より前に行う（失敗時に旧ラベルだけ外れた状態を残さない）
+    await ensurePriorityLabel(octokit, owner, repo, parsed.priority);
+    await replacePriorityLabel(octokit, owner, repo, num, issue.labels, parsed.priority, { ensure: false });
     if (parsed.priority === 'clear') {
       changed.push('priority → '+t('edit.clear'));
     } else {
@@ -5204,7 +5225,9 @@ async function runPriority(octokit, owner, repo, tokens) {
   if (level !== 'clear') validatePriority(level);
 
   const issue = await fetchAndParseIssue(octokit, owner, repo, num);
-  await replacePriorityLabel(octokit, owner, repo, num, issue.labels, level);
+  // ラベルの存在確認・作成は旧優先度ラベルの削除より前に行う（失敗時に旧ラベルだけ外れた状態を残さない）
+  await ensurePriorityLabel(octokit, owner, repo, level);
+  await replacePriorityLabel(octokit, owner, repo, num, issue.labels, level, { ensure: false });
   if (level === 'clear') {
     runOut(tpl('priority.cleared', { num }));
   } else {
@@ -5512,16 +5535,9 @@ async function runTemplate(octokit, owner, repo, tokens) {
       const contexts = lnames.filter(l => l.startsWith('@'));
       const priority = lnames.find(l => /^p[123]$/.test(l)) || 'p3';
       // #1936: タグ抽出は issueToJsonObj()/renderIssueList() と同じ
-      // 「GTD・project・context・@claude・priority 以外のラベル」線引きに揃える
-      // （lnames はここでは正規化前の生ラベル名なので GTD_DISPLAY 表記で除外する）。
-      const systemLabels = new Set([
-        ...GTD_LABELS.map(l => GTD_DISPLAY[l]),
-        GTD_DISPLAY[PROJECT_LABEL],
-        ...contexts,
-        '@claude',
-        priority,
-      ]);
-      const tags = lnames.filter(l => !systemLabels.has(l));
+      // 「GTD・project・context・@claude・priority 以外のラベル」線引きに揃える。
+      // 正規化したラベル名で判定するので、絵文字なしの GTD / project ラベルもタグにならない
+      const tags = extractTags(lnames.map(l => normLabel(l)), contexts, lnames.find(l => /^p[123]$/.test(l)) || null);
       templateSaveFrom(name, {
         gtd, contexts, tags,
         due: issue.due || '',
@@ -5656,20 +5672,33 @@ async function runTemplate(octokit, owner, repo, tokens) {
   }
 }
 
-function issueToJsonObj(rawIssue) {
-  const lnames = rawIssue.labels.map(l => normLabel(l.name || l));
-  const parsed = parseBodyObj(rawIssue.body || '');
+// GTD カテゴリの判定。引数は normLabel で正規化済みのラベル名の配列（絵文字付き・絵文字なしの両方が同じ短縮名になる）。
+// GTD_LABELS の順で最初に当たったもの、なければ project、どちらもなければ null
+function detectGtd(normalizedLabelNames) {
+  return GTD_LABELS.find(l => normalizedLabelNames.includes(l))
+    || (normalizedLabelNames.includes(PROJECT_LABEL) ? 'project' : null);
+}
 
-  const gtdLabel = GTD_LABELS.find(l => lnames.includes(l))
-    || (lnames.includes(PROJECT_LABEL) ? 'project' : null);
-  const priLabel = lnames.find(l => /^p[123]$/.test(l)) || null;
-  const ctxLabels = lnames.filter(l => l.startsWith('@') && l !== '@claude');
-  const isClaudeTask = lnames.includes('@claude');
+// タグ（GTD・project・context・@claude・優先度以外のラベル）の抽出。引数は normLabel で正規化済みのラベル名の配列。
+// priLabel は優先度ラベル（なければ null）。ラベルの並び順を保つ
+function extractTags(normalizedLabelNames, ctxLabels, priLabel) {
   const systemLabels = new Set([
     ...GTD_LABELS, PROJECT_LABEL, ...ctxLabels, '@claude',
     ...(priLabel ? [priLabel] : []),
   ]);
-  const tags = lnames.filter(l => !systemLabels.has(l));
+  return normalizedLabelNames.filter(l => !systemLabels.has(l));
+}
+
+// opts.includeState が真なら、title の直後に state / closedAt を入れる（show --json 用）
+function issueToJsonObj(rawIssue, opts = {}) {
+  const lnames = rawIssue.labels.map(l => normLabel(l.name || l));
+  const parsed = parseBodyObj(rawIssue.body || '');
+
+  const gtdLabel = detectGtd(lnames);
+  const priLabel = lnames.find(l => /^p[123]$/.test(l)) || null;
+  const ctxLabels = lnames.filter(l => l.startsWith('@') && l !== '@claude');
+  const isClaudeTask = lnames.includes('@claude');
+  const tags = extractTags(lnames, ctxLabels, priLabel);
   // #1854: parsed.estimate は parseBodyObj() が値全体（"2h" 等）を抽出済みなので、
   // formatTime(parseInt(...)) ではなく parseTime() で単位付き文字列を正しく分へ変換する。
   // parseTime() が解釈できない不正な形式は estimateFormatted を null にする
@@ -5679,6 +5708,7 @@ function issueToJsonObj(rawIssue) {
   return {
     number: rawIssue.number,
     title: rawIssue.title,
+    ...(opts.includeState ? { state: rawIssue.state || 'open', closedAt: rawIssue.closedAt || null } : {}),
     gtd: gtdLabel || null,
     priority: priLabel || null,
     due: parsed.due || null,
@@ -5761,20 +5791,23 @@ async function runShow(octokit, owner, repo, tokens) {
     process.exit(1);
   }
 
+  // ラベルは normLabel で正規化したもので判定する（絵文字付き・絵文字なしの GTD ラベルを同じに扱う。
+  // list --json / search --json と同じ線引き）
+  const lnames = issue.labels.map(l => normLabel(l));
+
   // GTDカテゴリを判定
-  const gtdLabel = GTD_LABELS.find(l => issue.labels.includes(GTD_DISPLAY[l]))
-    || (issue.labels.includes(GTD_DISPLAY[PROJECT_LABEL]) ? 'project' : '');
+  const gtdLabel = detectGtd(lnames) || '';
   const gtdDisplay = gtdLabel ? (GTD_DISPLAY[gtdLabel] || gtdLabel) : t('show.unclassified');
 
   // コンテキストを抽出（@で始まるラベル、@claude は除く）
-  const ctxLabels = issue.labels.filter(l => l.startsWith('@') && l !== '@claude');
+  const ctxLabels = lnames.filter(l => l.startsWith('@') && l !== '@claude');
   const ctxDisplay = ctxLabels.length ? ctxLabels.join(', ') : t('list.none');
 
   // @claude ラベルの有無
-  const isClaudeTask = issue.labels.includes('@claude');
+  const isClaudeTask = lnames.includes('@claude');
 
   // 優先度を抽出
-  const priLabel = issue.labels.find(l => /^p[123]$/.test(l)) || '';
+  const priLabel = lnames.find(l => /^p[123]$/.test(l)) || '';
   const priDisplay = priLabel || t('list.none');
 
   // 見積もりを分 → 表示形式に変換
@@ -5785,41 +5818,12 @@ async function runShow(octokit, owner, repo, tokens) {
   const estDisplay = !issue.estimate ? t('list.none')
     : (estMinutes !== null ? formatTime(estMinutes) : tpl('show.estimate_invalid', { raw: issue.estimate }));
 
-  // タグ（GTD・コンテキスト・@claude・優先度以外のラベル）
-  const systemLabels = new Set([
-    ...GTD_LABELS.map(l => GTD_DISPLAY[l]),
-    GTD_DISPLAY[PROJECT_LABEL],
-    ...ctxLabels,
-    '@claude',
-    ...(priLabel ? [priLabel] : []),
-  ]);
-  const tags = issue.labels.filter(l => !systemLabels.has(l));
+  // タグ（GTD・project・コンテキスト・@claude・優先度以外のラベル）
+  const tags = extractTags(lnames, ctxLabels, priLabel || null);
 
-  // --json モード: 構造化 JSON を出力して終了
+  // --json モード: 構造化 JSON を出力して終了（list --json / search --json と同じ組み立て。state / closedAt が加わる）
   if (jsonMode) {
-    const obj = {
-      number: issue.number,
-      title: issue.title,
-      state: issue.state || 'open',
-      closedAt: issue.closedAt || null,
-      gtd: gtdLabel || null,
-      priority: priLabel || null,
-      due: issue.due || null,
-      estimate: issue.estimate || null,
-      estimateFormatted: estMinutes !== null ? formatTime(estMinutes) : null,
-      context: ctxLabels.length ? ctxLabels : [],
-      claude: isClaudeTask,
-      tags: tags.length ? tags : [],
-      recur: issue.recur || null,
-      // issueToJsonObj / runSchema（integer | null）と型を揃える（Issue #2102）。
-      project: issue.project ? parseInt(issue.project) : null,
-      activate: issue.activate || null,
-      dependsOn: issue.dependsOn ? parseInt(issue.dependsOn) : null,
-      resumeCondition: issue.resumeCondition || null,
-      desc: (issue.desc && issue.desc.trim()) ? issue.desc.trim() : null,
-      labels: issue.labels,
-    };
-    runOut(JSON.stringify(obj, null, 2));
+    runOut(JSON.stringify(issueToJsonObj(issue, { includeState: true }), null, 2));
     return;
   }
 
@@ -5938,6 +5942,13 @@ async function runBulk(octokit, owner, repo, tokens) {
   while (i < tokens.length && /^\d+$/.test(tokens[i])) { nums.push(parseInt(tokens[i])); i++; }
   const rest = tokens.slice(i);
   if (!nums.length) { process.stderr.write(t('error.no_issue_numbers')+'\n'); process.exit(1); }
+  // done / tag / untag は番号の直後の語を操作の引数として読むため、'43abc' のような数字で始まる語が
+  // 番号の並びに混ざっていると、番号のつもりの語を黙って別の意味に読んでしまう（done は無視、tag / untag は
+  // その名前の context ラベルとして扱う）。何も処理せずに落とす。move / priority は引数として読んで既にエラーになる
+  if (['done','tag','untag'].includes(sub) && rest.length && /^\d/.test(rest[0])) {
+    process.stderr.write(tpl('error.bulk_non_numeric_number', { token: rest[0] })+'\n');
+    process.exit(1);
+  }
   for (const n of nums) validateNumber(String(n));
 
   let doneCount = 0, errCount = 0;
@@ -5951,12 +5962,22 @@ async function runBulk(octokit, owner, repo, tokens) {
     guardUnknownFlag(parsed.extra, [], BULK_USAGE, 'error.unknown_flag_hint_options');
     // #1934 パート1: bulk done が実際に読むのは actual のみ（配線直前にコードを再確認済み）。
     guardUnsupportedFlag(parsed, COMMAND_SPECS['bulk done'].supportedFields, BULK_USAGE);
+    // 番号とフラグ（--actual とその値）以外の語があれば何も処理せずに落とす（'abc' や、フラグの後ろの番号 '44'）。
+    // 未知フラグ・未サポートフラグは上のガードで処理済みなので、'-' 始まりの語はここでは読み飛ばす
+    for (let k = 0; k < rest.length; k++) {
+      if (rest[k] === '--actual') { k++; continue; }
+      if (rest[k].startsWith('-')) continue;
+      process.stderr.write(tpl('error.bulk_done_stray_arg', { token: rest[k] })+'\n');
+      process.exit(1);
+    }
+    // --actual は全 Issue 共通の1つの値。解釈できない値を黙って捨てず、ループに入る前（API を呼ぶ前）に落とす
+    const actualValue = parseActualOrExit(parsed);
     let recurCreated = 0;
     for (const num of nums) {
       try {
         const issue = await fetchAndParseIssue(octokit, owner, repo, num);
         let actual = issue.actual;
-        if (parsed.actual) { const a = parseTime(parsed.actual); if (a !== null) actual = String(a); }
+        if (actualValue !== null) actual = actualValue;
         if (actual !== issue.actual) {
           const body = buildBody({ ...issue, actual });
           await octokit.issues.update({ owner, repo, issue_number: num, body });
@@ -6163,10 +6184,11 @@ async function runPromoteProject(octokit, owner, repo, tokens) {
     process.exit(1);
   }
 
-  // GTD ラベルを外し、📁 project ラベルを付与する（削除と付与の間で ensureLabel）
-  await swapGtdLabel(octokit, owner, repo, num, issue.labels, GTD_DISPLAY[PROJECT_LABEL], {
-    ensureBeforeAdd: { color: PROJECT_LABEL_COLOR, description: 'GTD: project' },
-  });
+  // 📁 project ラベルの存在確認・作成を、旧 GTD ラベルの削除より前に行う。
+  // 逆順だと確認・作成の失敗時に「旧 GTD ラベルだけ外れて project ラベルが付かない」状態が残る
+  await ensureLabel(octokit, owner, repo, GTD_DISPLAY[PROJECT_LABEL], PROJECT_LABEL_COLOR, 'GTD: project');
+  // GTD ラベルを外し、📁 project ラベルを付与する
+  await swapGtdLabel(octokit, owner, repo, num, issue.labels, GTD_DISPLAY[PROJECT_LABEL]);
 
   // --outcome 指定時はタイトルを書き換え（outcomeIdx は関数冒頭のガードで算出済み）
   let newTitle = issue.title;
@@ -6626,7 +6648,7 @@ module.exports = {
   runReviewSomeday, runPromote, runPromoteProject, runUnlink, runWeeklyProjectAudit,
   runMigrateSubIssue, reservedTitleGuardWord, reservedMultiwordFirstWord, runMain,
   envOpen, envClosed, envListFilters, envTemplateFields, envViewFilters,
-  completeIssue, fetchParentProject, swapGtdLabel, replacePriorityLabel, getReviewedAt, getRecurValue, getBodyProjectNum,
+  detectGtd, extractTags, parseActualOrExit, ensurePriorityLabel, completeIssue, fetchParentProject, swapGtdLabel, replacePriorityLabel, getReviewedAt, getRecurValue, getBodyProjectNum,
   readBodyFileOrExit, ensureCtxLabel, ensureTagLabel,
   CTX_LABEL_COLOR, TAG_LABEL_COLOR, EXTRA_LABEL_COLOR, PROJECT_LABEL_COLOR,
 };

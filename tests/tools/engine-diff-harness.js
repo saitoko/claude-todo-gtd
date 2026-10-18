@@ -23,6 +23,8 @@
 //   --allow-diff <ids>      差分が「出てよい」ケース ID（カンマ区切り、前方一致）。意図した挙動変更を
 //                           入れる変更で使う。許可したケースは差分が出ることを確かめ、
 //                           それ以外のケースは一致することを確かめる
+//   --allow-preset <名前>   意図した挙動変更の許容リストを、名前で呼び出す（このファイル末尾の ALLOW_PRESETS）。
+//                           pr-b: R3 PR-B（J1 / J2 / J4 / J5 / J7 / J8 / J12）。旧 = PR-B の前の main、新 = PR-B の版で使う
 //   --coverage-lines A-B[,C-D...]
 //                           旧エンジンの行範囲が、いずれかのケースで実行されたことを確かめる
 //                           （NODE_V8_COVERAGE を使う。process.exit() で終わる経路も記録される）。
@@ -101,6 +103,7 @@ function parseCli(argv) {
     else if (a === '--verbose') o.verbose = true;
     else if (a === '--corpus') o.corpus.push(val());
     else if (a === '--allow-diff') o.allow.push(...val().split(',').map(s => s.trim()).filter(Boolean));
+    else if (a === '--allow-preset') { const n = val(); if (!ALLOW_PRESETS[n]) die('未知のプリセット: ' + n + '（' + Object.keys(ALLOW_PRESETS).join(', ') + '）'); o.allow.push(...ALLOW_PRESETS[n]); }
     else if (a === '--coverage-lines') o.cov = parseRanges(val());
     else die('未知のオプション: ' + a);
   }
@@ -687,7 +690,104 @@ const CORPUS = [
       openItem(960, { body: 'project: #12\r\n' }), openItem(961, { body: 'project: #12\nproject: #13\n' }),
       openItem(962, { body: 'project: 12\n' }), openItem(963, { body: 'x\nproject: #123\n' }), openItem(964, { body: ' project: #12\n' }))] },
     marker: { stdout: '#963', exit: 0 } },
+
+  // ── PR-B（R3: 意図した挙動変更の J1 / J2 / J4 / J5 / J7 / J8 / J12）で追加したケース ──
+  // 旧（PR-B の前の main）で marker に到達することを確かめる。差分が出るべきケースは ALLOW_PRESETS['pr-b'] に載せる。
+  // J7: show の JSON / 通常表示（labels・gtd・tags を正規化したラベルで判定）
+  { id: 'i01-show-json-emoji-labels', argv: ['run', 'show', '1001', '--json'],
+    responses: { 'issues.get': [iss(1001, { labels: [NEXT, '@home', 'p1', '#tagA', '@claude'], body: 'due: 2026-10-20\nestimate: 1h\nproject: #12\n' })] },
+    marker: { stdout: '"🎯 next"', exit: 0 } },
+  { id: 'i02-show-json-plain-labels', argv: ['run', 'show', '1002', '--json'],
+    responses: { 'issues.get': [iss(1002, { labels: ['next', '@office', 'p2', '#tagB', 'project'] })] },
+    marker: { stdout: '"gtd": null', exit: 0 } },
+  { id: 'i03-show-json-no-gtd', argv: ['run', 'show', '1003', '--json'],
+    responses: { 'issues.get': [iss(1003, { labels: ['@home', 'p1'] })] },
+    marker: { stdout: '"gtd": null', exit: 0 } },
+  { id: 'i04-show-json-closed-project', argv: ['run', 'show', '1004', '--json'],
+    responses: { 'issues.get': [{ data: { number: 1004, id: 10004, title: 'closed proj', body: 'desc: hello\n', labels: [{ name: PROJ }], state: 'closed', closed_at: '2026-10-10T00:00:00Z' } }] },
+    marker: { stdout: '"closedAt": "2026-10-10T00:00:00Z"', exit: 0 } },
+  { id: 'i05-show-text-emoji-labels', argv: ['run', 'show', '1005'],
+    responses: { 'issues.get': [iss(1005, { labels: [NEXT, '@home', 'p1', '#tagA'], body: 'due: 2026-10-20\n' })] },
+    marker: { stdout: { ja: '#tagA', en: '#tagA' }, exit: 0 } },
+  { id: 'i06-show-text-plain-labels', argv: ['run', 'show', '1006'],
+    responses: { 'issues.get': [iss(1006, { labels: ['next', 'project', '#tagB'] })] },
+    marker: { stdout: 'next, project', exit: 0 } },
+  { id: 'i07-list-json-same-issues', argv: ['run', 'list', 'next', '--json'],
+    responses: { 'issues.listForRepo': [list(openItem(1007, { labels: [NEXT, '@home', 'p1', '#tagA'] }), openItem(1008, { labels: ['next', '@office', 'p2', '#tagB', 'project'] })), list()] },
+    marker: { stdout: '"number": 1008', exit: 0 } },
+  // J8: template save <名> from <#>（実行後の HOME/.claude/todo-templates.json を比較する）
+  { id: 'j01-template-save-from-plain-labels', argv: ['run', 'template', 'save', 'tplPlain', 'from', '1010'],
+    files: { '.claude/todo-templates.json': {} },
+    responses: { 'issues.get': [iss(1010, { labels: ['next', 'project', '@home', '@claude', 'p2', '#tagC'] })] },
+    marker: { logSeq: ['issues.get'], exit: 0 } },
+  { id: 'j02-template-save-from-emoji-labels', argv: ['run', 'template', 'save', 'tplEmoji', 'from', '1011'],
+    files: { '.claude/todo-templates.json': {} },
+    responses: { 'issues.get': [iss(1011, { labels: [NEXT, PROJ, '@home', '@claude', 'p2', '#tagC'] })] },
+    marker: { logSeq: ['issues.get'], exit: 0 } },
+  { id: 'j03-template-save-from-no-priority', argv: ['run', 'template', 'save', 'tplNoPri', 'from', '1012'],
+    files: { '.claude/todo-templates.json': {} },
+    responses: { 'issues.get': [iss(1012, { labels: [NEXT, '@home', '#tagD', 'misc'] })] },
+    marker: { logSeq: ['issues.get'], exit: 0 } },
+  // J12: bulk done / tag / untag の番号の並びに '43abc' が混ざる。対照（正しい番号だけ・数字で始まらない語）は一致するはず
+  { id: 'l01-bulk-done-mixed-number', argv: ['run', 'bulk', 'done', '1021', '1022abc', '1023'],
+    responses: { 'issues.get': [iss(1021)], 'issues.update': [{}], 'issues.listForRepo': [list()] },
+    marker: { logSeq: ['issues.get', 'issues.update', 'issues.listForRepo'], exit: 0 } },
+  { id: 'l02-bulk-tag-mixed-number', argv: ['run', 'bulk', 'tag', '1024', '1025abc', '@l02x'],
+    responses: { [LBL]: [E404, E404], 'issues.createLabel': [{}, {}], 'issues.addLabels': [{}] },
+    marker: { log: '@1025abc', logSeq: ['issues.createLabel', 'issues.addLabels'], exit: 0 } },
+  { id: 'l03-bulk-untag-mixed-number', argv: ['run', 'bulk', 'untag', '1026', '1027abc', '@l03x'],
+    responses: { 'issues.removeLabel': [{}, {}] },
+    marker: { logSeq: ['issues.removeLabel', 'issues.removeLabel'], exit: 0 } },
+  { id: 'l04-bulk-done-mixed-after-numbers', argv: ['run', 'bulk', 'done', '1028', '1029', '1030abc'],
+    responses: { 'issues.get': [iss(1028), iss(1029)], 'issues.update': [{}, {}], 'issues.listForRepo': [list(), list()] },
+    marker: { logSeq: ['issues.get', 'issues.update', 'issues.get', 'issues.update'], exit: 0 } },
+  { id: 'l10-bulk-done-stray-word', argv: ['run', 'bulk', 'done', '1040', 'l10abc'],
+    responses: { 'issues.get': [iss(1040)], 'issues.update': [{}], 'issues.listForRepo': [list()] },
+    marker: { logSeq: ['issues.get', 'issues.update', 'issues.listForRepo'], exit: 0 } },
+  { id: 'l11-bulk-done-number-after-flag', argv: ['run', 'bulk', 'done', '1041', '--actual', '2h', '1042'],
+    responses: { 'issues.get': [iss(1041)], 'issues.update': [{}, {}], 'issues.listForRepo': [list()] },
+    marker: { logSeq: ['issues.get', 'issues.update', 'issues.update', 'issues.listForRepo'], exit: 0 } },
+  { id: 'l12-bulk-done-numbers-and-actual', argv: ['run', 'bulk', 'done', '1043', '1044', '--actual', '2h'],
+    responses: { 'issues.get': [iss(1043), iss(1044)], 'issues.update': [{}, {}, {}, {}], 'issues.listForRepo': [list(), list()] },
+    marker: { logSeq: ['issues.get', 'issues.update', 'issues.update', 'issues.get'], exit: 0 } },
+  { id: 'l05-bulk-done-numbers-only', argv: ['run', 'bulk', 'done', '1031', '1032'],
+    responses: { 'issues.get': [iss(1031), iss(1032)], 'issues.update': [{}, {}], 'issues.listForRepo': [list(), list()] },
+    marker: { logSeq: ['issues.get', 'issues.update', 'issues.get', 'issues.update'], exit: 0 } },
+  { id: 'l06-bulk-tag-numbers-and-ctx', argv: ['run', 'bulk', 'tag', '1033', '1034', '@l06x'],
+    responses: { [LBL]: [E404], 'issues.createLabel': [{}], 'issues.addLabels': [{}, {}] },
+    marker: { logSeq: ['issues.createLabel', 'issues.addLabels', 'issues.addLabels'], exit: 0 } },
+  { id: 'l07-bulk-tag-bare-word-ctx', argv: ['run', 'bulk', 'tag', '1035', 'l07home'],
+    responses: { [LBL]: [E404], 'issues.createLabel': [{}], 'issues.addLabels': [{}] },
+    marker: { log: '@l07home', exit: 0 } },
+  { id: 'l08-bulk-untag-numbers-and-ctx', argv: ['run', 'bulk', 'untag', '1036', '1037', '@l08x'],
+    responses: { 'issues.removeLabel': [{}, {}] },
+    marker: { logSeq: ['issues.removeLabel', 'issues.removeLabel'], exit: 0 } },
+  { id: 'l09-bulk-done-leading-non-number', argv: ['run', 'bulk', 'done', '1038abc', '1039'],
+    responses: {},
+    marker: { stderr: { ja: 'Issue番号が指定されていません', en: 'No issue numbers specified' }, exit: 1 } },
 ];
+
+// ─── 意図した挙動変更の許容リスト（--allow-preset で呼び出す）──────────
+// 許容したケースは「差分が出ること」を確かめ、それ以外のケースは一致することを確かめる（--allow-diff と同じ）。
+//   pr-b: R3 PR-B。旧 = PR-B の前の main、新 = PR-B の版。
+//     J1  a12                                bulk done --actual 不正値 → ループ前にエラー
+//     J2  a06                                done --actual 不正値 → Issue の取得より前にエラー（取得の API 呼び出しが減る）
+//     J4  b11 b12 b14                        promote-project: ラベル確認・作成が旧 GTD ラベルの削除より前（呼び出し順 / 失敗時の削除なし）
+//     J5  c01 c03 c05 c06 c08                priority / edit: 同上（優先度ラベル）
+//     J7  i01 i02 i04 i06                show の labels 正規化 / 絵文字なし GTD ラベルの gtd・tags（i03 i05 i07 は一致するはず）
+//     J8  j01                                template save from: 絵文字なしの GTD / project ラベルをタグにしない（j02 j03 は一致するはず）
+//     J12 l01 l02 l03 l04 l10 l11            bulk done / tag / untag の番号に数字でない語が混ざる、bulk done の番号・--actual 以外の語（l05〜l09 l12 は一致するはず）
+const ALLOW_PRESETS = {
+  'pr-b': [
+    'a12-bulk-done-actual-invalid', 'a06-done-actual-invalid',
+    'b11-promote-project-existing-label', 'b12-promote-project-creates-label', 'b14-promote-project-label-lookup-fails',
+    'c01-priority-p1-from-p3', 'c03-priority-same-level', 'c05-priority-label-lookup-fails', 'c06-edit-priority', 'c08-edit-priority-label-lookup-fails',
+    'i01-show-json-emoji-labels', 'i02-show-json-plain-labels', 'i04-show-json-closed-project', 'i06-show-text-plain-labels',
+    'j01-template-save-from-plain-labels',
+    'l01-bulk-done-mixed-number', 'l02-bulk-tag-mixed-number', 'l03-bulk-untag-mixed-number', 'l04-bulk-done-mixed-after-numbers',
+    'l10-bulk-done-stray-word', 'l11-bulk-done-number-after-flag',
+  ],
+};
 
 if (require.main === module) process.exit(main());
 module.exports = { CORPUS, checkMarker, diffResults, assertSandbox, buildEnv };
