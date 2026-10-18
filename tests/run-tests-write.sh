@@ -6027,7 +6027,7 @@ rm -rf "$W57_HOME"
 #   T-c1       優先度ラベル付け替えの API 呼び出し順（priority / edit / bulk）
 #   T-d1       ctx / tag ラベル作成時の色（add / template use / tag / bulk tag）
 #   T-f1       --body-file に読めないパス（ディレクトリ）を渡したとき
-#   T-a1       bulk の番号列に数字でない語が混ざったときの現状 と bulk done --actual 不正値の現状
+#   T-a1       bulk の番号列に数字でない語が混ざったときの現状 と bulk done --actual 不正値（J1 で変更済み）
 #   T-i1       show --json / list --json の出力全体
 # 挙動を意図して変える変更（「揃える」と決めたもの）では、該当アサーションの期待値を書き換える。
 # 安全条件: HOME を一時ディレクトリに隔離し、OCTOKIT_STUB_ENV でスタブを指定する（w58_run が両方を強制する）。
@@ -6250,16 +6250,16 @@ assert_eq "W58 T-a1 bulk move: API 呼び出しなし" "" "$(w58_seq "$W58_LOG")
 w58_run "{$W58_B42}" run bulk priority 42 43abc p1
 assert_exit_fail "W58 T-a1 bulk priority 42 43abc p1: exit 1（優先度が 43abc と読まれて不正）" "$W58_EC"
 assert_eq "W58 T-a1 bulk priority: API 呼び出しなし" "" "$(w58_seq "$W58_LOG")"
-# bulk done --actual <不正値>: 値を黙って捨て、Issue は閉じる（現状。J1 で変える）
+# bulk done --actual <不正値>: ループに入る前に error.time_format で落とす（J1。従来は値を黙って捨てて Issue を閉じていた）
 w58_run "{\"issues.get\":[{\"data\":$(w58_issue 43 '🎯 next')},{\"data\":$(w58_issue 44 '🎯 next')}],\"issues.update\":[{},{}],\"issues.listForRepo\":[{\"data\":[]},{\"data\":[]}]}" run bulk done 43 44 --actual xyz
-assert_exit_ok "W58 T-a1 bulk done --actual xyz: exit 0（現状）" "$W58_EC"
-assert_contains "W58 T-a1 bulk done --actual xyz: 2件とも完了扱い" "✅ 2 completed" "$W58_OUT"
-assert_eq "W58 T-a1 bulk done --actual xyz: 本文更新なし・close だけ（actual は書かれない）" "2" "$(log_count "$W58_LOG" issues.update)"
-assert_not_contains "W58 T-a1 bulk done --actual xyz: actual は本文に書かれない" "actual:" "$(log_lines_for_method "$W58_LOG" issues.update)"
+assert_exit_fail "W58 T-a1/J1 bulk done --actual xyz: exit 1" "$W58_EC"
+assert_contains "W58 T-a1/J1 bulk done --actual xyz: error.time_format" "Error: Time must be in 30m / 1h / 1h30m format" "$W58_ERR"
+assert_eq "W58 T-a1/J1 bulk done --actual xyz: API を1回も呼ばない（何も閉じない）" "" "$(w58_seq "$W58_LOG")"
+assert_not_contains "W58 T-a1/J1 bulk done --actual xyz: 完了メッセージを出さない" "completed" "$W58_OUT"
 w58_run "{\"issues.get\":[{\"data\":$(w58_issue 45 '🎯 next')}],\"issues.update\":[{},{}],\"issues.listForRepo\":[{\"data\":[]}]}" run bulk done 45 --actual 30m
 assert_contains "W58 T-a1【対照】bulk done --actual 30m: actual が本文に書かれる" "actual: 30" "$(log_lines_for_method "$W58_LOG" issues.update)"
 w58_run "{\"issues.get\":[{\"data\":$(w58_issue 46 '🎯 next')}]}" run done 46 --actual xyz
-assert_exit_fail "W58 T-a1【対照】単体 done --actual xyz は exit 1（bulk と違い検証する）" "$W58_EC"
+assert_exit_fail "W58 T-a1【対照】単体 done --actual xyz も exit 1（bulk と同じ）" "$W58_EC"
 assert_contains "W58 T-a1【対照】単体 done: error.time_format" "Time must be in" "$W58_ERR"
 
 # ── T-i1: show --json / list --json の出力全体（絵文字付きラベル1件・絵文字なしラベル1件） ──

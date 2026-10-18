@@ -4661,6 +4661,15 @@ async function postDoneProcessing(octokit, owner, repo, num, issue) {
   return { otherLines };
 }
 
+// --actual の値を検証して、本文に書く文字列（分の整数）を返す。--actual が無ければ null。
+// 解釈できない値は error.time_format を出して exit 1（呼び出し側は API を呼ぶ前にこれを実行すること）
+function parseActualOrExit(parsed) {
+  if (!parsed.actual) return null;
+  const a = parseTime(parsed.actual);
+  if (a === null) { process.stderr.write(t('error.time_format')+'\n'); process.exit(1); }
+  return String(a);
+}
+
 // 完了フローの中核: 次周期 Issue の作成 → close → 後処理（#1652 create-before-close）。
 // close が失敗し、かつ次周期 Issue を作成済みなら throw makeCloseErrorAfterRecur(num, newIssueNumber, e)
 // （作成していなければ元の例外をそのまま投げる）。エラーの作り方は呼び出し側ごとに違う
@@ -5951,12 +5960,14 @@ async function runBulk(octokit, owner, repo, tokens) {
     guardUnknownFlag(parsed.extra, [], BULK_USAGE, 'error.unknown_flag_hint_options');
     // #1934 パート1: bulk done が実際に読むのは actual のみ（配線直前にコードを再確認済み）。
     guardUnsupportedFlag(parsed, COMMAND_SPECS['bulk done'].supportedFields, BULK_USAGE);
+    // --actual は全 Issue 共通の1つの値。解釈できない値を黙って捨てず、ループに入る前（API を呼ぶ前）に落とす
+    const actualValue = parseActualOrExit(parsed);
     let recurCreated = 0;
     for (const num of nums) {
       try {
         const issue = await fetchAndParseIssue(octokit, owner, repo, num);
         let actual = issue.actual;
-        if (parsed.actual) { const a = parseTime(parsed.actual); if (a !== null) actual = String(a); }
+        if (actualValue !== null) actual = actualValue;
         if (actual !== issue.actual) {
           const body = buildBody({ ...issue, actual });
           await octokit.issues.update({ owner, repo, issue_number: num, body });
@@ -6626,7 +6637,7 @@ module.exports = {
   runReviewSomeday, runPromote, runPromoteProject, runUnlink, runWeeklyProjectAudit,
   runMigrateSubIssue, reservedTitleGuardWord, reservedMultiwordFirstWord, runMain,
   envOpen, envClosed, envListFilters, envTemplateFields, envViewFilters,
-  completeIssue, fetchParentProject, swapGtdLabel, replacePriorityLabel, getReviewedAt, getRecurValue, getBodyProjectNum,
+  parseActualOrExit, completeIssue, fetchParentProject, swapGtdLabel, replacePriorityLabel, getReviewedAt, getRecurValue, getBodyProjectNum,
   readBodyFileOrExit, ensureCtxLabel, ensureTagLabel,
   CTX_LABEL_COLOR, TAG_LABEL_COLOR, EXTRA_LABEL_COLOR, PROJECT_LABEL_COLOR,
 };
