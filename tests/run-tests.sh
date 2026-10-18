@@ -5291,6 +5291,73 @@ fi
 rm -f "$_G57_TMP" "$_G57_TMP.err"
 
 # ──────────────────────────────────────────
+# §58  exitWith / isCliExit とガード4関数のプロセス内テスト（Issue #2102 R5 PR-1）
+# process.exit の代わりに例外を投げるため、異常系を require() したエンジンから直接呼べる。
+# stderr への書き込みは差し替えて集める。出力の不変は差分ハーネスが担う。
+# ──────────────────────────────────────────
+echo ""
+echo "§58  exitWith / isCliExit とガード（Issue #2102 R5 PR-1）"
+
+_G58_TMP=$(mktemp /tmp/todo-test-r5-exitwith-XXXXXX)
+cat > "$_G58_TMP" << 'R5_EXITWITH_TEST_EOF'
+const E = require(process.argv[2]);
+const out = [];
+const check = (id, desc, cond, detail) => out.push((cond ? 'ok' : 'ng') + '\t' + id + ' ' + desc + '\t' + (cond ? '' : detail));
+const origWrite = process.stderr.write.bind(process.stderr);
+function capture(fn) {
+  const writes = []; let thrown = null;
+  process.stderr.write = (s) => { writes.push(String(s)); return true; };
+  try { fn(); } catch (e) { thrown = e; } finally { process.stderr.write = origWrite; }
+  return { writes, thrown };
+}
+let r = capture(() => E.exitWith('one line'));
+check('58-1', 'exitWith(文字列): write は1回・末尾改行1つ・フラグと exitCode が立つ',
+  r.writes.length === 1 && r.writes[0] === 'one line\n' && r.thrown && r.thrown._msgWritten === true && r.thrown._cliExit === true && r.thrown.exitCode === 1 && r.thrown.message === 'one line', JSON.stringify(r.writes));
+r = capture(() => E.exitWith(['a', 'b', 'c'], 3));
+check('58-2', 'exitWith(配列, 3): 改行連結で write 1回・exitCode 3',
+  r.writes.length === 1 && r.writes[0] === 'a\nb\nc\n' && r.thrown.exitCode === 3 && r.thrown.message === 'a\nb\nc', JSON.stringify(r.writes));
+check('58-3', 'isCliExit: exitWith の例外は真、通常の Error・apiErr・null は偽',
+  E.isCliExit(r.thrown) === true && E.isCliExit(new Error('x')) === false && E.isCliExit(E.apiErr('m')) === false && E.isCliExit(null) === false && E.isCliExit(undefined) === false, '');
+
+const usage = 'Usage: u';
+let g = capture(() => E.guardUnknownFlag(['--bogus'], [], usage, 'error.unknown_flag_hint_options'));
+check('58-4', 'guardUnknownFlag: Usage あり → 3行を1回の write で出し CliExit',
+  E.isCliExit(g.thrown) && g.writes.join('') === usage + '\n' + E.tpl('error.unknown_flag', { flag: '--bogus' }) + '\n' + E.t('error.unknown_flag_hint_options') + '\n' && g.thrown.exitCode === 1, JSON.stringify(g.writes));
+g = capture(() => E.guardUnknownFlag(['--bogus'], [], '', 'error.unknown_flag_hint_options'));
+check('58-5', 'guardUnknownFlag: Usage なし → 2行', E.isCliExit(g.thrown) && g.writes.join('').split('\n').length === 3, JSON.stringify(g.writes));
+g = capture(() => E.guardUnknownFlag(['ok'], [], usage, 'error.unknown_flag_hint_options'));
+check('58-6', 'guardUnknownFlag: 未知フラグなしなら何も書かず投げない', g.thrown === null && g.writes.length === 0, JSON.stringify(g.writes));
+g = capture(() => E.guardBracketedGtdLabel(['[next]', 'title'], usage));
+check('58-7', 'guardBracketedGtdLabel: 4行を出し CliExit',
+  E.isCliExit(g.thrown) && g.writes.join('') === usage + '\n' + E.tpl('error.bracketed_gtd_label', { word: '[next]' }) + '\n' + E.t('error.bracketed_gtd_label_hint_category') + '\n' + E.tpl('error.bracketed_gtd_label_hint_title', { word: '[next]' }) + '\n', JSON.stringify(g.writes));
+g = capture(() => E.guardBracketedGtdLabel(['title'], usage));
+check('58-8', 'guardBracketedGtdLabel: 該当なしなら投げない', g.thrown === null && g.writes.length === 0, '');
+g = capture(() => E.guardExtraPositional(['x', 'y'], usage, 'error.extra_positional_hint_single', 'ex'));
+check('58-9', 'guardExtraPositional: 3行を出し CliExit',
+  E.isCliExit(g.thrown) && g.writes.join('') === usage + '\n' + E.tpl('error.extra_positional', { extra: 'x y' }) + '\n' + E.tpl('error.extra_positional_hint_single', { example: 'ex' }) + '\n', JSON.stringify(g.writes));
+g = capture(() => E.guardExtraPositional([], usage, 'error.extra_positional_hint_single', 'ex'));
+check('58-10', 'guardExtraPositional: 余分がなければ投げない', g.thrown === null && g.writes.length === 0, '');
+const parsedUnsup = E.parseArgs(['--actual', '30m']);
+g = capture(() => E.guardUnsupportedFlag(parsedUnsup, [], usage));
+check('58-11', 'guardUnsupportedFlag: 未サポートフラグで CliExit（2行+Usage）', E.isCliExit(g.thrown) && g.writes.length === 1 && g.writes[0].startsWith(usage + '\n'), JSON.stringify(g.writes));
+process.stdout.write(out.join('\n') + '\n');
+R5_EXITWITH_TEST_EOF
+_G58_OUT=$(node "$_G58_TMP" "$ENGINE" 2>"$_G58_TMP.err"); _G58_EC=$?
+if [ "$_G58_EC" -ne 0 ]; then
+  printf "  ❌ §58 exitWith のテストの実行失敗: %s\n" "$(cat "$_G58_TMP.err" 2>/dev/null)"; FAIL=$((FAIL+1))
+else
+  while IFS=$'\t' read -r _st _desc _detail; do
+    [ -z "$_st" ] && continue
+    if [ "$_st" = "ok" ]; then
+      printf "  ✅ §58 %s\n" "$_desc"; PASS=$((PASS+1))
+    else
+      printf "  ❌ §58 %s\n     %s\n" "$_desc" "$_detail"; FAIL=$((FAIL+1))
+    fi
+  done <<< "$_G58_OUT"
+fi
+rm -f "$_G58_TMP" "$_G58_TMP.err"
+
+# ──────────────────────────────────────────
 # 書き込み系ハンドラのスタブベーステスト（run-tests-write.sh、Issue #1648）
 # 3,266行超に肥大化した本ファイルへの追記を避けるため別ファイルに分離し、
 # ここで子プロセスとして呼び出して結果を合算する。実行口は
