@@ -6434,6 +6434,17 @@ assert_contains "W58 T-i1/J7 絵文字付き project のみ: gtd は 'project'�
 assert_contains "W58 T-i1/J7 絵文字付き project のみ: labels は正規化済み" '"project"
   ]' "$W58_OUT"
 
+# ── J8: template save <名> from <#> のタグ抽出も正規化したラベルで判定する ──
+w58_tpl_json() { HOME_F="$W58_HOME/.claude/todo-templates.json" KEY="$1" node -e "const o=JSON.parse(require('fs').readFileSync(process.env.HOME_F,'utf8'));const v=o[process.env.KEY];process.stdout.write(v?JSON.stringify([v.gtd,v.context,v.tags,v.priority]):'MISSING')"; }
+printf '%s' '{}' > "$W58_HOME/.claude/todo-templates.json"
+w58_run "{\"issues.get\":[{\"data\":$(w58_issue 55 'next,project,@home,@claude,p2,#tagC')}]}" run template save w58sfplain from 55
+assert_exit_ok "W58 J8 template save from（絵文字なしラベル）: exit 0" "$W58_EC"
+assert_eq "W58 J8 絵文字なしの GTD / project ラベルは tags に入らない（gtd='next'）" '["next",["@home","@claude"],["#tagC"],"p2"]' "$(w58_tpl_json w58sfplain)"
+w58_run "{\"issues.get\":[{\"data\":$(w58_issue 56 '🎯 next,📁 project,@home,@claude,p2,#tagC')}]}" run template save w58sfemoji from 56
+assert_eq "W58 J8【対照】絵文字付きラベルの Issue からも同じ内容になる" '["next",["@home","@claude"],["#tagC"],"p2"]' "$(w58_tpl_json w58sfemoji)"
+w58_run "{\"issues.get\":[{\"data\":$(w58_issue 57 '🎯 next,@home')}]}" run template save w58sfnopri from 57
+assert_eq "W58 J8【対照】優先度ラベルなしは p3 のまま・タグなし" '["next",["@home"],[],"p3"]' "$(w58_tpl_json w58sfnopri)"
+
 # 検査の空振り防止: アサーション数が想定より少ないときは失敗にする（読めなかった場合の既定値を「問題なし」にしない）
 W58_N=$((PASS-W58_P0))
 if [ "$W58_N" -lt 80 ]; then

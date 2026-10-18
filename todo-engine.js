@@ -5531,16 +5531,9 @@ async function runTemplate(octokit, owner, repo, tokens) {
       const contexts = lnames.filter(l => l.startsWith('@'));
       const priority = lnames.find(l => /^p[123]$/.test(l)) || 'p3';
       // #1936: タグ抽出は issueToJsonObj()/renderIssueList() と同じ
-      // 「GTD・project・context・@claude・priority 以外のラベル」線引きに揃える
-      // （lnames はここでは正規化前の生ラベル名なので GTD_DISPLAY 表記で除外する）。
-      const systemLabels = new Set([
-        ...GTD_LABELS.map(l => GTD_DISPLAY[l]),
-        GTD_DISPLAY[PROJECT_LABEL],
-        ...contexts,
-        '@claude',
-        priority,
-      ]);
-      const tags = lnames.filter(l => !systemLabels.has(l));
+      // 「GTD・project・context・@claude・priority 以外のラベル」線引きに揃える。
+      // 正規化したラベル名で判定するので、絵文字なしの GTD / project ラベルもタグにならない
+      const tags = extractTags(lnames.map(l => normLabel(l)), contexts, lnames.find(l => /^p[123]$/.test(l)) || null);
       templateSaveFrom(name, {
         gtd, contexts, tags,
         due: issue.due || '',
