@@ -5199,6 +5199,29 @@ check('57-d5', '優先度の色 PRI_COLORS は据え置き', E.PRI_COLORS.p1 ===
   check('57-k7', 'getBodyProjectNum: 数字列を文字列で返す（#12 と #123 を区別する）', E.getBodyProjectNum('project: #12\n') === '12' && E.getBodyProjectNum('project: #123\n') === '123', '');
   check('57-k8', 'getBodyProjectNum: # なし・行頭以外・空は null', E.getBodyProjectNum('project: 12\n') === null && E.getBodyProjectNum(' project: #12\n') === null && E.getBodyProjectNum('') === null && E.getBodyProjectNum(undefined) === null, '');
   check('57-k9', 'getBodyProjectNum: 2行あれば最初の行 / 2行目以降の行頭も拾う', E.getBodyProjectNum('project: #12\nproject: #13\n') === '12' && E.getBodyProjectNum('x\nproject: #7\n') === '7', '');
+  // 呼び出し列を記録する octokit（ラベル取得は常に 404 → 作成）
+  const rec = () => {
+    const log = [];
+    return { log, octokit: {
+      request: async (route, a) => { log.push('GET label ' + a.name); const e = new Error('nf'); e.status = 404; throw e; },
+      issues: {
+        removeLabel: async (a) => { log.push('removeLabel ' + a.name); },
+        createLabel: async (a) => { log.push('createLabel ' + a.name + ' ' + a.color); return {}; },
+        addLabels: async (a) => { log.push('addLabels ' + a.labels.join(',')); return {}; },
+      } } };
+  };
+  // (c) replacePriorityLabel: 旧削除 → ensureLabel（GET → 作成）→ 付与、の順
+  { const r = rec(); await E.replacePriorityLabel(r.octokit, 'o', 'r', 1, ['🎯 next', 'p3'], 'p1');
+    check('57-c1', 'replacePriorityLabel: removeLabel → GET → createLabel(優先度の色) → addLabels の順', r.log.join(' | ') === 'removeLabel p3 | GET label p1 | createLabel p1 B60205 | addLabels p1', r.log.join(' | ')); }
+  { const r = rec(); await E.replacePriorityLabel(r.octokit, 'o', 'r', 1, ['p2'], 'clear');
+    check('57-c2', 'replacePriorityLabel: clear は旧ラベルの削除だけ（GET も付与もしない）', r.log.join(' | ') === 'removeLabel p2', r.log.join(' | ')); }
+  { const r = rec(); await E.replacePriorityLabel(r.octokit, 'o', 'r', 1, ['p2'], 'p2');
+    check('57-c3', 'replacePriorityLabel: 同じ値でも一度削除して付け直す', r.log.join(' | ') === 'removeLabel p2 | GET label p2 | createLabel p2 FBCA04 | addLabels p2', r.log.join(' | ')); }
+  { const r = rec(); await E.replacePriorityLabel(r.octokit, 'o', 'r', 1, ['🎯 next'], 'p3', { ensure: false });
+    check('57-c4', 'replacePriorityLabel: ensure:false は GET せず付与だけ（旧ラベルなしなら削除もしない）', r.log.join(' | ') === 'addLabels p3', r.log.join(' | ')); }
+  { const r = rec(); r.octokit.issues.removeLabel = async () => { const e = new Error('boom'); e.status = 500; throw e; };
+    let thrown = null; try { await E.replacePriorityLabel(r.octokit, 'o', 'r', 1, ['p1'], 'p2'); } catch (e) { thrown = e; }
+    check('57-c5', 'replacePriorityLabel: 削除の失敗（404 以外）は握りつぶさず、付与しない', thrown && thrown.message === 'boom' && r.log.length === 0, JSON.stringify(r.log)); }
   // 以降のブロックは追記される
   process.stdout.write(out.join('\n') + '\n');
 })().catch(e => { process.stdout.write('ng\t57-x 例外\t' + e.message + '\n'); });

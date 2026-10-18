@@ -4764,6 +4764,21 @@ async function ensureTagLabel(octokit, owner, repo, name) {
   return ensureLabel(octokit, owner, repo, name, TAG_LABEL_COLOR, t('label.desc_tag'));
 }
 
+// 優先度ラベル（p1/p2/p3）を付け替える。旧ラベルがあれば削除 → level が 'clear' でなければ
+// （opts.ensure が真なら ensureLabel のうえで）付与する。level の検証は呼び出し側で先に済ませること。
+// bulk はラベルの作成をループの前で1回済ませるため { ensure: false } を渡す
+async function replacePriorityLabel(octokit, owner, repo, num, labelNames, level, opts = { ensure: true }) {
+  const oldPri = labelNames.find(l => /^p[123]$/.test(l));
+  if (oldPri) {
+    await removeLabelIfPresent(octokit, owner, repo, num, oldPri);
+  }
+  if (level === 'clear') return;
+  if (opts.ensure) {
+    await ensureLabel(octokit, owner, repo, level, priorityColor(level), t('label.desc_priority'));
+  }
+  await octokit.issues.addLabels({ owner, repo, issue_number: num, labels: [level] });
+}
+
 async function runMove(octokit, owner, repo, tokens) {
   const num = parseInt(tokens[0]);
   const target = tokens[1];
@@ -4996,16 +5011,10 @@ async function runEdit(octokit, owner, repo, tokens) {
     // #1652: validate-before-mutate — 旧priorityラベルを削除する前にparsed.priorityを検証する。
     // 逆順だとtypo時に旧ラベルだけ削除された中途半端な状態でエラー終了してしまう。
     if (parsed.priority !== 'clear') validatePriority(parsed.priority);
-    const oldPri = issue.labels.find(l => /^p[123]$/.test(l));
-    if (oldPri) {
-      await removeLabelIfPresent(octokit, owner, repo, num, oldPri);
-    }
+    await replacePriorityLabel(octokit, owner, repo, num, issue.labels, parsed.priority);
     if (parsed.priority === 'clear') {
       changed.push('priority → '+t('edit.clear'));
     } else {
-      const pcolor = priorityColor(parsed.priority);
-      await ensureLabel(octokit, owner, repo, parsed.priority, pcolor, t('label.desc_priority'));
-      await octokit.issues.addLabels({ owner, repo, issue_number: num, labels: [parsed.priority] });
       changed.push('priority → '+parsed.priority);
     }
   }
@@ -5172,16 +5181,10 @@ async function runPriority(octokit, owner, repo, tokens) {
   if (level !== 'clear') validatePriority(level);
 
   const issue = await fetchAndParseIssue(octokit, owner, repo, num);
-  const oldPri = issue.labels.find(l => /^p[123]$/.test(l));
-  if (oldPri) {
-    await removeLabelIfPresent(octokit, owner, repo, num, oldPri);
-  }
+  await replacePriorityLabel(octokit, owner, repo, num, issue.labels, level);
   if (level === 'clear') {
     runOut(tpl('priority.cleared', { num }));
   } else {
-    const pcolor = priorityColor(level);
-    await ensureLabel(octokit, owner, repo, level, pcolor, t('label.desc_priority'));
-    await octokit.issues.addLabels({ owner, repo, issue_number: num, labels: [level] });
     runOut(tpl('priority.set', { num, level }));
   }
 }
@@ -6043,9 +6046,8 @@ async function runBulk(octokit, owner, repo, tokens) {
     for (const num of nums) {
       try {
         const issue = await fetchAndParseIssue(octokit, owner, repo, num);
-        const oldPri = issue.labels.find(l => /^p[123]$/.test(l));
-        if (oldPri) { await removeLabelIfPresent(octokit, owner, repo, num, oldPri); }
-        if (level !== 'clear') await octokit.issues.addLabels({ owner, repo, issue_number: num, labels: [level] });
+        // ensureLabel はループの前で1回済ませてある（どの削除よりも前）ので、ここでは呼ばない
+        await replacePriorityLabel(octokit, owner, repo, num, issue.labels, level, { ensure: false });
         doneCount++;
       } catch(e) { runOut(tpl('bulk.item_error', { num, msg: e.message })); errCount++; }
     }
@@ -6627,7 +6629,7 @@ module.exports = {
   runReviewSomeday, runPromote, runPromoteProject, runUnlink, runWeeklyProjectAudit,
   runMigrateSubIssue, reservedTitleGuardWord, reservedMultiwordFirstWord, runMain,
   envOpen, envClosed, envListFilters, envTemplateFields, envViewFilters,
-  getReviewedAt, getRecurValue, getBodyProjectNum,
+  replacePriorityLabel, getReviewedAt, getRecurValue, getBodyProjectNum,
   readBodyFileOrExit, ensureCtxLabel, ensureTagLabel,
   CTX_LABEL_COLOR, TAG_LABEL_COLOR, EXTRA_LABEL_COLOR, PROJECT_LABEL_COLOR,
 };
