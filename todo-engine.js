@@ -2772,6 +2772,24 @@ const REPO_NAME = process.env.TODO_REPO_NAME || '';
 // メッセージ表示済みエラー（catch で再表示しないようにフラグを立てる）
 function apiErr(msg) { process.stderr.write(msg+'\n'); const e = new Error(msg); e._msgWritten = true; return e; }
 
+// stderr へ書いてから終了を要求する例外を投げる（#2102 R5）。process.exit(1) の置き換え先。
+// lines は文字列か文字列の配列（配列は '\n' で連結する）。書き込みはここで1回だけ行い、
+// 例外を受けるトップレベル（main / api / run の catch）は何も書かずに終了コードへ変換する。
+// 関数宣言で書くこと（クラスにすると module.exports より下で TDZ になり、
+// 関数宣言だけを抜き出して実行する外部テストからも使えなくなる）。
+function exitWith(lines, exitCode = 1) {
+  const text = Array.isArray(lines) ? lines.join('\n') : String(lines);
+  process.stderr.write(text + '\n');
+  const e = new Error(text);
+  e._msgWritten = true;
+  e._cliExit = true;
+  e.exitCode = exitCode;
+  throw e;
+}
+
+// exitWith() が投げた例外かどうか。try/catch で囲むコードは、これが真なら再送出すること。
+function isCliExit(e) { return !!(e && e._cliExit === true); }
+
 // Octokit カスタムロガー
 // @octokit/plugin-request-log は 4xx を含む全 API エラーを console.error に出力する。
 // 期待される 4xx (404: リソース未存在, 422: バリデーション) は操作ロジック内でハンドリング済みのため
@@ -3082,6 +3100,9 @@ function main() {
   const args = process.argv.slice(2);
   const cmd = args[0];
 
+  // exitWith() が同期的に投げた例外（直接サブコマンドの異常系）をここで終了コードへ変換する。
+  // stderr は exitWith 側で書き済み。それ以外の例外は握りつぶさず再送出する。
+  try {
   switch (cmd) {
     // ユーティリティ
     case 'normalize-due':   process.stdout.write(normalizeDue(args[1], args[2])); break;
@@ -3266,6 +3287,8 @@ function main() {
       const _timingStart = process.hrtime.bigint();
       if (TIMING_ENABLED) process.on('exit', () => printTiming(_timingStart));
       apiMain(args.slice(1)).catch(e => {
+        // exitWith() が投げた例外は stderr 書き込み済み。何も書かずに終了コードへ変換する
+        if (isCliExit(e)) process.exit(e.exitCode);
         // GitHub REST APIの401（認証拒否）はWeb環境等でGH_TOKENが使えないケースを示唆する（Issue #1695）
         if (e.status === 401) {
           process.stderr.write(t('error.gh_auth_rejected') + '\n' + t('error.mcp_fallback_guidance') + '\n');
@@ -3283,6 +3306,8 @@ function main() {
       const _timingStart = process.hrtime.bigint();
       if (TIMING_ENABLED) process.on('exit', () => printTiming(_timingStart));
       runMain(args.slice(1)).catch(e => {
+        // exitWith() が投げた例外は stderr 書き込み済み。何も書かずに終了コードへ変換する
+        if (isCliExit(e)) process.exit(e.exitCode);
         // GitHub REST APIの401（認証拒否）はWeb環境等でGH_TOKENが使えないケースを示唆する（Issue #1695）
         if (e.status === 401) {
           process.stderr.write(t('error.gh_auth_rejected') + '\n' + t('error.mcp_fallback_guidance') + '\n');
@@ -3298,6 +3323,10 @@ function main() {
       process.stderr.write('Unknown command: '+cmd+'\n');
       process.stderr.write('Usage: todo-engine.js <command> [args...]\n');
       process.exit(1);
+  }
+  } catch (e) {
+    if (isCliExit(e)) process.exit(e.exitCode);
+    throw e;
   }
 }
 
@@ -3457,10 +3486,11 @@ function findUnknownFlag(tokens, allowedFlags) {
 function guardUnknownFlag(tokens, allowedFlags, usage, hintKey) {
   const flag = findUnknownFlag(tokens, allowedFlags);
   if (!flag) return;
-  if (usage) process.stderr.write(`${usage}\n`);
-  process.stderr.write(tpl('error.unknown_flag', { flag })+'\n');
-  process.stderr.write(t(hintKey)+'\n');
-  process.exit(1);
+  exitWith([
+    ...(usage ? [usage] : []),
+    tpl('error.unknown_flag', { flag }),
+    t(hintKey),
+  ]);
 }
 
 // タイトル構成トークン列（parseArgs 後の extra を空トークン除去したもの）の先頭語だけを見て、
@@ -3489,11 +3519,12 @@ function findBracketedGtdLabel(titleTokens) {
 function guardBracketedGtdLabel(titleTokens, usage) {
   const word = findBracketedGtdLabel(titleTokens);
   if (!word) return;
-  if (usage) process.stderr.write(`${usage}\n`);
-  process.stderr.write(tpl('error.bracketed_gtd_label', { word })+'\n');
-  process.stderr.write(t('error.bracketed_gtd_label_hint_category')+'\n');
-  process.stderr.write(tpl('error.bracketed_gtd_label_hint_title', { word })+'\n');
-  process.exit(1);
+  exitWith([
+    ...(usage ? [usage] : []),
+    tpl('error.bracketed_gtd_label', { word }),
+    t('error.bracketed_gtd_label_hint_category'),
+    tpl('error.bracketed_gtd_label_hint_title', { word }),
+  ]);
 }
 
 // parsed（parseArgs() の戻り値）のうち、supportedFields に載っていない FLAG_FIELD_MAP の
@@ -3528,10 +3559,11 @@ function guardUnsupportedFlag(parsed, supportedFields, usage) {
   if (!field) return;
   const flag = FLAG_FIELD_MAP[field];
   const commands = FLAG_SUPPORTED_BY[field].map(c => '/todo ' + c).join(' / ');
-  if (usage) process.stderr.write(`${usage}\n`);
-  process.stderr.write(tpl('error.flag_not_supported', { flag }) + '\n');
-  process.stderr.write(tpl('error.flag_not_supported_hint', { flag, commands }) + '\n');
-  process.exit(1);
+  exitWith([
+    ...(usage ? [usage] : []),
+    tpl('error.flag_not_supported', { flag }),
+    tpl('error.flag_not_supported_hint', { flag, commands }),
+  ]);
 }
 
 // 3つの guard 関数の役割分担（#1934 全パート共通。ここに一元的に記す）:
@@ -3566,10 +3598,11 @@ function guardUnsupportedFlag(parsed, supportedFields, usage) {
 function guardExtraPositional(extraTokens, usage, hintKey, example) {
   if (!extraTokens.length) return;
   const extra = extraTokens.join(' ');
-  if (usage) process.stderr.write(`${usage}\n`);
-  process.stderr.write(tpl('error.extra_positional', { extra }) + '\n');
-  process.stderr.write(tpl(hintKey, { example }) + '\n');
-  process.exit(1);
+  exitWith([
+    ...(usage ? [usage] : []),
+    tpl('error.extra_positional', { extra }),
+    tpl(hintKey, { example }),
+  ]);
 }
 
 // /todo add の Usage 行（未知フラグ検出時に stderr へ出す）。
@@ -6630,7 +6663,7 @@ module.exports = {
   renderIssueList, listGroupedByDue, listAll, listSummary, weeklySummary, stats, help, renderToday,
   eisenhower, dashboard, report, doneCount, homeDir, getTemplatePath, getViewPath, readJsonFile,
   writeJsonFile, templateList, templateShow, templateSave, templateSaveFrom, templateUse,
-  templateDelete, viewSave, viewUse, viewList, viewDelete, apiErr, apiMain, main,
+  templateDelete, viewSave, viewUse, viewList, viewDelete, apiErr, exitWith, isCliExit, apiMain, main,
   wrapOctokitTiming, computeGithubMs, printTiming, initOctokit, findUnknownFlag, guardUnknownFlag,
   findBracketedGtdLabel, guardBracketedGtdLabel, findUnsupportedFlagField, guardUnsupportedFlag,
   guardExtraPositional, parseArgs, getToday, toJstDateStr, ensureLabel, fetchAndParseIssue,
