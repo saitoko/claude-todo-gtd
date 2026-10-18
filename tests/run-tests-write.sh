@@ -6261,6 +6261,16 @@ assert_contains "W58 T-a1【対照】bulk done --actual 30m: actual が本文に
 w58_run "{\"issues.get\":[{\"data\":$(w58_issue 46 '🎯 next')}]}" run done 46 --actual xyz
 assert_exit_fail "W58 T-a1【対照】単体 done --actual xyz も exit 1（bulk と同じ）" "$W58_EC"
 assert_contains "W58 T-a1【対照】単体 done: error.time_format" "Time must be in" "$W58_ERR"
+# J2: 単体 done の --actual 検証は Issue の取得より前。Issue が存在せず値も不正なとき、取得エラーではなく error.time_format になる
+w58_run "{\"issues.get\":[$W58_E404]}" run done 99946 --actual xyz
+assert_exit_fail "W58 J2 done --actual xyz: exit 1" "$W58_EC"
+assert_contains "W58 J2 done --actual xyz（Issue なし）: error.time_format" "Error: Time must be in 30m / 1h / 1h30m format" "$W58_ERR"
+assert_not_contains "W58 J2 done --actual xyz（Issue なし）: 取得エラーは出ない" "Not Found" "$W58_ERR"
+assert_eq "W58 J2 done --actual xyz: API を1回も呼ばない（Issue の取得もしない）" "" "$(w58_seq "$W58_LOG")"
+w58_run "{\"issues.get\":[{\"data\":$(w58_issue 47 '🎯 next')}],\"issues.update\":[{},{}],\"issues.listForRepo\":[{\"data\":[]}]}" run done 47 --actual 30m
+assert_exit_ok "W58 J2【対照】done --actual 30m（Issue あり）: exit 0" "$W58_EC"
+assert_eq "W58 J2【対照】done --actual 30m: 取得 → actual 書き込み → close → 後処理の順" "issues.get > issues.update > issues.update > issues.listForRepo" "$(w58_seq "$W58_LOG")"
+assert_contains "W58 J2【対照】done --actual 30m: actual が本文に書かれる" "actual: 30" "$(log_lines_for_method "$W58_LOG" issues.update)"
 
 # ── T-i1: show --json / list --json の出力全体（絵文字付きラベル1件・絵文字なしラベル1件） ──
 W58_EMOJI=$(w58_open 51 '🎯 next,@home,p1,#tagA,@claude' 'due: 2026-10-20\nestimate: 1h\nproject: #12\n')

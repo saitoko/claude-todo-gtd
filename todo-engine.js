@@ -4702,13 +4702,12 @@ async function runDone(octokit, owner, repo, tokens) {
   // #1934 パート1: runDone が実際に読むのは actual/note のみ（配線直前にコードを再確認済み）。
   guardUnsupportedFlag(parsed, COMMAND_SPECS['done'].supportedFields, DONE_USAGE);
 
+  // --actual の検証は Issue の取得（API 呼び出し）より前に行う
+  const actualValue = parseActualOrExit(parsed);
+
   const issue = await fetchAndParseIssue(octokit, owner, repo, num);
   let actual = issue.actual;
-  if (parsed.actual) {
-    const a = parseTime(parsed.actual);
-    if (a === null) { process.stderr.write(t('error.time_format')+'\n'); process.exit(1); }
-    actual = String(a);
-  }
+  if (actualValue !== null) actual = actualValue;
   if (actual !== issue.actual) {
     const body = buildBody({ ...issue, actual });
     await octokit.issues.update({ owner, repo, issue_number: num, body });
