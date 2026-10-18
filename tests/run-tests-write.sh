@@ -6311,21 +6311,21 @@ W58_I_EMOJI_EXPECT='{
   "resumeCondition": null,
   "desc": null,
   "labels": [
-    "🎯 next",
+    "next",
     "@home",
     "p1",
     "#tagA",
     "@claude"
   ]
 }'
-assert_eq "W58 T-i1 show --json（絵文字付きラベル）の出力全体" "$W58_I_EMOJI_EXPECT" "$W58_OUT"
+assert_eq "W58 T-i1/J7 show --json（絵文字付きラベル）の出力全体。labels は正規化済み（'next'）" "$W58_I_EMOJI_EXPECT" "$W58_OUT"
 w58_run "{\"issues.get\":[{\"data\":${W58_PLAIN}}]}" run show 52 --json
 W58_I_PLAIN_EXPECT='{
   "number": 52,
   "title": "W58 open 52",
   "state": "open",
   "closedAt": null,
-  "gtd": null,
+  "gtd": "next",
   "priority": "p2",
   "due": null,
   "estimate": null,
@@ -6335,9 +6335,7 @@ W58_I_PLAIN_EXPECT='{
   ],
   "claude": false,
   "tags": [
-    "next",
-    "#tagB",
-    "project"
+    "#tagB"
   ],
   "recur": null,
   "project": null,
@@ -6353,7 +6351,7 @@ W58_I_PLAIN_EXPECT='{
     "project"
   ]
 }'
-assert_eq "W58 T-i1 show --json（絵文字なしラベル）の出力全体。gtd は null・tags に 'next' / 'project' が残る（現状）" "$W58_I_PLAIN_EXPECT" "$W58_OUT"
+assert_eq "W58 T-i1/J7 show --json（絵文字なしラベル）の出力全体。gtd は 'next'・tags に 'next' / 'project' は入らない" "$W58_I_PLAIN_EXPECT" "$W58_OUT"
 w58_run "{\"issues.listForRepo\":[{\"data\":[${W58_EMOJI}]},{\"data\":[${W58_PLAIN}]}]}" run list next --json
 W58_I_LIST_EXPECT='[
   {
@@ -6416,6 +6414,25 @@ W58_I_LIST_EXPECT='[
   }
 ]'
 assert_eq "W58 T-i1 list next --json の出力全体（絵文字付き・絵文字なしの2件。labels は正規化済み）" "$W58_I_LIST_EXPECT" "$W58_OUT"
+# J7: show --json の labels は list --json と同じ正規化済み。同じ Issue の show と list で labels / gtd / tags が一致する
+w58_run "{\"issues.get\":[{\"data\":${W58_PLAIN}}]}" run show 52 --json
+W58_SHOW_KEYS=$(printf '%s' "$W58_OUT" | node -e "const o=JSON.parse(require('fs').readFileSync(0,'utf8'));process.stdout.write(JSON.stringify([o.gtd,o.tags,o.labels]))")
+assert_eq "W58 T-i1/J7 同じ Issue の show --json と list --json で gtd / tags / labels が一致する" '["next",["#tagB"],["next","@office","p2","#tagB","project"]]' "$W58_SHOW_KEYS"
+# J7: 通常表示（--json なし）。絵文字なしの GTD ラベルでも「GTD: 🎯 next」になり、その他ラベルに 'next' / 'project' は出ない
+w58_run "{\"issues.get\":[{\"data\":${W58_PLAIN}}]}" run show 52
+assert_contains "W58 T-i1/J7 show（絵文字なし GTD ラベル）: GTD Category は 🎯 next" "- GTD Category: 🎯 next" "$W58_OUT"
+assert_contains "W58 T-i1/J7 show（絵文字なし GTD ラベル）: Other Labels は #tagB だけ" "- Other Labels: #tagB" "$W58_OUT"
+assert_not_contains "W58 T-i1/J7 show（絵文字なし GTD ラベル）: Other Labels に next / project が出ない" "Other Labels: next" "$W58_OUT"
+w58_run "{\"issues.get\":[{\"data\":${W58_EMOJI}}]}" run show 51
+assert_contains "W58 T-i1/J7【対照】show（絵文字付き）: GTD Category は 🎯 next" "- GTD Category: 🎯 next" "$W58_OUT"
+assert_contains "W58 T-i1/J7【対照】show（絵文字付き）: Other Labels は #tagA" "- Other Labels: #tagA" "$W58_OUT"
+# J7: GTD ラベルが何もない Issue と、project だけの Issue
+w58_run "{\"issues.get\":[{\"data\":$(w58_issue 53 '@home,p1')}]}" run show 53 --json
+assert_contains "W58 T-i1/J7 GTD ラベルなし: gtd は null" '"gtd": null,' "$W58_OUT"
+w58_run "{\"issues.get\":[{\"data\":$(w58_issue 54 '📁 project')}]}" run show 54 --json
+assert_contains "W58 T-i1/J7 絵文字付き project のみ: gtd は 'project'・labels は 'project'" '"gtd": "project",' "$W58_OUT"
+assert_contains "W58 T-i1/J7 絵文字付き project のみ: labels は正規化済み" '"project"
+  ]' "$W58_OUT"
 
 # 検査の空振り防止: アサーション数が想定より少ないときは失敗にする（読めなかった場合の既定値を「問題なし」にしない）
 W58_N=$((PASS-W58_P0))

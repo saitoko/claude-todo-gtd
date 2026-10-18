@@ -5675,20 +5675,33 @@ async function runTemplate(octokit, owner, repo, tokens) {
   }
 }
 
-function issueToJsonObj(rawIssue) {
-  const lnames = rawIssue.labels.map(l => normLabel(l.name || l));
-  const parsed = parseBodyObj(rawIssue.body || '');
+// GTD カテゴリの判定。引数は normLabel で正規化済みのラベル名の配列（絵文字付き・絵文字なしの両方が同じ短縮名になる）。
+// GTD_LABELS の順で最初に当たったもの、なければ project、どちらもなければ null
+function detectGtd(normalizedLabelNames) {
+  return GTD_LABELS.find(l => normalizedLabelNames.includes(l))
+    || (normalizedLabelNames.includes(PROJECT_LABEL) ? 'project' : null);
+}
 
-  const gtdLabel = GTD_LABELS.find(l => lnames.includes(l))
-    || (lnames.includes(PROJECT_LABEL) ? 'project' : null);
-  const priLabel = lnames.find(l => /^p[123]$/.test(l)) || null;
-  const ctxLabels = lnames.filter(l => l.startsWith('@') && l !== '@claude');
-  const isClaudeTask = lnames.includes('@claude');
+// タグ（GTD・project・context・@claude・優先度以外のラベル）の抽出。引数は normLabel で正規化済みのラベル名の配列。
+// priLabel は優先度ラベル（なければ null）。ラベルの並び順を保つ
+function extractTags(normalizedLabelNames, ctxLabels, priLabel) {
   const systemLabels = new Set([
     ...GTD_LABELS, PROJECT_LABEL, ...ctxLabels, '@claude',
     ...(priLabel ? [priLabel] : []),
   ]);
-  const tags = lnames.filter(l => !systemLabels.has(l));
+  return normalizedLabelNames.filter(l => !systemLabels.has(l));
+}
+
+// opts.includeState が真なら、title の直後に state / closedAt を入れる（show --json 用）
+function issueToJsonObj(rawIssue, opts = {}) {
+  const lnames = rawIssue.labels.map(l => normLabel(l.name || l));
+  const parsed = parseBodyObj(rawIssue.body || '');
+
+  const gtdLabel = detectGtd(lnames);
+  const priLabel = lnames.find(l => /^p[123]$/.test(l)) || null;
+  const ctxLabels = lnames.filter(l => l.startsWith('@') && l !== '@claude');
+  const isClaudeTask = lnames.includes('@claude');
+  const tags = extractTags(lnames, ctxLabels, priLabel);
   // #1854: parsed.estimate は parseBodyObj() が値全体（"2h" 等）を抽出済みなので、
   // formatTime(parseInt(...)) ではなく parseTime() で単位付き文字列を正しく分へ変換する。
   // parseTime() が解釈できない不正な形式は estimateFormatted を null にする
@@ -5698,6 +5711,7 @@ function issueToJsonObj(rawIssue) {
   return {
     number: rawIssue.number,
     title: rawIssue.title,
+    ...(opts.includeState ? { state: rawIssue.state || 'open', closedAt: rawIssue.closedAt || null } : {}),
     gtd: gtdLabel || null,
     priority: priLabel || null,
     due: parsed.due || null,
@@ -5780,20 +5794,23 @@ async function runShow(octokit, owner, repo, tokens) {
     process.exit(1);
   }
 
+  // ラベルは normLabel で正規化したもので判定する（絵文字付き・絵文字なしの GTD ラベルを同じに扱う。
+  // list --json / search --json と同じ線引き）
+  const lnames = issue.labels.map(l => normLabel(l));
+
   // GTDカテゴリを判定
-  const gtdLabel = GTD_LABELS.find(l => issue.labels.includes(GTD_DISPLAY[l]))
-    || (issue.labels.includes(GTD_DISPLAY[PROJECT_LABEL]) ? 'project' : '');
+  const gtdLabel = detectGtd(lnames) || '';
   const gtdDisplay = gtdLabel ? (GTD_DISPLAY[gtdLabel] || gtdLabel) : t('show.unclassified');
 
   // コンテキストを抽出（@で始まるラベル、@claude は除く）
-  const ctxLabels = issue.labels.filter(l => l.startsWith('@') && l !== '@claude');
+  const ctxLabels = lnames.filter(l => l.startsWith('@') && l !== '@claude');
   const ctxDisplay = ctxLabels.length ? ctxLabels.join(', ') : t('list.none');
 
   // @claude ラベルの有無
-  const isClaudeTask = issue.labels.includes('@claude');
+  const isClaudeTask = lnames.includes('@claude');
 
   // 優先度を抽出
-  const priLabel = issue.labels.find(l => /^p[123]$/.test(l)) || '';
+  const priLabel = lnames.find(l => /^p[123]$/.test(l)) || '';
   const priDisplay = priLabel || t('list.none');
 
   // 見積もりを分 → 表示形式に変換
@@ -5804,41 +5821,12 @@ async function runShow(octokit, owner, repo, tokens) {
   const estDisplay = !issue.estimate ? t('list.none')
     : (estMinutes !== null ? formatTime(estMinutes) : tpl('show.estimate_invalid', { raw: issue.estimate }));
 
-  // タグ（GTD・コンテキスト・@claude・優先度以外のラベル）
-  const systemLabels = new Set([
-    ...GTD_LABELS.map(l => GTD_DISPLAY[l]),
-    GTD_DISPLAY[PROJECT_LABEL],
-    ...ctxLabels,
-    '@claude',
-    ...(priLabel ? [priLabel] : []),
-  ]);
-  const tags = issue.labels.filter(l => !systemLabels.has(l));
+  // タグ（GTD・project・コンテキスト・@claude・優先度以外のラベル）
+  const tags = extractTags(lnames, ctxLabels, priLabel || null);
 
-  // --json モード: 構造化 JSON を出力して終了
+  // --json モード: 構造化 JSON を出力して終了（list --json / search --json と同じ組み立て。state / closedAt が加わる）
   if (jsonMode) {
-    const obj = {
-      number: issue.number,
-      title: issue.title,
-      state: issue.state || 'open',
-      closedAt: issue.closedAt || null,
-      gtd: gtdLabel || null,
-      priority: priLabel || null,
-      due: issue.due || null,
-      estimate: issue.estimate || null,
-      estimateFormatted: estMinutes !== null ? formatTime(estMinutes) : null,
-      context: ctxLabels.length ? ctxLabels : [],
-      claude: isClaudeTask,
-      tags: tags.length ? tags : [],
-      recur: issue.recur || null,
-      // issueToJsonObj / runSchema（integer | null）と型を揃える（Issue #2102）。
-      project: issue.project ? parseInt(issue.project) : null,
-      activate: issue.activate || null,
-      dependsOn: issue.dependsOn ? parseInt(issue.dependsOn) : null,
-      resumeCondition: issue.resumeCondition || null,
-      desc: (issue.desc && issue.desc.trim()) ? issue.desc.trim() : null,
-      labels: issue.labels,
-    };
-    runOut(JSON.stringify(obj, null, 2));
+    runOut(JSON.stringify(issueToJsonObj(issue, { includeState: true }), null, 2));
     return;
   }
 
@@ -6648,7 +6636,7 @@ module.exports = {
   runReviewSomeday, runPromote, runPromoteProject, runUnlink, runWeeklyProjectAudit,
   runMigrateSubIssue, reservedTitleGuardWord, reservedMultiwordFirstWord, runMain,
   envOpen, envClosed, envListFilters, envTemplateFields, envViewFilters,
-  parseActualOrExit, ensurePriorityLabel, completeIssue, fetchParentProject, swapGtdLabel, replacePriorityLabel, getReviewedAt, getRecurValue, getBodyProjectNum,
+  detectGtd, extractTags, parseActualOrExit, ensurePriorityLabel, completeIssue, fetchParentProject, swapGtdLabel, replacePriorityLabel, getReviewedAt, getRecurValue, getBodyProjectNum,
   readBodyFileOrExit, ensureCtxLabel, ensureTagLabel,
   CTX_LABEL_COLOR, TAG_LABEL_COLOR, EXTRA_LABEL_COLOR, PROJECT_LABEL_COLOR,
 };
