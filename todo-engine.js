@@ -4206,28 +4206,9 @@ async function runAdd(octokit, owner, repo, tokens) {
   // resume_condition バリデーション（改行混入のみ禁止）。ラベル作成等の副作用より前に検証する。
   if (parsed.resumeCondition) validateResumeCondition(parsed.resumeCondition);
 
-  const labels = [GTD_DISPLAY[gtd]];
-  // コンテキストラベル作成
-  for (const ctx of parsed.contexts) {
-    await ensureCtxLabel(octokit, owner, repo, ctx);
-    labels.push(ctx);
-  }
-  // タグラベル作成（#tag: 色 0075CA でコンテキストと区別）
-  for (const tag of parsed.tags) {
-    await ensureTagLabel(octokit, owner, repo, tag);
-    labels.push(tag);
-  }
-  // 優先度ラベル作成
-  const pcolor = priorityColor(priority);
-  await ensureLabel(octokit, owner, repo, priority, pcolor, t('label.desc_priority'));
-  labels.push(priority);
-  // --label オプションで指定された追加ラベル
-  for (const lbl of parsed.labels) {
-    await ensureLabel(octokit, owner, repo, lbl, EXTRA_LABEL_COLOR, '');
-    labels.push(lbl);
-  }
-
-  // activate / before 処理
+  // activate / before 処理（Issue #2135: 検証を含むので、ラベル作成より前に行う。
+  // 旧実装はラベル作成の後だったため、不正な --before / --activate でエラー終了しても
+  // ctx / tag / 優先度 / --label のラベルだけが GitHub に作られていた）
   let activate = '';
   let beforeStr = '';
   if (parsed.before) {
@@ -4259,12 +4240,33 @@ async function runAdd(octokit, owner, repo, tokens) {
     }
   }
 
-  // --body / --body-file: ユーザー提供の本文（--body-file 優先）
+  // --body / --body-file: ユーザー提供の本文（--body-file 優先）。読めないパスの検証を含むため、これもラベル作成より前（Issue #2135）
   let userBody = '';
   if (parsed.bodyFile) {
     userBody = readBodyFileOrExit(parsed.bodyFile);
   } else if (parsed.body !== null) {
     userBody = parsed.body;
+  }
+
+  const labels = [GTD_DISPLAY[gtd]];
+  // コンテキストラベル作成
+  for (const ctx of parsed.contexts) {
+    await ensureCtxLabel(octokit, owner, repo, ctx);
+    labels.push(ctx);
+  }
+  // タグラベル作成（#tag: 色 0075CA でコンテキストと区別）
+  for (const tag of parsed.tags) {
+    await ensureTagLabel(octokit, owner, repo, tag);
+    labels.push(tag);
+  }
+  // 優先度ラベル作成
+  const pcolor = priorityColor(priority);
+  await ensureLabel(octokit, owner, repo, priority, pcolor, t('label.desc_priority'));
+  labels.push(priority);
+  // --label オプションで指定された追加ラベル
+  for (const lbl of parsed.labels) {
+    await ensureLabel(octokit, owner, repo, lbl, EXTRA_LABEL_COLOR, '');
+    labels.push(lbl);
   }
 
   const metaBody = buildBody({
@@ -4694,8 +4696,12 @@ async function runDone(octokit, owner, repo, tokens) {
 
   // --actual の検証は Issue の取得（API 呼び出し）より前に行う
   const actualValue = parseActualOrExit(parsed);
+  // --note の検証も書き込み（actual の更新・close）より前に行う（Issue #2135）
+  if (parsed.note) assertCommentBody(parsed.note);
 
   const issue = await fetchAndParseIssue(octokit, owner, repo, num);
+  // 壊れた recur: の検出も actual の更新より前に行う（Issue #2135。従来は更新の後、completeIssue の中で失敗していた）
+  if (issue.recur) validateRecur(issue.recur);
   let actual = issue.actual;
   if (actualValue !== null) actual = actualValue;
   if (actual !== issue.actual) {
@@ -4825,6 +4831,8 @@ async function runMove(octokit, owner, repo, tokens) {
   // #1934 パート1: runMove が実際に読むのは note のみ（配線直前にコードを再確認済み）。
   guardUnsupportedFlag(parsed, COMMAND_SPECS['move'].supportedFields, MOVE_USAGE);
   const noteText = parsed.note || null;
+  // --note の検証は GTD ラベルの付け替えより前に行う（Issue #2135）
+  if (noteText) assertCommentBody(noteText);
   const newLabel = await execMoveGtd(octokit, owner, repo, num, target);
   runOut(tpl('move.done', { num, label: newLabel }));
   // --note が指定されていればコメントを追加（GTDラベル変更後）
@@ -4849,7 +4857,9 @@ function sanitizeCommentBody(rawText) {
   return { body, error: null };
 }
 
-async function createCommentSanitized(octokit, owner, repo, num, rawText) {
+// コメント本文を検査し、問題があれば（stderr へ書いて）exitWith で終わる。正規化後の本文を返す。
+// 書き込みを伴うコマンド（done / move の --note）は、書き込みより前にこれを呼んで検証を済ませる（Issue #2135）
+function assertCommentBody(rawText) {
   const { body, error } = sanitizeCommentBody(rawText);
   if (error === 'too_long') {
     exitWith(tpl('error.comment_too_long', { n: body.length }));
@@ -4857,6 +4867,11 @@ async function createCommentSanitized(octokit, owner, repo, num, rawText) {
   if (error === 'empty') {
     exitWith(t('error.comment_empty'));
   }
+  return body;
+}
+
+async function createCommentSanitized(octokit, owner, repo, num, rawText) {
+  const body = assertCommentBody(rawText);
   await octokit.issues.createComment({ owner, repo, issue_number: num, body });
 }
 
@@ -5242,6 +5257,17 @@ function normalizeTagTokens(rawTokens) {
   });
 }
 
+// normalizeTagTokens の戻り値（@ctx / #tag のラベル名の配列）を、1つずつ validateCtx / validateTag にかける。
+// tag / untag / bulk tag / bulk untag で共用する。ラベルの作成（ensureCtxLabel / ensureTagLabel）より前に
+// 全件を検証するために使う: 検証と作成を1つのループで交互に行うと、2個目以降が不正なとき、
+// 1個目のラベルだけが GitHub に作られた状態でエラー終了する（Issue #2135）
+function validateTagLabels(labelList) {
+  for (const lbl of labelList) {
+    if (lbl.startsWith('#')) validateTag(lbl.slice(1));
+    else validateCtx(lbl.slice(1));
+  }
+}
+
 // @ctx ラベルを全タスク横断でリネームする（label rename / tag rename で共用。Issue #1644）
 async function renameCtxLabel(octokit, owner, repo, raw1, raw2, usage) {
   if (!raw1 || !raw2) { exitWith(`Usage: ${usage}`); }
@@ -5276,15 +5302,11 @@ async function runTag(octokit, owner, repo, tokens) {
   assertIssueNumberArg(tokens[0]);
   const labelList = normalizeTagTokens(tokens.slice(1));
   if (!labelList.length) { exitWith('Usage: run tag <number> @ctx/#tag ...'); }
+  validateTagLabels(labelList);
   for (const lbl of labelList) {
-    let created;
-    if (lbl.startsWith('#')) {
-      validateTag(lbl.slice(1));
-      created = await ensureTagLabel(octokit, owner, repo, lbl);
-    } else {
-      validateCtx(lbl.slice(1));
-      created = await ensureCtxLabel(octokit, owner, repo, lbl);
-    }
+    const created = lbl.startsWith('#')
+      ? await ensureTagLabel(octokit, owner, repo, lbl)
+      : await ensureCtxLabel(octokit, owner, repo, lbl);
     // 既存ラベルに無い名前は打ち間違いの可能性があるため明示する（Issue #1686）
     if (created) runOut(tpl('label.created', { name: lbl }));
   }
@@ -5298,10 +5320,7 @@ async function runUntag(octokit, owner, repo, tokens) {
   assertIssueNumberArg(tokens[0]);
   const labelList = normalizeTagTokens(tokens.slice(1));
   if (!labelList.length) { exitWith('Usage: run untag <number> @ctx/#tag ...'); }
-  for (const lbl of labelList) {
-    if (lbl.startsWith('#')) { validateTag(lbl.slice(1)); }
-    else { validateCtx(lbl.slice(1)); }
-  }
+  validateTagLabels(labelList);
   await execRemoveLabels(octokit, owner, repo, num, labelList);
   runOut(tpl('tag.removed', { num, labels: labelList.join(' ') }));
 }
@@ -5960,6 +5979,8 @@ async function runBulk(octokit, owner, repo, tokens) {
     for (const num of nums) {
       try {
         const issue = await fetchAndParseIssue(octokit, owner, repo, num);
+        // 壊れた recur: は actual の更新より前に検出する（Issue #2135。runDone と同じ）
+        if (issue.recur) validateRecur(issue.recur);
         let actual = issue.actual;
         if (actualValue !== null) actual = actualValue;
         if (actual !== issue.actual) {
@@ -6026,10 +6047,11 @@ async function runBulk(octokit, owner, repo, tokens) {
     // （#1686）、guard を足すとメッセージが「オプション指定に見えます」から変わってしまう。
     const labelList = normalizeTagTokens(rest);
     if (!labelList.length) { exitWith(BULK_USAGE); }
+    validateTagLabels(labelList);
     for (const lbl of labelList) {
-      let created;
-      if (lbl.startsWith('#')) { validateTag(lbl.slice(1)); created = await ensureTagLabel(octokit, owner, repo, lbl); }
-      else { validateCtx(lbl.slice(1)); created = await ensureCtxLabel(octokit, owner, repo, lbl); }
+      const created = lbl.startsWith('#')
+        ? await ensureTagLabel(octokit, owner, repo, lbl)
+        : await ensureCtxLabel(octokit, owner, repo, lbl);
       // 既存ラベルに無い名前は打ち間違いの可能性があるため明示する（Issue #1686）
       if (created) runOut(tpl('label.created', { name: lbl }));
     }
@@ -6041,10 +6063,7 @@ async function runBulk(octokit, owner, repo, tokens) {
   } else if (sub === 'untag') {
     const labelList = normalizeTagTokens(rest);
     if (!labelList.length) { exitWith(BULK_USAGE); }
-    for (const lbl of labelList) {
-      if (lbl.startsWith('#')) { validateTag(lbl.slice(1)); }
-      else { validateCtx(lbl.slice(1)); }
-    }
+    validateTagLabels(labelList);
     for (const num of nums) {
       try {
         await execRemoveLabels(octokit, owner, repo, num, labelList);
@@ -6169,6 +6188,10 @@ async function runPromoteProject(octokit, owner, repo, tokens) {
     exitWith(tpl('error.already_project', { num }));
   }
 
+  // --outcome のタイトル検証も、ラベルの作成・付け替えより前に行う（Issue #2135）。
+  // already_project の判定の後に置くので、複数のエラーが重なったときの優先順位は従来と同じ
+  if (outcomeIdx !== -1 && tokens[outcomeIdx+1]) validateTitle(tokens[outcomeIdx+1]);
+
   // 📁 project ラベルの存在確認・作成を、旧 GTD ラベルの削除より前に行う。
   // 逆順だと確認・作成の失敗時に「旧 GTD ラベルだけ外れて project ラベルが付かない」状態が残る
   await ensureLabel(octokit, owner, repo, GTD_DISPLAY[PROJECT_LABEL], PROJECT_LABEL_COLOR, 'GTD: project');
@@ -6179,7 +6202,6 @@ async function runPromoteProject(octokit, owner, repo, tokens) {
   let newTitle = issue.title;
   if (outcomeIdx !== -1 && tokens[outcomeIdx+1]) {
     newTitle = tokens[outcomeIdx+1];
-    validateTitle(newTitle);
     await octokit.issues.update({ owner, repo, issue_number: num, title: newTitle });
   }
 
@@ -6625,8 +6647,8 @@ module.exports = {
   guardExtraPositional, parseArgs, getToday, toJstDateStr, ensureLabel, fetchAndParseIssue,
   addSubIssue, listSubIssues, removeSubIssue, updateIssueBody, runOut, runAdd, runList,
   fetchAllOpen, fetchOpenByCategory, labelNamesForCategory, fetchRecentClosed, createRecurIssue, postDoneProcessing, runDone, execMoveGtd,
-  removeLabelIfPresent, execRemoveLabels, runMove, sanitizeCommentBody, createCommentSanitized, runComment, runEdit,
-  runDue, runDesc, runRecur, runLink, runRename, runPriority, normalizeTagTokens, renameCtxLabel,
+  removeLabelIfPresent, execRemoveLabels, runMove, sanitizeCommentBody, assertCommentBody, createCommentSanitized, runComment, runEdit,
+  runDue, runDesc, runRecur, runLink, runRename, runPriority, normalizeTagTokens, validateTagLabels, renameCtxLabel,
   runTag, runUntag, runLabel, runSearch, runArchive, runDashboard, runToday, runEisenhower,
   runStats, runReport, runHelp, runTemplate, issueToJsonObj, runSchema, runShow, runView, runBulk,
   runReviewSomeday, runPromote, runPromoteProject, runUnlink, runWeeklyProjectAudit,
