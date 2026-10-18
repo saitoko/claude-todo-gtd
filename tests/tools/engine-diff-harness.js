@@ -641,6 +641,52 @@ const CORPUS = [
     },
     responses: {},
     marker: { stdout: K_MARKERS[sub], exit: 0 } })),
+
+  // ── (k) 追加: 7日以内の期限 / 期限切れの routine（recur あり・CRLF の recur）/ 古い reviewed_at ──
+  // 上の k-direct が届かなかった分岐（renderToday の routine 期限切れ、thisWeek の集計）を通す。
+  ...['list-all', 'list-summary', 'weekly-summary', 'stats', 'today', 'dashboard', 'eisenhower', 'report'].map(sub => ({
+    id: 'k2-direct-' + sub, argv: [sub],
+    env: {
+      TODAY_ENV: '2026-10-18', DAYS_ENV: '7', CLOSED_ENV: '[]',
+      OPEN_ENV: JSON.stringify([
+        openItem(911, { title: 'due in week', body: 'due: 2026-10-21\n', labels: [NEXT, 'p2'] }),
+        openItem(912, { title: 'due in week crlf', body: 'due: 2026-10-20\r\nestimate: 30m\r\n', labels: [NEXT] }),
+        openItem(913, { title: 'routine overdue', body: 'due: 2026-10-10\nrecur: weekly:sat\n', labels: ['🔁 routine'] }),
+        openItem(914, { title: 'routine overdue crlf', body: 'due: 2026-10-16\r\nrecur: weekly\r\n', labels: ['🔁 routine'] }),
+        openItem(915, { title: 'routine overdue no recur', body: 'due: 2026-10-12\n', labels: ['🔁 routine'] }),
+        openItem(916, { title: 'routine today', body: 'due: 2026-10-18\nrecur: daily\n', labels: ['🔁 routine'] }),
+        openItem(917, { title: 'someday old review', body: 'reviewed_at: 2026-08-01\r\n', labels: [SOMEDAY] }),
+        openItem(918, { title: 'child crlf', body: 'project: #12\r\ndue: 2026-10-19\n', labels: [NEXT] }),
+        openItem(919, { title: 'project 12', body: '', labels: [PROJ] }),
+      ]),
+    },
+    responses: {},
+    marker: { stdout: sub === 'stats' ? { ja: '全タスク: 9件', en: 'Total tasks: 9' } : sub === 'list-summary' ? '📊 next' : sub === 'report' ? { ja: '期間', en: 'Period' } : sub === 'today' ? 'routine overdue crlf' : 'due in week', exit: 0 } })),
+
+  // ── (k) run unlink / migrate --dry-run の body 読み取り ──
+  { id: 'k-unlink-lf', argv: ['run', 'unlink', '950'],
+    responses: { 'issues.get': [iss(950, { body: 'project: #12\nhello\n' })], 'GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues': [{ data: [{ id: 9950 }] }],
+      'DELETE /repos/{owner}/{repo}/issues/{issue_number}/sub_issue': [{ data: {} }], 'issues.update': [{}] },
+    marker: { logSeq: ['issues.get', 'DELETE', 'issues.update'], exit: 0 } },
+  { id: 'k-unlink-crlf-mid', argv: ['run', 'unlink', '951'],
+    responses: { 'issues.get': [iss(951, { body: 'due: 2026-10-30\r\nproject: #12\r\nhello\r\n' })], 'GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues': [{ data: [{ id: 9951 }] }],
+      'DELETE /repos/{owner}/{repo}/issues/{issue_number}/sub_issue': [{ data: {} }], 'issues.update': [{}] },
+    marker: { logSeq: ['issues.get', 'DELETE', 'issues.update'], exit: 0 } },
+  { id: 'k-unlink-dup-keys', argv: ['run', 'unlink', '952'],
+    responses: { 'issues.get': [iss(952, { body: 'project: #12\nproject: #13\n' })], 'GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues': [{ data: [{ id: 9952 }] }],
+      'DELETE /repos/{owner}/{repo}/issues/{issue_number}/sub_issue': [{ data: {} }], 'issues.update': [{}] },
+    marker: { logSeq: ['issues.get', 'DELETE', 'issues.update'], exit: 0 } },
+  { id: 'k-unlink-no-hash', argv: ['run', 'unlink', '953'],
+    responses: { 'issues.get': [iss(953, { body: 'project: 12\nproject: #x\n' })] },
+    marker: { logSeq: ['issues.get'], exit: 1 } },
+  { id: 'k-unlink-force-unregistered', argv: ['run', 'unlink', '954', '--force'],
+    responses: { 'issues.get': [iss(954, { body: 'project: #123\n' })], 'GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues': [{ data: [] }], 'issues.update': [{}] },
+    marker: { logSeq: ['issues.get', 'issues.update'], exit: 0 } },
+  { id: 'k-migrate-dry-run-boundaries', argv: ['run', 'migrate', 'sub-issue', '--dry-run'],
+    responses: { 'issues.listForRepo': [list(
+      openItem(960, { body: 'project: #12\r\n' }), openItem(961, { body: 'project: #12\nproject: #13\n' }),
+      openItem(962, { body: 'project: 12\n' }), openItem(963, { body: 'x\nproject: #123\n' }), openItem(964, { body: ' project: #12\n' }))] },
+    marker: { stdout: '#963', exit: 0 } },
 ];
 
 if (require.main === module) process.exit(main());

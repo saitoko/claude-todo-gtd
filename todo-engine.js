@@ -18,6 +18,11 @@ const FORBIDDEN_CHARS = ';$`()\"\'' + String.fromCharCode(92) + '|&><{}';
 const MAX_OPEN_ISSUES_LIMIT = 200; // GitHub API ページネーション上限。これを超える場合は警告を出力
 const MAX_SUB_ISSUES_LIMIT = 500; // sub-issue 一覧のページネーション上限（#1881: 無限ループ防止の安全弁。GitHub の現行上限は親1つにつき100件なので通常は到達しない）
 const PRI_COLORS = { p1: 'B60205', p2: 'FBCA04', p3: '0075CA' };
+// ラベル作成時の色。PRI_COLORS と値が同じものがあるが意味が別なので共有しない
+const CTX_LABEL_COLOR = 'FBCA04';     // @context ラベル
+const TAG_LABEL_COLOR = '0075CA';     // #tag ラベル
+const EXTRA_LABEL_COLOR = 'EDEDED';   // add --label で指定した追加ラベル
+const PROJECT_LABEL_COLOR = '0052CC'; // GTD: project ラベル
 // GitHub REST API バージョン（Issue #2031）。2022-11-28 は2028-03-10に sunset 予定
 // （廃止対象はエンドポイントではなくバージョンそのもの。書き込み系リクエストで
 // Deprecation 警告が出る）。移行先は破壊的変更を含む初のカレンダーバージョン
@@ -1562,6 +1567,12 @@ function normLabel(name) {
 }
 function getLnames(issue) { return issue.labels.map(l => normLabel(l.name)); }
 function getDue(issue) { const m = (issue.body||'').match(/^due: (\d{4}-\d{2}-\d{2})/m); return m ? m[1] : null; }
+// reviewed_at の日付（なければ ''）。getDue と同じく表示・集計用に形式の正しい値だけを拾う
+function getReviewedAt(issue) { return (issue.body||'').match(/^reviewed_at: (\d{4}-\d{2}-\d{2})/m)?.[1] || ''; }
+// recur の値（空白を含まない1トークン。なければ null）
+function getRecurValue(issue) { const m = (issue.body||'').match(/^recur: (\S+)/m); return m ? m[1] : null; }
+// body の project: #N 行の N（文字列。なければ null）
+function getBodyProjectNum(body) { const m = (body||'').match(/^project: #(\d+)/m); return m ? m[1] : null; }
 function getPri(lnames) { return lnames.find(l => /^p[123]$/.test(l)) || 'p9'; }
 function priIcon(p) { return p==='p1' ? '🔴 ' : p==='p2' ? '🟡 ' : ''; }
 function getCtx(lnames) { return lnames.filter(l => l.startsWith('@')); }
@@ -1584,9 +1595,6 @@ function sortByPriDue(a, b) {
 
 function sortByReviewedAtThenPri(a, b, today) {
   const STALE_DAYS = 30;
-  const getReviewedAt = (issue) => {
-    return (issue.body||'').match(/^reviewed_at: (\d{4}-\d{2}-\d{2})/m)?.[1] || '';
-  };
   const isStale = (issue) => {
     const r = getReviewedAt(issue);
     return !r || daysBetween(r, today) >= STALE_DAYS;
@@ -1605,8 +1613,8 @@ function renderIssueList(issue, today) {
   // \w+ はコロンにマッチしないため、weekly:sat のようなサフィックス付き値が
   // weekly に切り詰められて表示されるバグがあった（Issue #1676 対応時に発見・修正）。
   // recur の値は行末までの1トークン（空白を含まない）なので \S+ で全体を拾う。
-  const recur = (issue.body||'').match(/^recur: (\S+)/m);
-  const proj = (issue.body||'').match(/^project: #(\d+)/m);
+  const recur = getRecurValue(issue);
+  const proj = getBodyProjectNum(issue.body);
   const est = estimateMinutesFromBody(issue.body||'');
   let line = '  '+priIcon(getPri(lnames))+'#'+issue.number+'  '+issue.title;
   if (ctx.length) line += '  ['+ctx.join(' ')+']';
@@ -1615,11 +1623,11 @@ function renderIssueList(issue, today) {
   // #1854: parseTime() が解釈できない不正な estimate 値は "⏱0m" のように黙って握りつぶさず、
   // ⚠️ 付きで生値を表示して気づけるようにする（無視すると「静かな期待値乖離」になるため）。
   if (est.raw !== null) line += est.minutes !== null ? '  ⏱'+formatTime(est.minutes) : '  ⏱⚠️'+est.raw;
-  if (proj) line += '  [project:#'+proj[1]+']';
-  if (recur) line += '  🔄'+recur[1];
+  if (proj) line += '  [project:#'+proj+']';
+  if (recur) line += '  🔄'+recur;
   // someday かつ長期未見直しの場合にマーカーを付ける
   if (today && (lnames.includes('someday') || lnames.includes('🌈 someday'))) {
-    const reviewedAt = (issue.body||'').match(/^reviewed_at: (\d{4}-\d{2}-\d{2})/m)?.[1] || '';
+    const reviewedAt = getReviewedAt(issue);
     if (!reviewedAt || daysBetween(reviewedAt, today) >= 30) {
       line = '  ⚠️' + line.slice(2);
     }
@@ -1628,7 +1636,7 @@ function renderIssueList(issue, today) {
   // （renderToday の routineStale と同一の計算・閾値を再利用。Issue #1776）
   if (today && lnames.includes('routine') && due) {
     if (recur) {
-      const cycles = computeCyclesOverdue(recur[1], due, today);
+      const cycles = computeCyclesOverdue(recur, due, today);
       if (cycles >= STALE_CYCLE_THRESHOLD) {
         line = '  🕰' + line.slice(2);
       }
@@ -1907,10 +1915,10 @@ function listAll({ open: issues, today, filters = {} }) {
   const d7 = new Date(today); d7.setDate(d7.getDate()+7);
   const d7str = d7.toISOString().slice(0,10);
   for (const issue of issues) {
-    const dueMatch = (issue.body||'').match(/^due: (\d{4}-\d{2}-\d{2})/m);
-    if (dueMatch) {
-      if (dueMatch[1] < today) overdue++;
-      else if (dueMatch[1] <= d7str) thisWeek++;
+    const dueStr = getDue(issue);
+    if (dueStr) {
+      if (dueStr < today) overdue++;
+      else if (dueStr <= d7str) thisWeek++;
     }
   }
   w('---\n');
@@ -1932,10 +1940,10 @@ function listSummary({ open: issues, today }) {
     const lnames = getLnames(issue);
     for (const gl of GTD_LABELS) { if (lnames.includes(gl)) counts[gl]++; }
     if (lnames.includes(PROJECT_LABEL)) counts[PROJECT_LABEL]++;
-    const dueMatch = (issue.body||'').match(/^due: (\d{4}-\d{2}-\d{2})/m);
-    if (dueMatch) {
-      if (dueMatch[1] < today) overdue++;
-      else if (dueMatch[1] <= d7str) thisWeek++;
+    const dueStr = getDue(issue);
+    if (dueStr) {
+      if (dueStr < today) overdue++;
+      else if (dueStr <= d7str) thisWeek++;
     }
   }
   const parts = [...GTD_LABELS, PROJECT_LABEL].filter(l => counts[l] > 0).map(l => l+': '+cnt(counts[l]));
@@ -1958,9 +1966,8 @@ function weeklySummary({ open: issues, today }) {
     const lnames = getLnames(issue);
     for (const gl of GTD_LABELS) { if (lnames.includes(gl)) counts[gl]++; }
     if (lnames.includes(PROJECT_LABEL)) counts[PROJECT_LABEL]++;
-    const dueMatch = (issue.body||'').match(/^due: (\d{4}-\d{2}-\d{2})/m);
-    if (dueMatch) {
-      const due = dueMatch[1];
+    const due = getDue(issue);
+    if (due) {
       if (due < today) { overdue++; overdueList.push('    #'+issue.number+' '+issue.title+' ('+due+')'); }
       else if (due <= d7str) { thisWeek++; thisWeekList.push('    #'+issue.number+' '+issue.title+' ('+due+')'); }
     }
@@ -1991,10 +1998,10 @@ function stats({ open: issues, closed, today }) {
     if (lnames.includes(PROJECT_LABEL)) gtdCounts[PROJECT_LABEL]++;
     const pri = lnames.find(l => /^p[123]$/.test(l));
     if (pri) priCounts[pri]++; else priCounts.none++;
-    const dueMatch = (issue.body||'').match(/^due: (\d{4}-\d{2}-\d{2})/m);
-    if (dueMatch) {
-      if (dueMatch[1] < today) overdue++;
-      else if (dueMatch[1] <= d7str) thisWeek++;
+    const dueStr = getDue(issue);
+    if (dueStr) {
+      if (dueStr < today) overdue++;
+      else if (dueStr <= d7str) thisWeek++;
     }
   }
   // 完了実績
@@ -2120,9 +2127,9 @@ function renderToday({ open: issues, today: todayStr, closed }) {
     const due = getDue(issue);
     if (lnames.includes('routine')) {
       if (due && due < todayStr) {
-        const recurMatch = (issue.body||'').match(/^recur: (\S+)/m);
-        if (recurMatch) {
-          const cycles = computeCyclesOverdue(recurMatch[1], due, todayStr);
+        const recurValue = getRecurValue(issue);
+        if (recurValue) {
+          const cycles = computeCyclesOverdue(recurValue, due, todayStr);
           if (cycles >= STALE_CYCLE_THRESHOLD) routineStale.push({ issue, cycles });
           else routineOverdue.push(issue);
         } else {
@@ -2438,8 +2445,8 @@ function report({ open, closed, today, days: daysRaw }) {
     const lnames = getLnames(issue);
     for (const gl of GTD_LABELS) { if (lnames.includes(gl)) openByGtd[gl]++; }
     if (lnames.includes(PROJECT_LABEL)) openByGtd[PROJECT_LABEL]++;
-    const dueMatch = (issue.body||'').match(/^due: (\d{4}-\d{2}-\d{2})/m);
-    if (dueMatch && dueMatch[1] < today) overdueCount++;
+    const dueStr = getDue(issue);
+    if (dueStr && dueStr < today) overdueCount++;
   }
 
   const maxCount = Math.max(...Object.values(dailyCounts), 1);
@@ -2966,16 +2973,9 @@ async function apiMain(subArgs) {
         if (!num) { throw apiErr('Usage: api done-issue <number>'); }
         const issue = await fetchAndParseIssue(octokit, owner, repo, num);
         // #1652: create-before-close — 次周期Issueの作成をcloseより先に行う（詳細はcreateRecurIssue定義部のコメント参照）
-        const { recurLine, newIssueNumber } = await createRecurIssue(octokit, owner, repo, issue);
-        try {
-          await octokit.issues.update({ owner, repo, issue_number: num, state: 'closed' });
-        } catch (e) {
-          if (newIssueNumber) {
-            throw apiErr('Error: Failed to close issue #'+num+' (a new recurring issue #'+newIssueNumber+' was already created): '+e.message+'. There may now be two open issues for the same task (original #'+num+' and new #'+newIssueNumber+'). Please check manually.');
-          }
-          throw e;
-        }
-        const { otherLines } = await postDoneProcessing(octokit, owner, repo, num, issue);
+        // api の文言は外部インターフェース（英語固定）なので MESSAGES へは寄せず、ここで直書きのまま渡す
+        const { recurLine, newIssueNumber, otherLines } = await completeIssue(octokit, owner, repo, num, issue,
+          (n, newNum, e) => apiErr('Error: Failed to close issue #'+n+' (a new recurring issue #'+newNum+' was already created): '+e.message+'. There may now be two open issues for the same task (original #'+n+' and new #'+newNum+'). Please check manually.'));
         process.stdout.write(JSON.stringify({
           ok: true,
           recurLine: recurLine || null,
@@ -3955,6 +3955,21 @@ async function fetchAndParseIssue(octokit, owner, repo, num) {
   };
 }
 
+// 親 project の取得と判定だけを行う。メッセージの出力・exit / return / skip / 続行といった
+// 失敗時の扱いは呼び出し側（add / template use / link / migrate sub-issue）で決める。
+// 戻り値: { status: 'ok', issue } / { status: 'not_project', issue } / { status: 'fetch_failed', error }
+// try/catch の範囲は取得だけ（ラベルの判定中に起きた例外は握りつぶさず呼び出し側へ伝える）
+async function fetchParentProject(octokit, owner, repo, num) {
+  let issue;
+  try {
+    issue = await fetchAndParseIssue(octokit, owner, repo, num);
+  } catch (error) {
+    return { status: 'fetch_failed', error };
+  }
+  if (!issue.labels.some(l => normLabel(l) === PROJECT_LABEL)) return { status: 'not_project', issue };
+  return { status: 'ok', issue };
+}
+
 // ─── sub-issue ヘルパ（Phase 1 互換レイヤ） ───
 
 // 親 Issue に子を sub-issue として登録
@@ -4061,6 +4076,21 @@ async function updateIssueBody(octokit, owner, repo, num, fields) {
 // 確認メッセージを stdout に出力
 function runOut(msg) { process.stdout.write(msg+'\n'); }
 
+// --body-file の読み込み。パスが無い・読めないときはエラーを stderr に出して exit 1
+function readBodyFileOrExit(filePath) {
+  const resolvedPath = path.resolve(filePath);
+  if (!fs.existsSync(resolvedPath)) {
+    process.stderr.write(tpl('error.body_file_not_found', { path: resolvedPath })+'\n');
+    process.exit(1);
+  }
+  try {
+    return fs.readFileSync(resolvedPath, 'utf8');
+  } catch (e) {
+    process.stderr.write(tpl('error.body_file_read_failed', { msg: e.message })+'\n');
+    process.exit(1);
+  }
+}
+
 // --- 各コマンドハンドラ ---
 
 async function runAdd(octokit, owner, repo, tokens) {
@@ -4162,14 +4192,11 @@ async function runAdd(octokit, owner, repo, tokens) {
   let parentVerified = false;
   if (parsed.project) {
     const parentNum = parseInt(parsed.project);
-    let parentIssue = null;
-    try {
-      parentIssue = await fetchAndParseIssue(octokit, owner, repo, parentNum);
-    } catch (e) {
-      process.stderr.write(tpl('warn.project_fetch_failed', { num: parentNum, msg: e.message })+'\n');
-    }
-    if (parentIssue) {
-      if (!parentIssue.labels.some(l => normLabel(l) === PROJECT_LABEL)) {
+    const parent = await fetchParentProject(octokit, owner, repo, parentNum);
+    if (parent.status === 'fetch_failed') {
+      process.stderr.write(tpl('warn.project_fetch_failed', { num: parentNum, msg: parent.error.message })+'\n');
+    } else {
+      if (parent.status === 'not_project') {
         process.stderr.write(tpl('error.not_a_project', { num: parentNum })+'\n');
         process.exit(1);
       }
@@ -4191,12 +4218,12 @@ async function runAdd(octokit, owner, repo, tokens) {
   const labels = [GTD_DISPLAY[gtd]];
   // コンテキストラベル作成
   for (const ctx of parsed.contexts) {
-    await ensureLabel(octokit, owner, repo, ctx, 'FBCA04', t('label.desc_context'));
+    await ensureCtxLabel(octokit, owner, repo, ctx);
     labels.push(ctx);
   }
   // タグラベル作成（#tag: 色 0075CA でコンテキストと区別）
   for (const tag of parsed.tags) {
-    await ensureLabel(octokit, owner, repo, tag, '0075CA', t('label.desc_tag'));
+    await ensureTagLabel(octokit, owner, repo, tag);
     labels.push(tag);
   }
   // 優先度ラベル作成
@@ -4205,7 +4232,7 @@ async function runAdd(octokit, owner, repo, tokens) {
   labels.push(priority);
   // --label オプションで指定された追加ラベル
   for (const lbl of parsed.labels) {
-    await ensureLabel(octokit, owner, repo, lbl, 'EDEDED', '');
+    await ensureLabel(octokit, owner, repo, lbl, EXTRA_LABEL_COLOR, '');
     labels.push(lbl);
   }
 
@@ -4245,17 +4272,7 @@ async function runAdd(octokit, owner, repo, tokens) {
   // --body / --body-file: ユーザー提供の本文（--body-file 優先）
   let userBody = '';
   if (parsed.bodyFile) {
-    const resolvedPath = path.resolve(parsed.bodyFile);
-    if (!fs.existsSync(resolvedPath)) {
-      process.stderr.write(tpl('error.body_file_not_found', { path: resolvedPath })+'\n');
-      process.exit(1);
-    }
-    try {
-      userBody = fs.readFileSync(resolvedPath, 'utf8');
-    } catch (e) {
-      process.stderr.write(tpl('error.body_file_read_failed', { msg: e.message })+'\n');
-      process.exit(1);
-    }
+    userBody = readBodyFileOrExit(parsed.bodyFile);
   } else if (parsed.body !== null) {
     userBody = parsed.body;
   }
@@ -4598,10 +4615,7 @@ async function postDoneProcessing(octokit, owner, repo, num, issue) {
         // すでに next ならスキップ
         if (gtdLabel && normLabel(gtdLabel) === 'next') continue;
         // GTDラベルを next に切り替え
-        if (gtdLabel) {
-          await removeLabelIfPresent(octokit, owner, repo, raw.number, gtdLabel);
-        }
-        await octokit.issues.addLabels({ owner, repo, issue_number: raw.number, labels: [nextLabel] });
+        await swapGtdLabel(octokit, owner, repo, raw.number, lnames, nextLabel);
         otherLines.push(tpl('promote.promoted_depends', { num: raw.number, title: raw.title, dep: num }));
         promoted++;
       }
@@ -4647,6 +4661,26 @@ async function postDoneProcessing(octokit, owner, repo, num, issue) {
   return { otherLines };
 }
 
+// 完了フローの中核: 次周期 Issue の作成 → close → 後処理（#1652 create-before-close）。
+// close が失敗し、かつ次周期 Issue を作成済みなら throw makeCloseErrorAfterRecur(num, newIssueNumber, e)
+// （作成していなければ元の例外をそのまま投げる）。エラーの作り方は呼び出し側ごとに違う
+// （run: apiErr / bulk: new Error / api: 英語直書きの apiErr）ので、コールバックで受ける。
+// apiErr は作った時点で stderr に書くため、コールバックは catch の中で呼ぶ。
+// actual の検証・更新（前段）と出力（後段）は呼び出し側に残す
+async function completeIssue(octokit, owner, repo, num, issue, makeCloseErrorAfterRecur) {
+  const { recurLine, newIssueNumber } = await createRecurIssue(octokit, owner, repo, issue);
+  try {
+    await octokit.issues.update({ owner, repo, issue_number: num, state: 'closed' });
+  } catch (e) {
+    if (newIssueNumber) {
+      throw makeCloseErrorAfterRecur(num, newIssueNumber, e);
+    }
+    throw e;
+  }
+  const { otherLines } = await postDoneProcessing(octokit, owner, repo, num, issue);
+  return { recurLine, newIssueNumber, otherLines };
+}
+
 async function runDone(octokit, owner, repo, tokens) {
   const num = parseInt(tokens[0]);
   if (!num) { process.stderr.write(t('error.positive_int')+'\n'); process.exit(1); }
@@ -4672,17 +4706,9 @@ async function runDone(octokit, owner, repo, tokens) {
   }
 
   // #1652: create-before-close — 次周期Issueの作成をcloseより先に行う（詳細はcreateRecurIssue定義部のコメント参照）
-  const { recurLine, newIssueNumber } = await createRecurIssue(octokit, owner, repo, issue);
-  try {
-    await octokit.issues.update({ owner, repo, issue_number: num, state: 'closed' });
-  } catch (e) {
-    if (newIssueNumber) {
-      throw apiErr(tpl('error.close_failed_after_recur', { num, newNum: newIssueNumber, msg: e.message }));
-    }
-    throw e;
-  }
-
-  const { otherLines } = await postDoneProcessing(octokit, owner, repo, num, issue);
+  // close 失敗時のエラーは apiErr（作った時点で stderr に書く。catch の中で呼ばれる）
+  const { recurLine, otherLines } = await completeIssue(octokit, owner, repo, num, issue,
+    (n, newNum, e) => apiErr(tpl('error.close_failed_after_recur', { num: n, newNum, msg: e.message })));
   if (recurLine) {
     runOut(tpl('done.completed', { num }) + recurLine);
   } else {
@@ -4717,12 +4743,8 @@ async function execMoveGtd(octokit, owner, repo, num, target) {
     }
   }
   const labelNames = issue.labels.map(l => l.name);
-  const oldGtdLabel = labelNames.find(l => GTD_LABELS.includes(normLabel(l)));
   const newLabel = GTD_DISPLAY[target];
-  if (oldGtdLabel && oldGtdLabel !== newLabel) {
-    await removeLabelIfPresent(octokit, owner, repo, num, oldGtdLabel);
-  }
-  await octokit.issues.addLabels({ owner, repo, issue_number: num, labels: [newLabel] });
+  await swapGtdLabel(octokit, owner, repo, num, labelNames, newLabel);
   return newLabel;
 }
 
@@ -4739,6 +4761,48 @@ async function execRemoveLabels(octokit, owner, repo, num, labels) {
   for (const label of labels) {
     await removeLabelIfPresent(octokit, owner, repo, num, label);
   }
+}
+
+// @context ラベルを（無ければ）作成する。戻り値は ensureLabel と同じ（新規作成なら true）。
+// '@' / '#' による ctx・tag の振り分けは呼び出し側で行う（テンプレートの context は '#' 始まりでも ctx の色で作る）
+async function ensureCtxLabel(octokit, owner, repo, name) {
+  return ensureLabel(octokit, owner, repo, name, CTX_LABEL_COLOR, t('label.desc_context'));
+}
+
+// #tag ラベルを（無ければ）作成する。戻り値は ensureLabel と同じ
+async function ensureTagLabel(octokit, owner, repo, name) {
+  return ensureLabel(octokit, owner, repo, name, TAG_LABEL_COLOR, t('label.desc_tag'));
+}
+
+// GTD ラベルを newLabel に付け替える。旧 GTD ラベル（絵文字付き・なしを問わず、並び順で最初のもの）が
+// あり newLabel と異なれば削除し、opts.ensureBeforeAdd（{ color, description }）があれば
+// ensureLabel を挟んだうえで newLabel を付与する。見つけた旧ラベル（なければ null）を返す。
+// 前段の skip 条件（すでに next / project など）と失敗時の扱いは呼び出し側で決める
+async function swapGtdLabel(octokit, owner, repo, num, labelNames, newLabel, opts = {}) {
+  const oldGtd = labelNames.find(l => GTD_LABELS.includes(normLabel(l)));
+  if (oldGtd && oldGtd !== newLabel) {
+    await removeLabelIfPresent(octokit, owner, repo, num, oldGtd);
+  }
+  if (opts.ensureBeforeAdd) {
+    await ensureLabel(octokit, owner, repo, newLabel, opts.ensureBeforeAdd.color, opts.ensureBeforeAdd.description);
+  }
+  await octokit.issues.addLabels({ owner, repo, issue_number: num, labels: [newLabel] });
+  return oldGtd || null;
+}
+
+// 優先度ラベル（p1/p2/p3）を付け替える。旧ラベルがあれば削除 → level が 'clear' でなければ
+// （opts.ensure が真なら ensureLabel のうえで）付与する。level の検証は呼び出し側で先に済ませること。
+// bulk はラベルの作成をループの前で1回済ませるため { ensure: false } を渡す
+async function replacePriorityLabel(octokit, owner, repo, num, labelNames, level, opts = { ensure: true }) {
+  const oldPri = labelNames.find(l => /^p[123]$/.test(l));
+  if (oldPri) {
+    await removeLabelIfPresent(octokit, owner, repo, num, oldPri);
+  }
+  if (level === 'clear') return;
+  if (opts.ensure) {
+    await ensureLabel(octokit, owner, repo, level, priorityColor(level), t('label.desc_priority'));
+  }
+  await octokit.issues.addLabels({ owner, repo, issue_number: num, labels: [level] });
 }
 
 async function runMove(octokit, owner, repo, tokens) {
@@ -4830,17 +4894,7 @@ async function runComment(octokit, owner, repo, tokens) {
   let text;
   if (bodyFileOpt !== null) {
     // --body-file 優先（runAdd と同じ挙動・同じエラーメッセージを再利用）
-    const resolvedPath = path.resolve(bodyFileOpt);
-    if (!fs.existsSync(resolvedPath)) {
-      process.stderr.write(tpl('error.body_file_not_found', { path: resolvedPath })+'\n');
-      process.exit(1);
-    }
-    try {
-      text = fs.readFileSync(resolvedPath, 'utf8');
-    } catch (e) {
-      process.stderr.write(tpl('error.body_file_read_failed', { msg: e.message })+'\n');
-      process.exit(1);
-    }
+    text = readBodyFileOrExit(bodyFileOpt);
   } else if (bodyOpt !== null) {
     text = bodyOpt;
   } else {
@@ -4983,16 +5037,10 @@ async function runEdit(octokit, owner, repo, tokens) {
     // #1652: validate-before-mutate — 旧priorityラベルを削除する前にparsed.priorityを検証する。
     // 逆順だとtypo時に旧ラベルだけ削除された中途半端な状態でエラー終了してしまう。
     if (parsed.priority !== 'clear') validatePriority(parsed.priority);
-    const oldPri = issue.labels.find(l => /^p[123]$/.test(l));
-    if (oldPri) {
-      await removeLabelIfPresent(octokit, owner, repo, num, oldPri);
-    }
+    await replacePriorityLabel(octokit, owner, repo, num, issue.labels, parsed.priority);
     if (parsed.priority === 'clear') {
       changed.push('priority → '+t('edit.clear'));
     } else {
-      const pcolor = priorityColor(parsed.priority);
-      await ensureLabel(octokit, owner, repo, parsed.priority, pcolor, t('label.desc_priority'));
-      await octokit.issues.addLabels({ owner, repo, issue_number: num, labels: [parsed.priority] });
       changed.push('priority → '+parsed.priority);
     }
   }
@@ -5103,15 +5151,12 @@ async function runLink(octokit, owner, repo, tokens) {
   const issue = await fetchAndParseIssue(octokit, owner, repo, num);
 
   // 親プロジェクトの存在・ラベル確認
-  let parentIssue;
-  try {
-    parentIssue = await fetchAndParseIssue(octokit, owner, repo, proj);
-  } catch (e) {
-    process.stderr.write(tpl('error.project_fetch_failed', { num: proj, msg: e.message })+'\n');
+  const parent = await fetchParentProject(octokit, owner, repo, proj);
+  if (parent.status === 'fetch_failed') {
+    process.stderr.write(tpl('error.project_fetch_failed', { num: proj, msg: parent.error.message })+'\n');
     process.exit(1);
   }
-  const isProject = parentIssue.labels.some(l => normLabel(l) === PROJECT_LABEL);
-  if (!isProject) {
+  if (parent.status === 'not_project') {
     process.stderr.write(tpl('error.not_a_project', { num: proj })+'\n');
     process.exit(1);
   }
@@ -5159,16 +5204,10 @@ async function runPriority(octokit, owner, repo, tokens) {
   if (level !== 'clear') validatePriority(level);
 
   const issue = await fetchAndParseIssue(octokit, owner, repo, num);
-  const oldPri = issue.labels.find(l => /^p[123]$/.test(l));
-  if (oldPri) {
-    await removeLabelIfPresent(octokit, owner, repo, num, oldPri);
-  }
+  await replacePriorityLabel(octokit, owner, repo, num, issue.labels, level);
   if (level === 'clear') {
     runOut(tpl('priority.cleared', { num }));
   } else {
-    const pcolor = priorityColor(level);
-    await ensureLabel(octokit, owner, repo, level, pcolor, t('label.desc_priority'));
-    await octokit.issues.addLabels({ owner, repo, issue_number: num, labels: [level] });
     runOut(tpl('priority.set', { num, level }));
   }
 }
@@ -5205,7 +5244,7 @@ async function renameCtxLabel(octokit, owner, repo, raw1, raw2, usage) {
   const oldName = raw1.startsWith('@') ? raw1 : '@'+raw1;
   const newName = raw2.startsWith('@') ? raw2 : '@'+raw2;
   validateCtx(oldName.slice(1)); validateCtx(newName.slice(1));
-  await ensureLabel(octokit, owner, repo, newName, 'FBCA04', t('label.desc_context'));
+  await ensureCtxLabel(octokit, owner, repo, newName);
   const allIssues = await fetchAllOpen(octokit, owner, repo);
   const targets = allIssues.filter(i => i.labels.some(l => l.name === oldName));
   for (const i of targets) {
@@ -5229,10 +5268,10 @@ async function runTag(octokit, owner, repo, tokens) {
     let created;
     if (lbl.startsWith('#')) {
       validateTag(lbl.slice(1));
-      created = await ensureLabel(octokit, owner, repo, lbl, '0075CA', t('label.desc_tag'));
+      created = await ensureTagLabel(octokit, owner, repo, lbl);
     } else {
       validateCtx(lbl.slice(1));
-      created = await ensureLabel(octokit, owner, repo, lbl, 'FBCA04', t('label.desc_context'));
+      created = await ensureCtxLabel(octokit, owner, repo, lbl);
     }
     // 既存ラベルに無い名前は打ち間違いの可能性があるため明示する（Issue #1686）
     if (created) runOut(tpl('label.created', { name: lbl }));
@@ -5281,7 +5320,7 @@ async function runLabel(octokit, owner, repo, tokens) {
     // #1934 パート1: label add が実際に読むのは color のみ（配線直前にコードを再確認済み）。
     guardUnsupportedFlag(parsed, COMMAND_SPECS['label add'].supportedFields, LABEL_USAGE);
     validateCtx(name.slice(1));
-    const color = parsed.color || 'FBCA04';
+    const color = parsed.color || CTX_LABEL_COLOR;
     if (parsed.color) validateColor(parsed.color);
     await ensureLabel(octokit, owner, repo, name, color, t('label.desc_context'));
     runOut(tpl('label.created_named', { name }));
@@ -5564,12 +5603,12 @@ async function runTemplate(octokit, owner, repo, tokens) {
 
     const labels = [GTD_DISPLAY[gtd]];
     for (const ctx of contexts) {
-      await ensureLabel(octokit, owner, repo, ctx, 'FBCA04', t('label.desc_context'));
+      await ensureCtxLabel(octokit, owner, repo, ctx);
       labels.push(ctx);
     }
     // #1936: タグラベル作成（runAdd と同じ色 0075CA でコンテキストと区別）
     for (const tag of tags) {
-      await ensureLabel(octokit, owner, repo, tag, '0075CA', t('label.desc_tag'));
+      await ensureTagLabel(octokit, owner, repo, tag);
       labels.push(tag);
     }
     const pcolor = priorityColor(priority);
@@ -5594,15 +5633,12 @@ async function runTemplate(octokit, owner, repo, tokens) {
     // sub-issue 登録（テンプレートに project が含まれる場合）
     if (proj) {
       const parentNum = parseInt(proj);
-      let parentIssue;
-      try {
-        parentIssue = await fetchAndParseIssue(octokit, owner, repo, parentNum);
-      } catch (e) {
-        process.stderr.write(tpl('warn.project_fetch_failed', { num: parentNum, msg: e.message })+'\n');
+      const parent = await fetchParentProject(octokit, owner, repo, parentNum);
+      if (parent.status === 'fetch_failed') {
+        process.stderr.write(tpl('warn.project_fetch_failed', { num: parentNum, msg: parent.error.message })+'\n');
         return;
       }
-      const isProject = parentIssue.labels.some(l => normLabel(l) === PROJECT_LABEL);
-      if (!isProject) {
+      if (parent.status === 'not_project') {
         process.stderr.write(tpl('warn.not_a_project', { num: parentNum })+'\n');
         return;
       }
@@ -5927,18 +5963,10 @@ async function runBulk(octokit, owner, repo, tokens) {
         }
 
         // #1652: create-before-close — 次周期Issueの作成をcloseより先に行う（詳細はcreateRecurIssue定義部のコメント参照）
-        const { recurLine, newIssueNumber } = await createRecurIssue(octokit, owner, repo, issue);
-        try {
-          await octokit.issues.update({ owner, repo, issue_number: num, state: 'closed' });
-        } catch (e) {
-          if (newIssueNumber) {
-            throw new Error(tpl('error.close_failed_after_recur', { num, newNum: newIssueNumber, msg: e.message }));
-          }
-          throw e;
-        }
-
-        // #1642: depends_on昇格を runDone と共通の後処理で実施
-        const { otherLines } = await postDoneProcessing(octokit, owner, repo, num, issue);
+        // close 失敗時のエラーは new Error（stderr に書かず、下の catch が bulk.item_error として stdout に出す）
+        // #1642: depends_on昇格を runDone と共通の後処理（completeIssue 内の postDoneProcessing）で実施
+        const { recurLine, otherLines } = await completeIssue(octokit, owner, repo, num, issue,
+          (n, newNum, e) => new Error(tpl('error.close_failed_after_recur', { num: n, newNum, msg: e.message })));
         if (recurLine) {
           recurCreated++;
           runOut(`  #${num}: ${recurLine}`);
@@ -5979,11 +6007,7 @@ async function runBulk(octokit, owner, repo, tokens) {
         if (target === 'routine' && !issue.recur) {
           throw new Error(tpl('error.routine_needs_recur_move_bulk', { num }));
         }
-        const oldGtd = issue.labels.find(l => GTD_LABELS.includes(normLabel(l)));
-        if (oldGtd && oldGtd !== newLabel) {
-          await removeLabelIfPresent(octokit, owner, repo, num, oldGtd);
-        }
-        await octokit.issues.addLabels({ owner, repo, issue_number: num, labels: [newLabel] });
+        await swapGtdLabel(octokit, owner, repo, num, issue.labels, newLabel);
         doneCount++;
       } catch(e) { runOut(tpl('bulk.item_error', { num, msg: e.message })); errCount++; }
     }
@@ -5996,8 +6020,8 @@ async function runBulk(octokit, owner, repo, tokens) {
     if (!labelList.length) { process.stderr.write(`${BULK_USAGE}\n`); process.exit(1); }
     for (const lbl of labelList) {
       let created;
-      if (lbl.startsWith('#')) { validateTag(lbl.slice(1)); created = await ensureLabel(octokit, owner, repo, lbl, '0075CA', t('label.desc_tag')); }
-      else { validateCtx(lbl.slice(1)); created = await ensureLabel(octokit, owner, repo, lbl, 'FBCA04', t('label.desc_context')); }
+      if (lbl.startsWith('#')) { validateTag(lbl.slice(1)); created = await ensureTagLabel(octokit, owner, repo, lbl); }
+      else { validateCtx(lbl.slice(1)); created = await ensureCtxLabel(octokit, owner, repo, lbl); }
       // 既存ラベルに無い名前は打ち間違いの可能性があるため明示する（Issue #1686）
       if (created) runOut(tpl('label.created', { name: lbl }));
     }
@@ -6030,9 +6054,8 @@ async function runBulk(octokit, owner, repo, tokens) {
     for (const num of nums) {
       try {
         const issue = await fetchAndParseIssue(octokit, owner, repo, num);
-        const oldPri = issue.labels.find(l => /^p[123]$/.test(l));
-        if (oldPri) { await removeLabelIfPresent(octokit, owner, repo, num, oldPri); }
-        if (level !== 'clear') await octokit.issues.addLabels({ owner, repo, issue_number: num, labels: [level] });
+        // ensureLabel はループの前で1回済ませてある（どの削除よりも前）ので、ここでは呼ばない
+        await replacePriorityLabel(octokit, owner, repo, num, issue.labels, level, { ensure: false });
         doneCount++;
       } catch(e) { runOut(tpl('bulk.item_error', { num, msg: e.message })); errCount++; }
     }
@@ -6095,10 +6118,7 @@ async function runPromote(octokit, owner, repo) {
     }
 
     // GTDラベルをnextに切り替え
-    if (gtdLabel) {
-      await removeLabelIfPresent(octokit, owner, repo, raw.number, gtdLabel);
-    }
-    await octokit.issues.addLabels({ owner, repo, issue_number: raw.number, labels: [nextLabel] });
+    await swapGtdLabel(octokit, owner, repo, raw.number, lnames, nextLabel);
     runOut(tpl('promote.promoted', { num: raw.number, title: raw.title, activate: parsed.activate }));
     promoted++;
   }
@@ -6143,15 +6163,10 @@ async function runPromoteProject(octokit, owner, repo, tokens) {
     process.exit(1);
   }
 
-  // GTD ラベルを外す
-  const oldGtd = issue.labels.find(l => GTD_LABELS.includes(normLabel(l)));
-  if (oldGtd) {
-    await removeLabelIfPresent(octokit, owner, repo, num, oldGtd);
-  }
-
-  // 📁 project ラベルを付与
-  await ensureLabel(octokit, owner, repo, GTD_DISPLAY[PROJECT_LABEL], '0052CC', 'GTD: project');
-  await octokit.issues.addLabels({ owner, repo, issue_number: num, labels: [GTD_DISPLAY[PROJECT_LABEL]] });
+  // GTD ラベルを外し、📁 project ラベルを付与する（削除と付与の間で ensureLabel）
+  await swapGtdLabel(octokit, owner, repo, num, issue.labels, GTD_DISPLAY[PROJECT_LABEL], {
+    ensureBeforeAdd: { color: PROJECT_LABEL_COLOR, description: 'GTD: project' },
+  });
 
   // --outcome 指定時はタイトルを書き換え（outcomeIdx は関数冒頭のガードで算出済み）
   let newTitle = issue.title;
@@ -6191,12 +6206,12 @@ async function runUnlink(octokit, owner, repo, tokens) {
   const issue = await fetchAndParseIssue(octokit, owner, repo, num);
 
   // body に project: #N がなければエラー
-  const projMatch = (issue.body||'').match(/^project: #(\d+)/m);
-  if (!projMatch) {
+  const bodyProjectNum = getBodyProjectNum(issue.body);
+  if (!bodyProjectNum) {
     process.stderr.write(tpl('error.no_project_link', { num })+'\n');
     process.exit(1);
   }
-  const parentNum = parseInt(projMatch[1]);
+  const parentNum = parseInt(bodyProjectNum);
 
   // body の親が実際に GitHub 上でも親であるかを事前確認する。
   // body の project: #N は「そうあるべき」という記述に過ぎず、実態と食い違うことがある
@@ -6362,9 +6377,9 @@ async function runMigrateSubIssue(octokit, owner, repo, tokens) {
   // body に "project: #N" を持つ Issue を抽出
   const targets = [];
   for (const issue of allIssues) {
-    const m = (issue.body || '').match(/^project: #(\d+)/m);
-    if (!m) continue;
-    const parentNum = parseInt(m[1]);
+    const bodyProjectNum = getBodyProjectNum(issue.body);
+    if (!bodyProjectNum) continue;
+    const parentNum = parseInt(bodyProjectNum);
     targets.push({ issue, parentNum });
   }
 
@@ -6386,16 +6401,13 @@ async function runMigrateSubIssue(octokit, owner, repo, tokens) {
 
   for (const { issue, parentNum } of targets) {
     // 親が 📁 project ラベルを持つか確認
-    let parentIssue;
-    try {
-      parentIssue = await fetchAndParseIssue(octokit, owner, repo, parentNum);
-    } catch (e) {
-      process.stderr.write(tpl('warn.parent_fetch_failed', { num: parentNum, msg: e.message })+'\n');
+    const parent = await fetchParentProject(octokit, owner, repo, parentNum);
+    if (parent.status === 'fetch_failed') {
+      process.stderr.write(tpl('warn.parent_fetch_failed', { num: parentNum, msg: parent.error.message })+'\n');
       errors++;
       continue;
     }
-    const isProject = parentIssue.labels.some(l => normLabel(l) === PROJECT_LABEL);
-    if (!isProject) {
+    if (parent.status === 'not_project') {
       process.stderr.write(tpl('warn.parent_no_project_label', { parent: parentNum, num: issue.number })+'\n');
       skipped++;
       continue;
@@ -6614,6 +6626,9 @@ module.exports = {
   runReviewSomeday, runPromote, runPromoteProject, runUnlink, runWeeklyProjectAudit,
   runMigrateSubIssue, reservedTitleGuardWord, reservedMultiwordFirstWord, runMain,
   envOpen, envClosed, envListFilters, envTemplateFields, envViewFilters,
+  completeIssue, fetchParentProject, swapGtdLabel, replacePriorityLabel, getReviewedAt, getRecurValue, getBodyProjectNum,
+  readBodyFileOrExit, ensureCtxLabel, ensureTagLabel,
+  CTX_LABEL_COLOR, TAG_LABEL_COLOR, EXTRA_LABEL_COLOR, PROJECT_LABEL_COLOR,
 };
 
 if (require.main === module) main();

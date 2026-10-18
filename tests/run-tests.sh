@@ -5155,6 +5155,142 @@ fi
 rm -f "$_G56_TMP" "$_G56_TMP.err"
 
 # ──────────────────────────────────────────
+# §57  ドメインヘルパ（Issue #2102 R3 PR-A）
+# 挙動を変えない抽出で新設した関数・定数を require() で直接確かめる。
+# 呼び出し順・失敗時の扱いなど外から見える挙動の不変は差分ハーネス
+# （tests/tools/engine-diff-harness.js）と run-tests-write.sh が担う。
+# ──────────────────────────────────────────
+echo ""
+echo "§57  ドメインヘルパ（Issue #2102 R3 PR-A）"
+
+_G57_TMP=$(mktemp /tmp/todo-test-r3-helpers-XXXXXX)
+cat > "$_G57_TMP" << 'R3_HELPER_TEST_EOF'
+const E = require(process.argv[2]);
+const out = [];
+const check = (id, desc, cond, detail) => out.push((cond ? 'ok' : 'ng') + '\t' + id + ' ' + desc + '\t' + (cond ? '' : detail));
+
+// (d) 色の定数: 値の固定と、PRI_COLORS との分離（値が同じでも別の定数であること）
+check('57-d1', 'ctx ラベルの色は FBCA04', E.CTX_LABEL_COLOR === 'FBCA04', E.CTX_LABEL_COLOR);
+check('57-d2', 'tag ラベルの色は 0075CA', E.TAG_LABEL_COLOR === '0075CA', E.TAG_LABEL_COLOR);
+check('57-d3', '追加ラベルの色は EDEDED', E.EXTRA_LABEL_COLOR === 'EDEDED', E.EXTRA_LABEL_COLOR);
+check('57-d4', 'project ラベルの色は 0052CC', E.PROJECT_LABEL_COLOR === '0052CC', E.PROJECT_LABEL_COLOR);
+check('57-d5', '優先度の色 PRI_COLORS は据え置き', E.PRI_COLORS.p1 === 'B60205' && E.PRI_COLORS.p2 === 'FBCA04' && E.PRI_COLORS.p3 === '0075CA', JSON.stringify(E.PRI_COLORS));
+
+// (d) ensureCtxLabel / ensureTagLabel: 色と説明を渡して ensureLabel の戻り値をそのまま返す
+(async () => {
+  const calls = [];
+  const octokit = {
+    request: async (route, p) => { calls.push(['request', route, p.name]); const e = new Error('Not Found'); e.status = 404; throw e; },
+    issues: { createLabel: async (a) => { calls.push(['createLabel', a.name, a.color, a.description]); return {}; } },
+  };
+  const c1 = await E.ensureCtxLabel(octokit, 'o', 'r', '@x');
+  const c2 = await E.ensureTagLabel(octokit, 'o', 'r', '#y');
+  const cl = calls.filter(c => c[0] === 'createLabel');
+  check('57-d6', 'ensureCtxLabel は ctx の色・説明で作成し true を返す', c1 === true && cl[0] && cl[0][1] === '@x' && cl[0][2] === 'FBCA04' && cl[0][3] === E.t('label.desc_context'), JSON.stringify(calls));
+  check('57-d7', 'ensureTagLabel は tag の色・説明で作成し true を返す', c2 === true && cl[1] && cl[1][1] === '#y' && cl[1][2] === '0075CA' && cl[1][3] === E.t('label.desc_tag'), JSON.stringify(calls));
+  // (k) body アクセサ: 既存の正規表現と同じ結果（最初の行を採る・形式が崩れた値は拾わない・\r を含めない）
+  const b = (body) => ({ body });
+  check('57-k1', 'getReviewedAt: 日付を返す / なければ空文字', E.getReviewedAt(b('reviewed_at: 2026-09-01\n')) === '2026-09-01' && E.getReviewedAt(b('')) === '' && E.getReviewedAt({}) === '', '');
+  check('57-k2', 'getReviewedAt: 形式が崩れた値は拾わない', E.getReviewedAt(b('reviewed_at: 9/1\n')) === '', E.getReviewedAt(b('reviewed_at: 9/1\n')));
+  check('57-k3', 'getReviewedAt: CRLF でも日付だけ / 重複キーは最初の行', E.getReviewedAt(b('reviewed_at: 2026-09-01\r\n')) === '2026-09-01' && E.getReviewedAt(b('reviewed_at: 2026-09-01\nreviewed_at: 2026-09-05\n')) === '2026-09-01', '');
+  check('57-k4', 'getRecurValue: 1トークンを返す（weekly:sat を切り詰めない）', E.getRecurValue(b('recur: weekly:sat\n')) === 'weekly:sat', String(E.getRecurValue(b('recur: weekly:sat\n'))));
+  check('57-k5', 'getRecurValue: CRLF でも \\r を含めない / なければ null', E.getRecurValue(b('due: 2026-10-01\r\nrecur: weekly\r\n')) === 'weekly' && E.getRecurValue(b('')) === null && E.getRecurValue({}) === null, '');
+  check('57-k6', 'getRecurValue: 行頭以外の recur: は拾わない', E.getRecurValue(b('x recur: weekly\n')) === null, '');
+  check('57-k7', 'getBodyProjectNum: 数字列を文字列で返す（#12 と #123 を区別する）', E.getBodyProjectNum('project: #12\n') === '12' && E.getBodyProjectNum('project: #123\n') === '123', '');
+  check('57-k8', 'getBodyProjectNum: # なし・行頭以外・空は null', E.getBodyProjectNum('project: 12\n') === null && E.getBodyProjectNum(' project: #12\n') === null && E.getBodyProjectNum('') === null && E.getBodyProjectNum(undefined) === null, '');
+  check('57-k9', 'getBodyProjectNum: 2行あれば最初の行 / 2行目以降の行頭も拾う', E.getBodyProjectNum('project: #12\nproject: #13\n') === '12' && E.getBodyProjectNum('x\nproject: #7\n') === '7', '');
+  // 呼び出し列を記録する octokit（ラベル取得は常に 404 → 作成）
+  const rec = () => {
+    const log = [];
+    return { log, octokit: {
+      request: async (route, a) => { log.push('GET label ' + a.name); const e = new Error('nf'); e.status = 404; throw e; },
+      issues: {
+        removeLabel: async (a) => { log.push('removeLabel ' + a.name); },
+        createLabel: async (a) => { log.push('createLabel ' + a.name + ' ' + a.color); return {}; },
+        addLabels: async (a) => { log.push('addLabels ' + a.labels.join(',')); return {}; },
+      } } };
+  };
+  // (c) replacePriorityLabel: 旧削除 → ensureLabel（GET → 作成）→ 付与、の順
+  { const r = rec(); await E.replacePriorityLabel(r.octokit, 'o', 'r', 1, ['🎯 next', 'p3'], 'p1');
+    check('57-c1', 'replacePriorityLabel: removeLabel → GET → createLabel(優先度の色) → addLabels の順', r.log.join(' | ') === 'removeLabel p3 | GET label p1 | createLabel p1 B60205 | addLabels p1', r.log.join(' | ')); }
+  { const r = rec(); await E.replacePriorityLabel(r.octokit, 'o', 'r', 1, ['p2'], 'clear');
+    check('57-c2', 'replacePriorityLabel: clear は旧ラベルの削除だけ（GET も付与もしない）', r.log.join(' | ') === 'removeLabel p2', r.log.join(' | ')); }
+  { const r = rec(); await E.replacePriorityLabel(r.octokit, 'o', 'r', 1, ['p2'], 'p2');
+    check('57-c3', 'replacePriorityLabel: 同じ値でも一度削除して付け直す', r.log.join(' | ') === 'removeLabel p2 | GET label p2 | createLabel p2 FBCA04 | addLabels p2', r.log.join(' | ')); }
+  { const r = rec(); await E.replacePriorityLabel(r.octokit, 'o', 'r', 1, ['🎯 next'], 'p3', { ensure: false });
+    check('57-c4', 'replacePriorityLabel: ensure:false は GET せず付与だけ（旧ラベルなしなら削除もしない）', r.log.join(' | ') === 'addLabels p3', r.log.join(' | ')); }
+  { const r = rec(); r.octokit.issues.removeLabel = async () => { const e = new Error('boom'); e.status = 500; throw e; };
+    let thrown = null; try { await E.replacePriorityLabel(r.octokit, 'o', 'r', 1, ['p1'], 'p2'); } catch (e) { thrown = e; }
+    check('57-c5', 'replacePriorityLabel: 削除の失敗（404 以外）は握りつぶさず、付与しない', thrown && thrown.message === 'boom' && r.log.length === 0, JSON.stringify(r.log)); }
+  // (b) swapGtdLabel: 旧 GTD ラベル削除 → （ensureBeforeAdd があれば GET → 作成）→ 付与
+  { const r = rec(); const old = await E.swapGtdLabel(r.octokit, 'o', 'r', 1, ['p1', '📥 inbox', 'x'], '🎯 next');
+    check('57-b1', 'swapGtdLabel: 旧ラベルを削除して付与し、旧ラベルを返す', old === '📥 inbox' && r.log.join(' | ') === 'removeLabel 📥 inbox | addLabels 🎯 next', old + ' / ' + r.log.join(' | ')); }
+  { const r = rec(); const old = await E.swapGtdLabel(r.octokit, 'o', 'r', 1, ['next'], '🎯 next');
+    check('57-b2', 'swapGtdLabel: 絵文字なしの旧ラベルも対象（名前が違うので削除する）', old === 'next' && r.log.join(' | ') === 'removeLabel next | addLabels 🎯 next', old + ' / ' + r.log.join(' | ')); }
+  { const r = rec(); const old = await E.swapGtdLabel(r.octokit, 'o', 'r', 1, ['🎯 next'], '🎯 next');
+    check('57-b3', 'swapGtdLabel: 旧ラベルが移動先と同じなら削除せず付与だけ', old === '🎯 next' && r.log.join(' | ') === 'addLabels 🎯 next', old + ' / ' + r.log.join(' | ')); }
+  { const r = rec(); const old = await E.swapGtdLabel(r.octokit, 'o', 'r', 1, ['p2'], '🎯 next');
+    check('57-b4', 'swapGtdLabel: 旧ラベルなしなら削除せず付与だけ・null を返す', old === null && r.log.join(' | ') === 'addLabels 🎯 next', old + ' / ' + r.log.join(' | ')); }
+  { const r = rec(); await E.swapGtdLabel(r.octokit, 'o', 'r', 1, ['🎯 next', '🌈 someday'], '📁 project', { ensureBeforeAdd: { color: '0052CC', description: 'GTD: project' } });
+    check('57-b5', 'swapGtdLabel: ensureBeforeAdd は削除と付与の間（removeLabel → GET → createLabel → addLabels）、複数あれば並び順で最初を外す', r.log.join(' | ') === 'removeLabel 🎯 next | GET label 📁 project | createLabel 📁 project 0052CC | addLabels 📁 project', r.log.join(' | ')); }
+  { const r = rec(); r.octokit.issues.createLabel = async () => { const e = new Error('boom'); e.status = 500; throw e; };
+    let thrown = null; try { await E.swapGtdLabel(r.octokit, 'o', 'r', 1, ['📥 inbox'], '📁 project', { ensureBeforeAdd: { color: '0052CC', description: 'd' } }); } catch (e) { thrown = e; }
+    check('57-b6', 'swapGtdLabel: ensureLabel の失敗は伝播し、付与しない（削除は済んでいる＝現行どおり）', thrown && thrown.message === 'boom' && r.log.join(' | ') === 'removeLabel 📥 inbox | GET label 📁 project', r.log.join(' | ')); }
+  // (e) fetchParentProject: 取得と判定だけ。メッセージも exit もしない
+  { const mk = (labels) => ({ issues: { get: async () => ({ data: { number: 7, id: 9007, title: 'P', body: '', labels: labels.map(name => ({ name })), state: 'open' } }) } });
+    const ok1 = await E.fetchParentProject(mk(['📁 project']), 'o', 'r', 7);
+    const ok2 = await E.fetchParentProject(mk(['project']), 'o', 'r', 7);
+    const np = await E.fetchParentProject(mk(['🎯 next']), 'o', 'r', 7);
+    check('57-e1', 'fetchParentProject: 絵文字付き・なしの project ラベルは ok（issue を返す）', ok1.status === 'ok' && ok1.issue.number === 7 && ok2.status === 'ok', JSON.stringify([ok1.status, ok2.status]));
+    check('57-e2', 'fetchParentProject: project ラベルがなければ not_project（issue を返す）', np.status === 'not_project' && np.issue.number === 7, np.status);
+    const boom = new Error('Not Found'); boom.status = 404;
+    const ff = await E.fetchParentProject({ issues: { get: async () => { throw boom; } } }, 'o', 'r', 7);
+    check('57-e3', 'fetchParentProject: 取得失敗は fetch_failed（元の例外を返し、投げない）', ff.status === 'fetch_failed' && ff.error === boom, ff.status);
+    let calls = 0;
+    const out = []; const ow = process.stderr.write; process.stderr.write = (x) => { out.push(String(x)); return true; };
+    await E.fetchParentProject(mk(['🎯 next']), 'o', 'r', 7); await E.fetchParentProject({ issues: { get: async () => { calls++; throw boom; } } }, 'o', 'r', 7);
+    process.stderr.write = ow;
+    check('57-e4', 'fetchParentProject: stderr に何も出さない', out.length === 0 && calls === 1, out.join('')); }
+  // (a) completeIssue: 作成 → close → 後処理の順。close 失敗時のエラーはコールバックで作る
+  { const log = [];
+    const mkO = (updErr) => ({ issues: {
+      create: async (a) => { log.push('create'); return { data: { number: 9001, id: 9101 } }; },
+      update: async (a) => { log.push('update ' + a.state); if (updErr) throw updErr; return {}; },
+      listForRepo: async () => { log.push('listForRepo'); return { data: [] }; },
+    } });
+    const recurIssue = { number: 5, id: 9005, title: 'T', body: 'due: 2026-10-10\nrecur: weekly\n', labels: ['🔁 routine', 'p2'], state: 'open', due: '2026-10-10', recur: 'weekly' };
+    const r1 = await E.completeIssue(mkO(null), 'o', 'r', 5, recurIssue, () => { throw new Error('unused'); });
+    check('57-a1', 'completeIssue: 作成 → close → 後処理の順で、recurLine / newIssueNumber / otherLines を返す', log.join(' | ') === 'create | update closed | listForRepo' && r1.newIssueNumber === 9001 && !!r1.recurLine && Array.isArray(r1.otherLines), log.join(' | ') + ' / ' + JSON.stringify(r1));
+    log.length = 0;
+    const r2 = await E.completeIssue(mkO(null), 'o', 'r', 6, { number: 6, id: 9006, title: 'T', body: '', labels: ['🎯 next'], state: 'open' }, () => { throw new Error('unused'); });
+    check('57-a2', 'completeIssue: recur なしなら作成せず close と後処理だけ', log.join(' | ') === 'update closed | listForRepo' && r2.newIssueNumber === null && !r2.recurLine, log.join(' | ') + ' / ' + JSON.stringify(r2));
+    log.length = 0;
+    const boom = new Error('boom'); let args = null; let thrown = null;
+    try { await E.completeIssue(mkO(boom), 'o', 'r', 5, recurIssue, (n, nn, e) => { args = [n, nn, e]; return new Error('wrapped'); }); } catch (e) { thrown = e; }
+    check('57-a3', 'completeIssue: 作成済みで close 失敗 → コールバックの返したエラーを投げ、後処理はしない', thrown && thrown.message === 'wrapped' && args[0] === 5 && args[1] === 9001 && args[2] === boom && log.join(' | ') === 'create | update closed', log.join(' | ') + ' / ' + (thrown && thrown.message));
+    log.length = 0; thrown = null; args = null;
+    try { await E.completeIssue(mkO(boom), 'o', 'r', 6, { number: 6, id: 9006, title: 'T', body: '', labels: ['🎯 next'], state: 'open' }, (n, nn, e) => { args = 'called'; return new Error('wrapped'); }); } catch (e) { thrown = e; }
+    check('57-a4', 'completeIssue: 作成なしで close 失敗 → 元の例外をそのまま投げる（コールバックは呼ばない）', thrown === boom && args === null, String(thrown && thrown.message)); }
+  // 以降のブロックは追記される
+  process.stdout.write(out.join('\n') + '\n');
+})().catch(e => { process.stdout.write('ng\t57-x 例外\t' + e.message + '\n'); });
+R3_HELPER_TEST_EOF
+_G57_OUT=$(node "$_G57_TMP" "$ENGINE" 2>"$_G57_TMP.err"); _G57_EC=$?
+if [ "$_G57_EC" -ne 0 ]; then
+  printf "  ❌ §57 ドメインヘルパのテストの実行失敗: %s\n" "$(cat "$_G57_TMP.err" 2>/dev/null)"; FAIL=$((FAIL+1))
+else
+  while IFS=$'\t' read -r _st _desc _detail; do
+    [ -z "$_st" ] && continue
+    if [ "$_st" = "ok" ]; then
+      printf "  ✅ §57 %s\n" "$_desc"; PASS=$((PASS+1))
+    else
+      printf "  ❌ §57 %s\n     %s\n" "$_desc" "$_detail"; FAIL=$((FAIL+1))
+    fi
+  done <<< "$_G57_OUT"
+fi
+rm -f "$_G57_TMP" "$_G57_TMP.err"
+
+# ──────────────────────────────────────────
 # 書き込み系ハンドラのスタブベーステスト（run-tests-write.sh、Issue #1648）
 # 3,266行超に肥大化した本ファイルへの追記を避けるため別ファイルに分離し、
 # ここで子プロセスとして呼び出して結果を合算する。実行口は
