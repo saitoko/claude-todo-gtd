@@ -760,6 +760,53 @@ const V_CASES = [
   { id: 'v22-tag-two-new-labels-valid', argv: ['run', 'tag', '1412', '@v22a', '#v22b'],
     responses: { [LBL]: [E404, E404], 'issues.createLabel': [{}, {}], 'issues.addLabels': [{}] }, marker: { logSeq: ['issues.createLabel', 'issues.createLabel', 'issues.addLabels'], exit: 0 } },
 ];
+// ── Issue #2130: open Issue の取得上限 200 → 1000 ──
+// 型: 「固定の件数上限で取得を打ち切る」。fetchAllOpen（run list --json = 絞り込みなし・先読みあり）と api list-issues（open・引数なし）の
+// 上限だけが 200 → 1000。警告は「打ち切ったとき」に必ず出る（旧は取得件数がちょうど 200 のときだけ）。警告の文言も変わる。
+// 対照（変わらないはず）: 131 件（現状）/ api --state closed|all / api --limit。差分（ALLOW_PRESETS['i2130']）は上限を超える件数のケースだけ。
+// marker は旧エンジンでも成り立つ形（1・2 ページ目を要求した + exit 0）にしてある。
+const pagesOf = (total, o = {}, base = 10000) => {
+  const pages = []; let left = total, start = base;
+  while (left > 0) { const n = Math.min(100, left); pages.push({ data: apiPage(start, n, o) }); left -= n; start += 1000; }
+  return pages;
+};
+const SEQ12 = ['"page":1', '"page":2'];
+const N_CASES = [
+  // fetchAllOpen（run list --json）
+  { id: 'n01-list-131-control', argv: ['run', 'list', '--json'],
+    responses: { 'issues.listForRepo': pagesOf(131) }, marker: { logSeq: SEQ12, stdout: '"number"', exit: 0 } },
+  { id: 'n02-list-200', argv: ['run', 'list', '--json'],
+    responses: { 'issues.listForRepo': [...pagesOf(200), { data: [] }] }, marker: { logSeq: SEQ12, stdout: '"number"', exit: 0 } },
+  { id: 'n03-list-201', argv: ['run', 'list', '--json'],
+    responses: { 'issues.listForRepo': pagesOf(201) }, marker: { logSeq: SEQ12, stdout: '"number"', exit: 0 } },
+  { id: 'n04-list-350', argv: ['run', 'list', '--json'],
+    responses: { 'issues.listForRepo': [...pagesOf(350), { data: [] }] }, marker: { logSeq: SEQ12, stdout: '"number"', exit: 0 } },
+  { id: 'n05-list-1000', argv: ['run', 'list', '--json'],
+    responses: { 'issues.listForRepo': pagesOf(1000) }, marker: { logSeq: SEQ12, stdout: '"number"', exit: 0 } },
+  { id: 'n06-list-1001', argv: ['run', 'list', '--json'],
+    responses: { 'issues.listForRepo': pagesOf(1001) }, marker: { logSeq: SEQ12, stdout: '"number"', exit: 0 } },
+  // PR 混在（10 件に 1 件が PR → 1 ページ 90 件）で上限をまたぐ: 11 ページで 990、12 ページ目で 1080
+  { id: 'n07-list-pr-mix-crosses-1000', argv: ['run', 'list', '--json'],
+    responses: { 'issues.listForRepo': pagesOf(1200, { prEvery: 10 }) }, marker: { logSeq: SEQ12, stdout: '"number"', exit: 0 } },
+  // 旧は 3 ページで 270 件に達して止まり、無警告で 270 件を返していた（取りこぼしが無言）
+  { id: 'n08-list-pr-mix-silent-cut', argv: ['run', 'list', '--json'],
+    responses: { 'issues.listForRepo': [...pagesOf(400, { prEvery: 10 }), { data: [] }] }, marker: { logSeq: SEQ12, stdout: '"number"', exit: 0 } },
+  // api list-issues
+  { id: 'n10-api-closed-350-unchanged', argv: ['api', 'list-issues', '--state', 'closed'], langs: ['en'],
+    responses: { 'issues.listForRepo': pagesOf(350) }, marker: { logSeq: SEQ12, log: '"state":"closed"', exit: 0 } },
+  { id: 'n11-api-all-1001-unchanged', argv: ['api', 'list-issues', '--state', 'all'], langs: ['en'],
+    responses: { 'issues.listForRepo': pagesOf(1001) }, marker: { logSeq: SEQ12, log: '"state":"all"', exit: 0 } },
+  { id: 'n12-api-limit-500-unchanged', argv: ['api', 'list-issues', '--limit', '500'], langs: ['en'],
+    responses: { 'issues.listForRepo': pagesOf(1001) }, marker: { logSeq: SEQ12, exit: 0 } },
+  { id: 'n13-api-131-control', argv: ['api', 'list-issues'], langs: ['en'],
+    responses: { 'issues.listForRepo': pagesOf(131) }, marker: { logSeq: SEQ12, exit: 0 } },
+  { id: 'n14-api-open-350', argv: ['api', 'list-issues'], langs: ['en'],
+    responses: { 'issues.listForRepo': pagesOf(350) }, marker: { logSeq: SEQ12, exit: 0 } },
+  { id: 'n15-api-open-1001', argv: ['api', 'list-issues'], langs: ['en'],
+    responses: { 'issues.listForRepo': pagesOf(1001) }, marker: { logSeq: SEQ12, exit: 0 } },
+  { id: 'n16-api-open-pr-mix-crosses-1000', argv: ['api', 'list-issues'], langs: ['en'],
+    responses: { 'issues.listForRepo': pagesOf(1200, { prEvery: 10 }) }, marker: { logSeq: SEQ12, exit: 0 } },
+];
 const CORPUS = [
   // ── (a) 完了フロー ──
   { id: 'a01-done-plain', argv: ['run', 'done', '301'],
@@ -1154,8 +1201,9 @@ const CORPUS = [
   { id: 'm03-api-list-issues-two-full-pages', argv: ['api', 'list-issues'], langs: ['en'],
     responses: { 'issues.listForRepo': [{ data: apiPage(1200, 100, { prEvery: 10 }) }, { data: apiPage(1400, 100) }, { data: apiPage(1500, 3) }] },
     marker: { logSeq: ['"page":1', '"page":2', '"page":3'], stdout: '"number":1502', exit: 0 } },
+  // #2130 で上限が 200 → 1000 になったため、新は 3 ページ目も要求する（空ページを足してある。旧は 2 ページで止まり 3 つ目は使わない）。差分は stub-log の 3 ページ目だけ（ALLOW_PRESETS['i2130']）
   { id: 'm03b-api-list-issues-200-cap-no-warning', argv: ['api', 'list-issues'], langs: ['en'],
-    responses: { 'issues.listForRepo': [{ data: apiPage(1900, 100) }, { data: apiPage(2200, 100) }] },
+    responses: { 'issues.listForRepo': [{ data: apiPage(1900, 100) }, { data: apiPage(2200, 100) }, { data: [] }] },
     marker: { logSeq: ['"page":1', '"page":2'], stdout: '"number":2299', exit: 0 } },
   { id: 'm04-api-list-issues-limit-over-100', argv: ['api', 'list-issues', '--limit', '120'], langs: ['en'],
     responses: { 'issues.listForRepo': [{ data: apiPage(1600, 100) }, { data: apiPage(1700, 100) }] },
@@ -1225,6 +1273,7 @@ const CORPUS = [
 
   ...X_CASES,
   ...V_CASES,
+  ...N_CASES,
 ];
 
 // ─── 意図した挙動変更の許容リスト（--allow-preset で呼び出す）──────────
@@ -1260,6 +1309,13 @@ const ALLOW_PRESETS = {
     'x41-bulk-done-broken-recur-with-actual',
     'xc0-add-before-without-due', 'xc1-add-before-invalid', 'xc2-add-activate-unparsable', 'xc3-add-activate-impossible-date',
     'f02-add-body-file-missing', 'f03-add-body-file-is-directory',
+  ],
+  // i2130: Issue #2130（open Issue の取得上限 200 → 1000、警告は打ち切ったとき必ず・文言変更）。旧 = #2130 の前の main、新 = #2130 の版。
+  //   上限を超える件数のケースだけが変わる: run list --json（fetchAllOpen）の 200 / 201 / 350 / 1000 / 1001 件と PR 混在（stdout の件数・stderr の警告・3 ページ目以降の要求）、
+  //   api list-issues（open・引数なし）の 200 を超える件数。n01・n13（131 件）と --state closed|all / --limit（n10〜n12）は変わらない（プリセットに含めない）。
+  'i2130': [
+    'n02-', 'n03-', 'n04-', 'n05-', 'n06-', 'n07-', 'n08-', 'n14-', 'n15-', 'n16-',
+    'm03b-api-list-issues-200-cap-no-warning',
   ],
   'r5-k1': ['x40-bulk-done-broken-recur-stops-all', 'x41-bulk-done-broken-recur-with-actual', 'x44-bulk-done-broken-recur-first'],
 };
