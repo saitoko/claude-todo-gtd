@@ -5222,6 +5222,20 @@ check('57-d5', '優先度の色 PRI_COLORS は据え置き', E.PRI_COLORS.p1 ===
   { const r = rec(); r.octokit.issues.removeLabel = async () => { const e = new Error('boom'); e.status = 500; throw e; };
     let thrown = null; try { await E.replacePriorityLabel(r.octokit, 'o', 'r', 1, ['p1'], 'p2'); } catch (e) { thrown = e; }
     check('57-c5', 'replacePriorityLabel: 削除の失敗（404 以外）は握りつぶさず、付与しない', thrown && thrown.message === 'boom' && r.log.length === 0, JSON.stringify(r.log)); }
+  // (b) swapGtdLabel: 旧 GTD ラベル削除 → （ensureBeforeAdd があれば GET → 作成）→ 付与
+  { const r = rec(); const old = await E.swapGtdLabel(r.octokit, 'o', 'r', 1, ['p1', '📥 inbox', 'x'], '🎯 next');
+    check('57-b1', 'swapGtdLabel: 旧ラベルを削除して付与し、旧ラベルを返す', old === '📥 inbox' && r.log.join(' | ') === 'removeLabel 📥 inbox | addLabels 🎯 next', old + ' / ' + r.log.join(' | ')); }
+  { const r = rec(); const old = await E.swapGtdLabel(r.octokit, 'o', 'r', 1, ['next'], '🎯 next');
+    check('57-b2', 'swapGtdLabel: 絵文字なしの旧ラベルも対象（名前が違うので削除する）', old === 'next' && r.log.join(' | ') === 'removeLabel next | addLabels 🎯 next', old + ' / ' + r.log.join(' | ')); }
+  { const r = rec(); const old = await E.swapGtdLabel(r.octokit, 'o', 'r', 1, ['🎯 next'], '🎯 next');
+    check('57-b3', 'swapGtdLabel: 旧ラベルが移動先と同じなら削除せず付与だけ', old === '🎯 next' && r.log.join(' | ') === 'addLabels 🎯 next', old + ' / ' + r.log.join(' | ')); }
+  { const r = rec(); const old = await E.swapGtdLabel(r.octokit, 'o', 'r', 1, ['p2'], '🎯 next');
+    check('57-b4', 'swapGtdLabel: 旧ラベルなしなら削除せず付与だけ・null を返す', old === null && r.log.join(' | ') === 'addLabels 🎯 next', old + ' / ' + r.log.join(' | ')); }
+  { const r = rec(); await E.swapGtdLabel(r.octokit, 'o', 'r', 1, ['🎯 next', '🌈 someday'], '📁 project', { ensureBeforeAdd: { color: '0052CC', description: 'GTD: project' } });
+    check('57-b5', 'swapGtdLabel: ensureBeforeAdd は削除と付与の間（removeLabel → GET → createLabel → addLabels）、複数あれば並び順で最初を外す', r.log.join(' | ') === 'removeLabel 🎯 next | GET label 📁 project | createLabel 📁 project 0052CC | addLabels 📁 project', r.log.join(' | ')); }
+  { const r = rec(); r.octokit.issues.createLabel = async () => { const e = new Error('boom'); e.status = 500; throw e; };
+    let thrown = null; try { await E.swapGtdLabel(r.octokit, 'o', 'r', 1, ['📥 inbox'], '📁 project', { ensureBeforeAdd: { color: '0052CC', description: 'd' } }); } catch (e) { thrown = e; }
+    check('57-b6', 'swapGtdLabel: ensureLabel の失敗は伝播し、付与しない（削除は済んでいる＝現行どおり）', thrown && thrown.message === 'boom' && r.log.join(' | ') === 'removeLabel 📥 inbox | GET label 📁 project', r.log.join(' | ')); }
   // 以降のブロックは追記される
   process.stdout.write(out.join('\n') + '\n');
 })().catch(e => { process.stdout.write('ng\t57-x 例外\t' + e.message + '\n'); });

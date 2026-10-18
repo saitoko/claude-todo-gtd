@@ -4610,10 +4610,7 @@ async function postDoneProcessing(octokit, owner, repo, num, issue) {
         // すでに next ならスキップ
         if (gtdLabel && normLabel(gtdLabel) === 'next') continue;
         // GTDラベルを next に切り替え
-        if (gtdLabel) {
-          await removeLabelIfPresent(octokit, owner, repo, raw.number, gtdLabel);
-        }
-        await octokit.issues.addLabels({ owner, repo, issue_number: raw.number, labels: [nextLabel] });
+        await swapGtdLabel(octokit, owner, repo, raw.number, lnames, nextLabel);
         otherLines.push(tpl('promote.promoted_depends', { num: raw.number, title: raw.title, dep: num }));
         promoted++;
       }
@@ -4729,12 +4726,8 @@ async function execMoveGtd(octokit, owner, repo, num, target) {
     }
   }
   const labelNames = issue.labels.map(l => l.name);
-  const oldGtdLabel = labelNames.find(l => GTD_LABELS.includes(normLabel(l)));
   const newLabel = GTD_DISPLAY[target];
-  if (oldGtdLabel && oldGtdLabel !== newLabel) {
-    await removeLabelIfPresent(octokit, owner, repo, num, oldGtdLabel);
-  }
-  await octokit.issues.addLabels({ owner, repo, issue_number: num, labels: [newLabel] });
+  await swapGtdLabel(octokit, owner, repo, num, labelNames, newLabel);
   return newLabel;
 }
 
@@ -4762,6 +4755,22 @@ async function ensureCtxLabel(octokit, owner, repo, name) {
 // #tag ラベルを（無ければ）作成する。戻り値は ensureLabel と同じ
 async function ensureTagLabel(octokit, owner, repo, name) {
   return ensureLabel(octokit, owner, repo, name, TAG_LABEL_COLOR, t('label.desc_tag'));
+}
+
+// GTD ラベルを newLabel に付け替える。旧 GTD ラベル（絵文字付き・なしを問わず、並び順で最初のもの）が
+// あり newLabel と異なれば削除し、opts.ensureBeforeAdd（{ color, description }）があれば
+// ensureLabel を挟んだうえで newLabel を付与する。見つけた旧ラベル（なければ null）を返す。
+// 前段の skip 条件（すでに next / project など）と失敗時の扱いは呼び出し側で決める
+async function swapGtdLabel(octokit, owner, repo, num, labelNames, newLabel, opts = {}) {
+  const oldGtd = labelNames.find(l => GTD_LABELS.includes(normLabel(l)));
+  if (oldGtd && oldGtd !== newLabel) {
+    await removeLabelIfPresent(octokit, owner, repo, num, oldGtd);
+  }
+  if (opts.ensureBeforeAdd) {
+    await ensureLabel(octokit, owner, repo, newLabel, opts.ensureBeforeAdd.color, opts.ensureBeforeAdd.description);
+  }
+  await octokit.issues.addLabels({ owner, repo, issue_number: num, labels: [newLabel] });
+  return oldGtd || null;
 }
 
 // 優先度ラベル（p1/p2/p3）を付け替える。旧ラベルがあれば削除 → level が 'clear' でなければ
@@ -5995,11 +6004,7 @@ async function runBulk(octokit, owner, repo, tokens) {
         if (target === 'routine' && !issue.recur) {
           throw new Error(tpl('error.routine_needs_recur_move_bulk', { num }));
         }
-        const oldGtd = issue.labels.find(l => GTD_LABELS.includes(normLabel(l)));
-        if (oldGtd && oldGtd !== newLabel) {
-          await removeLabelIfPresent(octokit, owner, repo, num, oldGtd);
-        }
-        await octokit.issues.addLabels({ owner, repo, issue_number: num, labels: [newLabel] });
+        await swapGtdLabel(octokit, owner, repo, num, issue.labels, newLabel);
         doneCount++;
       } catch(e) { runOut(tpl('bulk.item_error', { num, msg: e.message })); errCount++; }
     }
@@ -6110,10 +6115,7 @@ async function runPromote(octokit, owner, repo) {
     }
 
     // GTDラベルをnextに切り替え
-    if (gtdLabel) {
-      await removeLabelIfPresent(octokit, owner, repo, raw.number, gtdLabel);
-    }
-    await octokit.issues.addLabels({ owner, repo, issue_number: raw.number, labels: [nextLabel] });
+    await swapGtdLabel(octokit, owner, repo, raw.number, lnames, nextLabel);
     runOut(tpl('promote.promoted', { num: raw.number, title: raw.title, activate: parsed.activate }));
     promoted++;
   }
@@ -6158,15 +6160,10 @@ async function runPromoteProject(octokit, owner, repo, tokens) {
     process.exit(1);
   }
 
-  // GTD ラベルを外す
-  const oldGtd = issue.labels.find(l => GTD_LABELS.includes(normLabel(l)));
-  if (oldGtd) {
-    await removeLabelIfPresent(octokit, owner, repo, num, oldGtd);
-  }
-
-  // 📁 project ラベルを付与
-  await ensureLabel(octokit, owner, repo, GTD_DISPLAY[PROJECT_LABEL], PROJECT_LABEL_COLOR, 'GTD: project');
-  await octokit.issues.addLabels({ owner, repo, issue_number: num, labels: [GTD_DISPLAY[PROJECT_LABEL]] });
+  // GTD ラベルを外し、📁 project ラベルを付与する（削除と付与の間で ensureLabel）
+  await swapGtdLabel(octokit, owner, repo, num, issue.labels, GTD_DISPLAY[PROJECT_LABEL], {
+    ensureBeforeAdd: { color: PROJECT_LABEL_COLOR, description: 'GTD: project' },
+  });
 
   // --outcome 指定時はタイトルを書き換え（outcomeIdx は関数冒頭のガードで算出済み）
   let newTitle = issue.title;
@@ -6629,7 +6626,7 @@ module.exports = {
   runReviewSomeday, runPromote, runPromoteProject, runUnlink, runWeeklyProjectAudit,
   runMigrateSubIssue, reservedTitleGuardWord, reservedMultiwordFirstWord, runMain,
   envOpen, envClosed, envListFilters, envTemplateFields, envViewFilters,
-  replacePriorityLabel, getReviewedAt, getRecurValue, getBodyProjectNum,
+  swapGtdLabel, replacePriorityLabel, getReviewedAt, getRecurValue, getBodyProjectNum,
   readBodyFileOrExit, ensureCtxLabel, ensureTagLabel,
   CTX_LABEL_COLOR, TAG_LABEL_COLOR, EXTRA_LABEL_COLOR, PROJECT_LABEL_COLOR,
 };
