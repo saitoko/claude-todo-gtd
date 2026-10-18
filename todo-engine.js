@@ -3253,12 +3253,11 @@ function main() {
 
     // Octokit API
     case 'api': {
-      // 実行時間計測（Issue #455）。多くのハンドラはバリデーションエラー時に
-      // throw ではなく process.exit(1) を直接呼ぶ（本ファイル全体の既存流儀）。
-      // process.exit() は同期的に即座にプロセスを終了させるため、Promise チェーンの
-      // .finally() は「スケジュールはされるが実行される前にプロセスが終了する」形で
-      // 到達しないことを実装時に実機確認した（run done 番号なし 等で再現）。
-      // 確実にあらゆる終了経路（正常終了・.catch()経由のエラー・process.exit()直接呼び出し）
+      // 実行時間計測（Issue #455）。バリデーションエラーなどの失敗は exitWith() が例外として投げ、
+      // 下の .catch が process.exit(e.exitCode) で終了させる（#2102 R5）。process.exit() は同期的に
+      // 即座にプロセスを終了させるため、Promise チェーンの .finally() は「スケジュールはされるが
+      // 実行される前にプロセスが終了する」形で到達しない（run done 番号なし 等で再現）。
+      // 確実にあらゆる終了経路（正常終了・.catch() 経由のエラー・.catch 内の process.exit()）
       // で1回だけ出力するため、Promise ではなく process.on('exit', ...) を使う。
       // 'exit' ハンドラ内は同期処理のみ許容されるが、printTiming() は
       // hrtime.bigint()/配列演算/process.stderr.write() のみで完結し要件を満たす。
@@ -4077,14 +4076,12 @@ function runOut(msg) { process.stdout.write(msg+'\n'); }
 function readBodyFileOrExit(filePath) {
   const resolvedPath = path.resolve(filePath);
   if (!fs.existsSync(resolvedPath)) {
-    process.stderr.write(tpl('error.body_file_not_found', { path: resolvedPath })+'\n');
-    process.exit(1);
+    exitWith(tpl('error.body_file_not_found', { path: resolvedPath }));
   }
   try {
     return fs.readFileSync(resolvedPath, 'utf8');
   } catch (e) {
-    process.stderr.write(tpl('error.body_file_read_failed', { msg: e.message })+'\n');
-    process.exit(1);
+    exitWith(tpl('error.body_file_read_failed', { msg: e.message }));
   }
 }
 
@@ -4127,7 +4124,7 @@ async function runAdd(octokit, owner, repo, tokens) {
   // #1921 の検査位置制約は変わらず満たす。
   guardBracketedGtdLabel(titleTokens, ADD_USAGE);
   if (!titleTokens.length) {
-    process.stderr.write(t('error.title_empty')+'\n'); process.exit(1);
+    exitWith(t('error.title_empty'));
   }
   const title = titleTokens.join(' ');
   validateTitle(title);
@@ -4154,8 +4151,7 @@ async function runAdd(octokit, owner, repo, tokens) {
   // 経由しない（次行の三項演算子で due='' のまま）ため、--due 省略時と同じ「期日なし」に
   // 収束する。body への書き込みも発生しない（buildBody の `if (due) body += ...`）。
   if (parsed.due === 'clear') {
-    process.stderr.write(t('error.add_due_clear_not_allowed')+'\n');
-    process.exit(1);
+    exitWith(t('error.add_due_clear_not_allowed'));
   }
   // due 正規化（normalizeDue が M/D → YYYY-MM-DD も処理する）
   let due = parsed.due ? normalizeDue(parsed.due, today) : '';
@@ -4168,8 +4164,7 @@ async function runAdd(octokit, owner, repo, tokens) {
   // そのまま再現する入口だった。validateRecur直後・API副作用（ensureLabel等）より
   // 前に検証する。
   if (gtd === 'routine' && !parsed.recur) {
-    process.stderr.write(t('error.routine_needs_recur_add')+'\n');
-    process.exit(1);
+    exitWith(t('error.routine_needs_recur_add'));
   }
   // Issue #1950: recur指定かつdue未指定の場合、初回dueを自動導出する。
   // due空のroutineが/todo todayのどのセクションにも表示されない問題（#1950）への
@@ -4194,8 +4189,7 @@ async function runAdd(octokit, owner, repo, tokens) {
       process.stderr.write(tpl('warn.project_fetch_failed', { num: parentNum, msg: parent.error.message })+'\n');
     } else {
       if (parent.status === 'not_project') {
-        process.stderr.write(tpl('error.not_a_project', { num: parentNum })+'\n');
-        process.exit(1);
+        exitWith(tpl('error.not_a_project', { num: parentNum }));
       }
       parentVerified = true;
     }
@@ -4207,7 +4201,7 @@ async function runAdd(octokit, owner, repo, tokens) {
   let estimateMin = null;
   if (parsed.estimate) {
     estimateMin = parseTime(parsed.estimate);
-    if (estimateMin === null) { process.stderr.write(t('error.time_format')+'\n'); process.exit(1); }
+    if (estimateMin === null) { exitWith(t('error.time_format')); }
   }
   // resume_condition バリデーション（改行混入のみ禁止）。ラベル作成等の副作用より前に検証する。
   if (parsed.resumeCondition) validateResumeCondition(parsed.resumeCondition);
@@ -4237,9 +4231,9 @@ async function runAdd(octokit, owner, repo, tokens) {
   let activate = '';
   let beforeStr = '';
   if (parsed.before) {
-    if (!due) { process.stderr.write(t('error.before_needs_due')+'\n'); process.exit(1); }
+    if (!due) { exitWith(t('error.before_needs_due')); }
     const days = parseBeforeDuration(parsed.before);
-    if (days === null) { process.stderr.write(t('error.before_format')+'\n'); process.exit(1); }
+    if (days === null) { exitWith(t('error.before_format')); }
     beforeStr = parsed.before;
     activate = addDays(due, -days);
   }
@@ -4249,8 +4243,7 @@ async function runAdd(octokit, owner, repo, tokens) {
       // normalizeDue が M/D → YYYY-MM-DD も処理する
       activateRaw = normalizeDue(activateRaw, today);
       if (!activateRaw) {
-        process.stderr.write(t('error.date_format') + ': ' + parsed.activate + '\n');
-        process.exit(1);
+        exitWith(t('error.date_format') + ': ' + parsed.activate);
       }
       // 形式チェックに加え、実在するカレンダー日付かを検証する（Issue #1803）
       validateActivateFormat(activateRaw, parsed.activate);
@@ -4663,7 +4656,7 @@ async function postDoneProcessing(octokit, owner, repo, num, issue) {
 function parseActualOrExit(parsed) {
   if (!parsed.actual) return null;
   const a = parseTime(parsed.actual);
-  if (a === null) { process.stderr.write(t('error.time_format')+'\n'); process.exit(1); }
+  if (a === null) { exitWith(t('error.time_format')); }
   return String(a);
 }
 
@@ -4689,7 +4682,7 @@ async function completeIssue(octokit, owner, repo, num, issue, makeCloseErrorAft
 
 async function runDone(octokit, owner, repo, tokens) {
   const num = parseInt(tokens[0]);
-  if (!num) { process.stderr.write(t('error.positive_int')+'\n'); process.exit(1); }
+  if (!num) { exitWith(t('error.positive_int')); }
   assertIssueNumberArg(tokens[0]);
   const parsed = parseArgs(tokens.slice(1));
   // #1921 パターンB: 未知フラグは黙って捨てず、API 副作用（下の fetchAndParseIssue 以降）より前に落とす。
@@ -4822,7 +4815,7 @@ async function runMove(octokit, owner, repo, tokens) {
   const target = tokens[1];
   // #1921 第2弾: Usage 文言を1本化して未知フラグエラーと引数不足エラーで共用する。
   const MOVE_USAGE = 'Usage: /todo move <#> <GTD> [--note "text"]';
-  if (!num || !target) { process.stderr.write(`${MOVE_USAGE}\n`); process.exit(1); }
+  if (!num || !target) { exitWith(MOVE_USAGE); }
   assertIssueNumberArg(tokens[0]);
   // --note オプションを取り出す（残りのトークンから解析）
   const parsed = parseArgs(tokens.slice(2));
@@ -4859,12 +4852,10 @@ function sanitizeCommentBody(rawText) {
 async function createCommentSanitized(octokit, owner, repo, num, rawText) {
   const { body, error } = sanitizeCommentBody(rawText);
   if (error === 'too_long') {
-    process.stderr.write(tpl('error.comment_too_long', { n: body.length })+'\n');
-    process.exit(1);
+    exitWith(tpl('error.comment_too_long', { n: body.length }));
   }
   if (error === 'empty') {
-    process.stderr.write(t('error.comment_empty')+'\n');
-    process.exit(1);
+    exitWith(t('error.comment_empty'));
   }
   await octokit.issues.createComment({ owner, repo, issue_number: num, body });
 }
@@ -4883,7 +4874,7 @@ async function createCommentSanitized(octokit, owner, repo, num, rawText) {
 // 未知フラグとして扱うよう UNKNOWN_FLAG_RE で判定を絞り込んだ。
 async function runComment(octokit, owner, repo, tokens) {
   const num = parseInt(tokens[0]);
-  if (!num) { process.stderr.write(t('error.positive_int')+'\n'); process.exit(1); }
+  if (!num) { exitWith(t('error.positive_int')); }
   assertIssueNumberArg(tokens[0]);
 
   const rest = tokens.slice(1);
@@ -4926,8 +4917,7 @@ async function runComment(octokit, owner, repo, tokens) {
   }
 
   if (!text.trim()) {
-    process.stderr.write(`${usage}\n`);
-    process.exit(1);
+    exitWith(usage);
   }
   await createCommentSanitized(octokit, owner, repo, num, text);
   runOut(tpl('comment.added', { num }));
@@ -4936,7 +4926,7 @@ async function runComment(octokit, owner, repo, tokens) {
 async function runEdit(octokit, owner, repo, tokens) {
   const today = getToday();
   const num = parseInt(tokens[0]);
-  if (!num) { process.stderr.write(t('error.positive_int')+'\n'); process.exit(1); }
+  if (!num) { exitWith(t('error.positive_int')); }
   assertIssueNumberArg(tokens[0]);
   const parsed = parseArgs(tokens.slice(1));
   // #1921 パターンB: 未知フラグ（`--duee` 等のタイポ・値欠落した既知フラグ）を黙って捨てず、
@@ -4975,7 +4965,7 @@ async function runEdit(octokit, owner, repo, tokens) {
   if (parsed.desc !== null) { desc = parsed.desc; changed.push('desc → '+desc); }
   if (parsed.estimate !== null) {
     const em = parseTime(parsed.estimate);
-    if (em === null) { process.stderr.write(t('error.time_format')+'\n'); process.exit(1); }
+    if (em === null) { exitWith(t('error.time_format')); }
     estimate = String(em); changed.push('estimate → '+formatTime(em));
   }
 
@@ -4984,9 +4974,9 @@ async function runEdit(octokit, owner, repo, tokens) {
     if (parsed.before === 'clear') {
       beforeStr = ''; activate = ''; changed.push('before → '+t('edit.clear'));
     } else {
-      if (!due) { process.stderr.write(t('error.before_needs_due')+'\n'); process.exit(1); }
+      if (!due) { exitWith(t('error.before_needs_due')); }
       const days = parseBeforeDuration(parsed.before);
-      if (days === null) { process.stderr.write(t('error.before_format')+'\n'); process.exit(1); }
+      if (days === null) { exitWith(t('error.before_format')); }
       beforeStr = parsed.before;
       activate = addDays(due, -days);
       changed.push('before → '+beforeStr+' (activate: '+activate+')');
@@ -4999,8 +4989,7 @@ async function runEdit(octokit, owner, repo, tokens) {
       // normalizeDue が M/D → YYYY-MM-DD も処理する
       let activateRaw = normalizeDue(parsed.activate, today);
       if (!activateRaw) {
-        process.stderr.write(t('error.date_format') + ': ' + parsed.activate + '\n');
-        process.exit(1);
+        exitWith(t('error.date_format') + ': ' + parsed.activate);
       }
       // 形式チェックに加え、実在するカレンダー日付かを検証する（Issue #1803）
       validateActivateFormat(activateRaw, parsed.activate);
@@ -5079,7 +5068,7 @@ async function runDue(octokit, owner, repo, tokens) {
   const num = parseInt(tokens[0]);
   const rawDue = tokens[1];
   const DUE_USAGE = 'Usage: /todo due <#> <date|clear>';
-  if (!num || rawDue === undefined) { process.stderr.write(`${DUE_USAGE}\n`); process.exit(1); }
+  if (!num || rawDue === undefined) { exitWith(DUE_USAGE); }
   assertIssueNumberArg(tokens[0]);
   // #1921 パターンC: 固定インデックス（tokens[0]=番号 / tokens[1]=日付）で読むため、
   // tokens.slice(2) 以降は従来すべて黙って捨てられていた（`due 42 2026-09-10 --note "理由"` の
@@ -5114,7 +5103,7 @@ async function runDue(octokit, owner, repo, tokens) {
 
 async function runDesc(octokit, owner, repo, tokens) {
   const num = parseInt(tokens[0]);
-  if (!num) { process.stderr.write(t('error.positive_int')+'\n'); process.exit(1); }
+  if (!num) { exitWith(t('error.positive_int')); }
   assertIssueNumberArg(tokens[0]);
 
   const newText = tokens.slice(1).join(' ');
@@ -5124,8 +5113,7 @@ async function runDesc(octokit, owner, repo, tokens) {
   const DESC_USAGE = 'Usage: /todo desc <#> <text>';
   guardUnknownFlag(tokens.slice(1), [], DESC_USAGE, 'error.unknown_flag_hint_body');
   if (!newText.trim()) {
-    process.stderr.write(t('error.desc_required')+'\n');
-    process.exit(1);
+    exitWith(t('error.desc_required'));
   }
 
   const issue = await fetchAndParseIssue(octokit, owner, repo, num);
@@ -5139,7 +5127,7 @@ async function runRecur(octokit, owner, repo, tokens) {
   const num = parseInt(tokens[0]);
   const pattern = tokens[1];
   const RECUR_USAGE = 'Usage: /todo recur <#> <pattern|clear>';
-  if (!num || !pattern) { process.stderr.write(`${RECUR_USAGE}\n`); process.exit(1); }
+  if (!num || !pattern) { exitWith(RECUR_USAGE); }
   assertIssueNumberArg(tokens[0]);
   // #1921 パターンC: tokens.slice(2) 以降は従来黙って捨てられていた。
   guardUnknownFlag(tokens.slice(2), [], RECUR_USAGE, 'error.unknown_flag_hint_options');
@@ -5161,7 +5149,7 @@ async function runLink(octokit, owner, repo, tokens) {
   const num = parseInt(tokens[0]);
   const proj = parseInt(tokens[1]);
   const LINK_USAGE = 'Usage: /todo link <#> <project-#>';
-  if (!num || !proj) { process.stderr.write(`${LINK_USAGE}\n`); process.exit(1); }
+  if (!num || !proj) { exitWith(LINK_USAGE); }
   assertIssueNumberArg(tokens[0]); assertIssueNumberArg(tokens[1]);
   // #1921 パターンC: tokens.slice(2) 以降は従来黙って捨てられていた。
   guardUnknownFlag(tokens.slice(2), [], LINK_USAGE, 'error.unknown_flag_hint_options');
@@ -5178,12 +5166,10 @@ async function runLink(octokit, owner, repo, tokens) {
   // 親プロジェクトの存在・ラベル確認
   const parent = await fetchParentProject(octokit, owner, repo, proj);
   if (parent.status === 'fetch_failed') {
-    process.stderr.write(tpl('error.project_fetch_failed', { num: proj, msg: parent.error.message })+'\n');
-    process.exit(1);
+    exitWith(tpl('error.project_fetch_failed', { num: proj, msg: parent.error.message }));
   }
   if (parent.status === 'not_project') {
-    process.stderr.write(tpl('error.not_a_project', { num: proj })+'\n');
-    process.exit(1);
+    exitWith(tpl('error.not_a_project', { num: proj }));
   }
 
   // body の project: #N メタ行を更新（従来処理）
@@ -5200,7 +5186,7 @@ async function runRename(octokit, owner, repo, tokens) {
   const num = parseInt(tokens[0]);
   const newTitle = tokens.slice(1).join(' ');
   const RENAME_USAGE = 'Usage: /todo rename <#> <new-title>';
-  if (!num || !newTitle) { process.stderr.write(`${RENAME_USAGE}\n`); process.exit(1); }
+  if (!num || !newTitle) { exitWith(RENAME_USAGE); }
   // #1921 第2弾: rename は tokens.slice(1) をそのまま新タイトルにして issues.update するため、
   // `rename 42 --boddy-file /tmp/x` が既存タイトルを「--boddy-file /tmp/x」で上書きして
   // exit 0 になっていた（add のゴミ Issue より復旧が困難）。update の前に落とす。
@@ -5214,7 +5200,7 @@ async function runPriority(octokit, owner, repo, tokens) {
   const num = parseInt(tokens[0]);
   const level = tokens[1];
   const PRIORITY_USAGE = 'Usage: /todo priority <#> <p1|p2|p3|clear>';
-  if (!num || !level) { process.stderr.write(`${PRIORITY_USAGE}\n`); process.exit(1); }
+  if (!num || !level) { exitWith(PRIORITY_USAGE); }
   assertIssueNumberArg(tokens[0]);
   // #1921 パターンC: tokens.slice(2) 以降は従来黙って捨てられていた。
   guardUnknownFlag(tokens.slice(2), [], PRIORITY_USAGE, 'error.unknown_flag_hint_options');
@@ -5249,8 +5235,7 @@ function normalizeTagTokens(rawTokens) {
     // '-' 始まりはオプション指定の渡し間違い（'--' 区切り等）とみなして拒否する。
     // 以前はコンテキストとして '@--' に正規化され、不正ラベルが新規作成されていた（Issue #1686）
     if (s.startsWith('-')) {
-      process.stderr.write(tpl('error.option_like_token', { token: s })+'\n');
-      process.exit(1);
+      exitWith(tpl('error.option_like_token', { token: s }));
     }
     // '@' も '#' もない → コンテキストとして扱う（後方互換）
     return '@'+s;
@@ -5259,7 +5244,7 @@ function normalizeTagTokens(rawTokens) {
 
 // @ctx ラベルを全タスク横断でリネームする（label rename / tag rename で共用。Issue #1644）
 async function renameCtxLabel(octokit, owner, repo, raw1, raw2, usage) {
-  if (!raw1 || !raw2) { process.stderr.write(`Usage: ${usage}\n`); process.exit(1); }
+  if (!raw1 || !raw2) { exitWith(`Usage: ${usage}`); }
   // #1921 第2弾: old / new どちらの位置にフラグ字面が来ても
   // 「@--foo というゴミラベルを作ったうえで実在の @old を削除する」という不可逆な副作用に
   // なる。validateCtx は FORBIDDEN_CHARS にハイフンを含まないため素通りさせてしまう。
@@ -5287,10 +5272,10 @@ async function runTag(octokit, owner, repo, tokens) {
     return await renameCtxLabel(octokit, owner, repo, tokens[1], tokens[2], '/todo tag rename <old> <new>');
   }
   const num = parseInt(tokens[0]);
-  if (!num) { process.stderr.write(t('error.positive_int')+'\n'); process.exit(1); }
+  if (!num) { exitWith(t('error.positive_int')); }
   assertIssueNumberArg(tokens[0]);
   const labelList = normalizeTagTokens(tokens.slice(1));
-  if (!labelList.length) { process.stderr.write('Usage: run tag <number> @ctx/#tag ...\n'); process.exit(1); }
+  if (!labelList.length) { exitWith('Usage: run tag <number> @ctx/#tag ...'); }
   for (const lbl of labelList) {
     let created;
     if (lbl.startsWith('#')) {
@@ -5309,10 +5294,10 @@ async function runTag(octokit, owner, repo, tokens) {
 
 async function runUntag(octokit, owner, repo, tokens) {
   const num = parseInt(tokens[0]);
-  if (!num) { process.stderr.write(t('error.positive_int')+'\n'); process.exit(1); }
+  if (!num) { exitWith(t('error.positive_int')); }
   assertIssueNumberArg(tokens[0]);
   const labelList = normalizeTagTokens(tokens.slice(1));
-  if (!labelList.length) { process.stderr.write('Usage: run untag <number> @ctx/#tag ...\n'); process.exit(1); }
+  if (!labelList.length) { exitWith('Usage: run untag <number> @ctx/#tag ...'); }
   for (const lbl of labelList) {
     if (lbl.startsWith('#')) { validateTag(lbl.slice(1)); }
     else { validateCtx(lbl.slice(1)); }
@@ -5335,7 +5320,7 @@ async function runLabel(octokit, owner, repo, tokens) {
     for (const l of ctxLabels) runOut(`  ${l.name}  #${l.color}  ${l.description||''}`);
   } else if (sub === 'add') {
     const raw1 = tokens[1];
-    if (!raw1) { process.stderr.write(`${LABEL_USAGE}\n`); process.exit(1); }
+    if (!raw1) { exitWith(LABEL_USAGE); }
     // #1921 第2弾（レビュー指摘）: 名前の位置（tokens[1]）も検査する。FORBIDDEN_CHARS に
     // ハイフンが含まれないため validateCtx('--foo') は通ってしまい、`label add --boddy-file`
     // が GitHub 上に @--boddy-file というゴミラベルを作れてしまう（手動削除が必要な不可逆の
@@ -5353,7 +5338,7 @@ async function runLabel(octokit, owner, repo, tokens) {
     runOut(tpl('label.created_named', { name }));
   } else if (sub === 'delete') {
     const raw1 = tokens[1];
-    if (!raw1) { process.stderr.write(`${LABEL_USAGE}\n`); process.exit(1); }
+    if (!raw1) { exitWith(LABEL_USAGE); }
     // slice(1) にすることで名前の位置（tokens[1]）と余剰トークンを1回で検査する（上記 add のコメント参照）
     guardUnknownFlag(tokens.slice(1), [], LABEL_USAGE, 'error.unknown_flag_hint_options');
     const name = raw1.startsWith('@') ? raw1 : '@'+raw1;
@@ -5367,7 +5352,7 @@ async function runLabel(octokit, owner, repo, tokens) {
     guardUnknownFlag(tokens.slice(1), [], LABEL_USAGE, 'error.unknown_flag_hint_options');
     return await renameCtxLabel(octokit, owner, repo, tokens[1], tokens[2], '/todo label rename <old> <new>');
   } else {
-    process.stderr.write(`${LABEL_USAGE}\n`); process.exit(1);
+    exitWith(LABEL_USAGE);
   }
 }
 
@@ -5381,7 +5366,7 @@ async function runSearch(octokit, owner, repo, tokens) {
   // 副作用はないが、他のjoin(' ')型ハンドラ（desc/rename等）と同じ型のため揃える。
   guardUnknownFlag(filteredTokens, [], SEARCH_USAGE, 'error.unknown_flag_hint_options');
   const keyword = filteredTokens.join(' ');
-  if (!keyword) { process.stderr.write(`${SEARCH_USAGE}\n`); process.exit(1); }
+  if (!keyword) { exitWith(SEARCH_USAGE); }
   const q = `${keyword} repo:${owner}/${repo} is:issue is:open`;
   const { data } = await octokit.search.issuesAndPullRequests({ q, per_page: 50 });
 
@@ -5418,20 +5403,20 @@ async function runArchive(octokit, owner, repo, tokens) {
     // 黙って検索クエリへ混入していた）。こちらは --json のような自前フラグすら持たない。
     guardUnknownFlag(tokens.slice(1), [], ARCHIVE_SEARCH_USAGE, 'error.unknown_flag_hint_options');
     const keyword = tokens.slice(1).join(' ');
-    if (!keyword) { process.stderr.write(`${ARCHIVE_SEARCH_USAGE}\n`); process.exit(1); }
+    if (!keyword) { exitWith(ARCHIVE_SEARCH_USAGE); }
     const q = `${keyword} in:title repo:${owner}/${repo} is:issue is:closed`;
     const { data } = await octokit.search.issuesAndPullRequests({ q, per_page: 30 });
     for (const i of data.items) runOut(`  #${i.number}  ${i.title}  ✅${toJstDateStr(i.closed_at)}`);
     runOut(tpl('search.results_count', { n: data.items.length }));
   } else if (sub === 'reopen') {
     const num = parseInt(tokens[1]);
-    if (!num) { process.stderr.write('Usage: run archive reopen <number>\n'); process.exit(1); }
+    if (!num) { exitWith('Usage: run archive reopen <number>'); }
     assertIssueNumberArg(tokens[1]);
     await octokit.issues.update({ owner, repo, issue_number: num, state: 'open' });
     await octokit.issues.addLabels({ owner, repo, issue_number: num, labels: ['📥 inbox'] });
     runOut(tpl('archive.reopened', { num }));
   } else {
-    process.stderr.write('Usage: run archive [list|search|reopen]\n'); process.exit(1);
+    exitWith('Usage: run archive [list|search|reopen]');
   }
 }
 
@@ -5485,9 +5470,10 @@ async function runReport(octokit, owner, repo, tokens) {
     // ユーザーは出力を見ても気づけない）。これは他4件のフラグ typo とは性質が異なり、
     // 位置引数の値そのものが不正なパターンのため guardUnknownFlag/guardExtraPositional
     // ではなく専用の loud エラーを追加する。API呼び出し（fetchAllOpen等）より前に落とす。
-    process.stderr.write(`${REPORT_USAGE}\n`);
-    process.stderr.write(tpl('error.report_invalid_sub', { sub }) + '\n');
-    process.exit(1);
+    exitWith([
+      REPORT_USAGE,
+      tpl('error.report_invalid_sub', { sub })
+    ]);
   }
   const [open, closed] = await Promise.all([
     fetchAllOpen(octokit, owner, repo, { parallel: true }),
@@ -5513,7 +5499,7 @@ async function runTemplate(octokit, owner, repo, tokens) {
     templateList();
   } else if (sub === 'show') {
     const name = tokens[1];
-    if (!name) { process.stderr.write(`${TEMPLATE_USAGE}\n`); process.exit(1); }
+    if (!name) { exitWith(TEMPLATE_USAGE); }
     // #1921 第2弾（レビュー指摘）: slice(2) ではなく slice(1)。テンプレート名の位置も検査する。
     // validateName('--foo') は通る（FORBIDDEN_CHARS にハイフンが含まれない）ため、名前位置を
     // 検査対象から外すと `template save --foo next` がローカルの todo-templates.json に
@@ -5523,7 +5509,7 @@ async function runTemplate(octokit, owner, repo, tokens) {
     templateShow(name);
   } else if (sub === 'save') {
     const name = tokens[1];
-    if (!name) { process.stderr.write(`${TEMPLATE_USAGE}\n`); process.exit(1); }
+    if (!name) { exitWith(TEMPLATE_USAGE); }
     // 名前の位置を検査する（save-from 形式・インライン形式の両方に効かせるため分岐より前に置く）
     guardUnknownFlag([name], [], TEMPLATE_USAGE, 'error.unknown_flag_hint_options');
     validateName(name);
@@ -5590,7 +5576,7 @@ async function runTemplate(octokit, owner, repo, tokens) {
     }
   } else if (sub === 'use') {
     const name = tokens[1];
-    if (!name) { process.stderr.write(`${TEMPLATE_USAGE}\n`); process.exit(1); }
+    if (!name) { exitWith(TEMPLATE_USAGE); }
     // #1921 第2弾: template use は tokens.slice(2) をタイトル上書きとして連結し、runAdd を
     // 経由せず自前に issues.create を呼ぶ（パターンA とまったく同型のゴミ Issue 作成経路）。
     // 自由記述がタイトルなので slice(2) の hint は「タイトル」向けキーを使う。
@@ -5606,7 +5592,7 @@ async function runTemplate(octokit, owner, repo, tokens) {
     if (overrideTitle) validateTitle(overrideTitle);
     // templateUse は stdout に KEY=VALUE を出力する関数なので、内部で直接読む
     const data = readJsonFile(getTemplatePath());
-    if (!data[name]) { process.stderr.write(tpl('template.not_found', {name})+'\n'); process.exit(1); }
+    if (!data[name]) { exitWith(tpl('template.not_found', {name})); }
     const tmpl = data[name];
 
     const gtd = tmpl.gtd || 'inbox';
@@ -5666,13 +5652,13 @@ async function runTemplate(octokit, owner, repo, tokens) {
     }
   } else if (sub === 'delete') {
     const name = tokens[1];
-    if (!name) { process.stderr.write(`${TEMPLATE_USAGE}\n`); process.exit(1); }
+    if (!name) { exitWith(TEMPLATE_USAGE); }
     // slice(1) で名前の位置も検査する（上記 show のコメント参照）
     guardUnknownFlag(tokens.slice(1), [], TEMPLATE_USAGE, 'error.unknown_flag_hint_options');
     validateName(name);
     templateDelete(name);
   } else {
-    process.stderr.write(`${TEMPLATE_USAGE}\n`); process.exit(1);
+    exitWith(TEMPLATE_USAGE);
   }
 }
 
@@ -5778,8 +5764,7 @@ async function runShow(octokit, owner, repo, tokens) {
   const filteredTokens = tokens.filter(t => t !== '--json');
   const numStr = (filteredTokens[0] || '').replace(/^#/, '');
   if (!numStr || parseIssueNumberArg(numStr) === null) {
-    process.stderr.write(`${SHOW_USAGE}\n`);
-    process.exit(1);
+    exitWith(SHOW_USAGE);
   }
   const num = parseInt(numStr, 10);
 
@@ -5788,11 +5773,10 @@ async function runShow(octokit, owner, repo, tokens) {
     issue = await fetchAndParseIssue(octokit, owner, repo, num);
   } catch (e) {
     if (e.status === 404) {
-      process.stderr.write(tpl('error.issue_not_found', { num })+'\n');
+      exitWith(tpl('error.issue_not_found', { num }));
     } else {
-      process.stderr.write(tpl('error.issue_fetch_failed', { msg: e.message })+'\n');
+      exitWith(tpl('error.issue_fetch_failed', { msg: e.message }));
     }
-    process.exit(1);
   }
 
   // ラベルは normLabel で正規化したもので判定する（絵文字付き・絵文字なしの GTD ラベルを同じに扱う。
@@ -5868,22 +5852,20 @@ async function runShow(octokit, owner, repo, tokens) {
 async function runView(octokit, owner, repo, tokens) {
   const sub = tokens[0];
   if (!sub) {
-    process.stderr.write('Usage: /todo view list|save|use|delete\n');
-    process.exit(1);
+    exitWith('Usage: /todo view list|save|use|delete');
   }
   if (sub === 'list') {
     viewList();
   } else if (sub === 'save') {
     const name = tokens[1];
-    if (!name) { process.stderr.write('Usage: run view save <name> [filters...]\n'); process.exit(1); }
+    if (!name) { exitWith('Usage: run view save <name> [filters...]'); }
     validateName(name);
     const VIEW_SAVE_USAGE = 'Usage: /todo view save <name> [GTD] [@ctx] [p1|p2|p3]';
     const rest = tokens.slice(2);
     let gtd = '', ctx = '', pri = '';
     const ctxTokens = rest.filter(tok => tok.startsWith('@'));
     if (ctxTokens.length > 1) {
-      process.stderr.write(t('error.view_ctx_multiple')+'\n');
-      process.exit(1);
+      exitWith(t('error.view_ctx_multiple'));
     }
     const unmatched = [];
     for (const tok of rest) {
@@ -5906,17 +5888,17 @@ async function runView(octokit, owner, repo, tokens) {
     // 予約サブコマンドは「名前扱いフォールバック」より前に判定する
     // （でないと view delete <name> が「delete」という名前のビュー扱いになり到達不能になる。Issue #1643）
     const name = tokens[1];
-    if (!name) { process.stderr.write('Usage: run view delete <name>\n'); process.exit(1); }
+    if (!name) { exitWith('Usage: run view delete <name>'); }
     validateName(name);
     viewDelete(name);
   } else if (sub === 'use' || !sub.startsWith('-')) {
     // view use <name> または view <name>（subがコマンド名でない場合）
     const name = sub === 'use' ? tokens[1] : sub;
-    if (!name) { process.stderr.write('Usage: run view use <name>\n'); process.exit(1); }
+    if (!name) { exitWith('Usage: run view use <name>'); }
     validateName(name);
     // viewUse の出力を読んで list フィルタに適用
     const vdata = readJsonFile(getViewPath());
-    if (!vdata[name]) { process.stderr.write(tpl('view.not_found', {name})+'\n'); process.exit(1); }
+    if (!vdata[name]) { exitWith(tpl('view.not_found', {name})); }
     const v = vdata[name];
     const today = getToday();
     const allIssues = await fetchAllOpen(octokit, owner, repo);
@@ -5929,7 +5911,7 @@ async function runView(octokit, owner, repo, tokens) {
     runOut(tpl('view.viewing', { name, parts: parts.join(', ') })+'\n');
     listAll({ open: allIssues, today, filters: viewFilters });
   } else {
-    process.stderr.write('Usage: run view list|save|use|delete\n'); process.exit(1);
+    exitWith('Usage: run view list|save|use|delete');
   }
 }
 
@@ -5937,7 +5919,7 @@ async function runBulk(octokit, owner, repo, tokens) {
   const sub = tokens[0];
   const BULK_USAGE = 'Usage: /todo bulk <done|move|tag|untag|priority> <#>... [options]';
   if (!['done','move','tag','untag','priority'].includes(sub)) {
-    process.stderr.write(`${BULK_USAGE}\n`); process.exit(1);
+    exitWith(BULK_USAGE);
   }
 
   // 番号を先頭から収集（数字のみ）
@@ -5945,13 +5927,12 @@ async function runBulk(octokit, owner, repo, tokens) {
   let i = 1;
   while (i < tokens.length && /^\d+$/.test(tokens[i])) { nums.push(parseInt(tokens[i])); i++; }
   const rest = tokens.slice(i);
-  if (!nums.length) { process.stderr.write(t('error.no_issue_numbers')+'\n'); process.exit(1); }
+  if (!nums.length) { exitWith(t('error.no_issue_numbers')); }
   // done / tag / untag は番号の直後の語を操作の引数として読むため、'43abc' のような数字で始まる語が
   // 番号の並びに混ざっていると、番号のつもりの語を黙って別の意味に読んでしまう（done は無視、tag / untag は
   // その名前の context ラベルとして扱う）。何も処理せずに落とす。move / priority は引数として読んで既にエラーになる
   if (['done','tag','untag'].includes(sub) && rest.length && /^\d/.test(rest[0])) {
-    process.stderr.write(tpl('error.bulk_non_numeric_number', { token: rest[0] })+'\n');
-    process.exit(1);
+    exitWith(tpl('error.bulk_non_numeric_number', { token: rest[0] }));
   }
   for (const n of nums) validateNumber(String(n));
 
@@ -5971,8 +5952,7 @@ async function runBulk(octokit, owner, repo, tokens) {
     for (let k = 0; k < rest.length; k++) {
       if (rest[k] === '--actual') { k++; continue; }
       if (rest[k].startsWith('-')) continue;
-      process.stderr.write(tpl('error.bulk_done_stray_arg', { token: rest[k] })+'\n');
-      process.exit(1);
+      exitWith(tpl('error.bulk_done_stray_arg', { token: rest[k] }));
     }
     // --actual は全 Issue 共通の1つの値。解釈できない値を黙って捨てず、ループに入る前（API を呼ぶ前）に落とす
     const actualValue = parseActualOrExit(parsed);
@@ -6015,11 +5995,10 @@ async function runBulk(octokit, owner, repo, tokens) {
     const target = rest[0];
     if (!target || !GTD_LABELS.includes(target)) {
       if (target === PROJECT_LABEL) {
-        process.stderr.write(t('error.move_to_project_forbidden')+'\n');
+        exitWith(t('error.move_to_project_forbidden'));
       } else {
-        process.stderr.write(t('error.gtd_label_missing')+'\n');
+        exitWith(t('error.gtd_label_missing'));
       }
-      process.exit(1);
     }
     // #1921 パターンB: bulk move は rest[0]（移動先 GTD）しか読まず rest.slice(1) を捨てていた。
     // 単体 move と違い `bulk move 1 2 next --note "x"` の --note は効かない（黙って無視される）。
@@ -6032,7 +6011,7 @@ async function runBulk(octokit, owner, repo, tokens) {
         // 単体move（execMoveGtd）に入れたrecur必須ガードがここには効かない。
         // fetchAndParseIssueが返すissue.recurは既にparseBodyObj済み（3641-3645行相当）。
         // bulk系の既存方針（1件の失敗で全体を止めず item_error に集約）に合わせ、
-        // process.exit ではなく throw でこのtry/catchに委ねる。
+        // exitWith() ではなく通常の Error を throw して、このtry/catchに item_error として委ねる。
         if (target === 'routine' && !issue.recur) {
           throw new Error(tpl('error.routine_needs_recur_move_bulk', { num }));
         }
@@ -6046,7 +6025,7 @@ async function runBulk(octokit, owner, repo, tokens) {
     // normalizeTagTokens が `-` 始まりトークンを既に error.option_like_token で exit 1 させており
     // （#1686）、guard を足すとメッセージが「オプション指定に見えます」から変わってしまう。
     const labelList = normalizeTagTokens(rest);
-    if (!labelList.length) { process.stderr.write(`${BULK_USAGE}\n`); process.exit(1); }
+    if (!labelList.length) { exitWith(BULK_USAGE); }
     for (const lbl of labelList) {
       let created;
       if (lbl.startsWith('#')) { validateTag(lbl.slice(1)); created = await ensureTagLabel(octokit, owner, repo, lbl); }
@@ -6061,7 +6040,7 @@ async function runBulk(octokit, owner, repo, tokens) {
     runOut(tpl('bulk.tag_added_count', { n: doneCount, labels: labelList.join(' ') }) + (errCount ? tpl('bulk.err_suffix', { n: errCount }) : ''));
   } else if (sub === 'untag') {
     const labelList = normalizeTagTokens(rest);
-    if (!labelList.length) { process.stderr.write(`${BULK_USAGE}\n`); process.exit(1); }
+    if (!labelList.length) { exitWith(BULK_USAGE); }
     for (const lbl of labelList) {
       if (lbl.startsWith('#')) { validateTag(lbl.slice(1)); }
       else { validateCtx(lbl.slice(1)); }
@@ -6075,7 +6054,7 @@ async function runBulk(octokit, owner, repo, tokens) {
     runOut(tpl('bulk.tag_removed_count', { n: doneCount, labels: labelList.join(' ') }) + (errCount ? tpl('bulk.err_suffix', { n: errCount }) : ''));
   } else if (sub === 'priority') {
     const level = rest[0];
-    if (!level) { process.stderr.write(`${BULK_USAGE}\n`); process.exit(1); }
+    if (!level) { exitWith(BULK_USAGE); }
     if (level !== 'clear') validatePriority(level);
     // #1921 パターンB: rest.slice(1) は従来黙って捨てられていた。ラベル作成（ensureLabel）より前に落とす。
     guardUnknownFlag(rest.slice(1), [], BULK_USAGE, 'error.unknown_flag_hint_options');
@@ -6096,7 +6075,7 @@ async function runReviewSomeday(octokit, owner, repo, tokens) {
   const today = getToday();
   const num = parseInt(tokens[0]);
   const REVIEW_SOMEDAY_USAGE = 'Usage: /todo review-someday <number>';
-  if (!num) { process.stderr.write(`${REVIEW_SOMEDAY_USAGE}\n`); process.exit(1); }
+  if (!num) { exitWith(REVIEW_SOMEDAY_USAGE); }
   assertIssueNumberArg(tokens[0]);
   // #1938: tokens[0] しか使わないため tokens.slice(1) 以降は従来黙って捨てられていた
   // （書き込みは reviewedAt 更新のみでデータ破壊はしない）。review-someday は「第2の
@@ -6110,8 +6089,7 @@ async function runReviewSomeday(octokit, owner, repo, tokens) {
   // somedayラベルを持つIssueのみ対象
   const gtdLabel = issue.labels.find(l => GTD_LABELS.includes(normLabel(l)));
   if (!gtdLabel || normLabel(gtdLabel) !== 'someday') {
-    process.stderr.write(tpl('error.not_someday', { num })+'\n');
-    process.exit(1);
+    exitWith(tpl('error.not_someday', { num }));
   }
 
   const body = buildBody({ ...issue, reviewedAt: today });
@@ -6164,7 +6142,7 @@ async function runPromote(octokit, owner, repo) {
 async function runPromoteProject(octokit, owner, repo, tokens) {
   const num = parseInt(tokens[0]);
   const PROMOTE_PROJECT_USAGE = 'Usage: /todo promote-project <N> [--outcome "title"]';
-  if (!num) { process.stderr.write(`${PROMOTE_PROJECT_USAGE}\n`); process.exit(1); }
+  if (!num) { exitWith(PROMOTE_PROJECT_USAGE); }
   assertIssueNumberArg(tokens[0]);
 
   // #1938: --outcome は tokens.indexOf() の走査型判定のみで、未知フラグ（typo）を検出して
@@ -6188,8 +6166,7 @@ async function runPromoteProject(octokit, owner, repo, tokens) {
 
   // 既に project ラベルを持つ場合はエラー
   if (issue.labels.some(l => normLabel(l) === PROJECT_LABEL)) {
-    process.stderr.write(tpl('error.already_project', { num })+'\n');
-    process.exit(1);
+    exitWith(tpl('error.already_project', { num }));
   }
 
   // 📁 project ラベルの存在確認・作成を、旧 GTD ラベルの削除より前に行う。
@@ -6221,7 +6198,7 @@ async function runPromoteProject(octokit, owner, repo, tokens) {
 async function runUnlink(octokit, owner, repo, tokens) {
   const num = parseInt(tokens[0]);
   const UNLINK_USAGE = 'Usage: /todo unlink <N> [--force]';
-  if (!num) { process.stderr.write(`${UNLINK_USAGE}\n`); process.exit(1); }
+  if (!num) { exitWith(UNLINK_USAGE); }
   assertIssueNumberArg(tokens[0]);
   // #1937: force は tokens.includes('--force') という走査型判定のみで、未知フラグ
   // （typo）を検出していなかった。`unlink 42 --forse` は force=false のまま処理が進み、
@@ -6238,8 +6215,7 @@ async function runUnlink(octokit, owner, repo, tokens) {
   // body に project: #N がなければエラー
   const bodyProjectNum = getBodyProjectNum(issue.body);
   if (!bodyProjectNum) {
-    process.stderr.write(tpl('error.no_project_link', { num })+'\n');
-    process.exit(1);
+    exitWith(tpl('error.no_project_link', { num }));
   }
   const parentNum = parseInt(bodyProjectNum);
 
@@ -6257,22 +6233,19 @@ async function runUnlink(octokit, owner, repo, tokens) {
   try {
     existing = await listSubIssues(octokit, owner, repo, parentNum, { throwOnError: true });
   } catch (e) {
-    process.stderr.write(tpl('error.unlink_list_failed', { num, parent: parentNum })+'\n');
-    process.exit(1);
+    exitWith(tpl('error.unlink_list_failed', { num, parent: parentNum }));
   }
   const isRegistered = existing.some(s => s.id === issue.id);
 
   if (!isRegistered && !force) {
-    process.stderr.write(tpl('error.unlink_mismatch', { num, parent: parentNum })+'\n');
-    process.exit(1);
+    exitWith(tpl('error.unlink_mismatch', { num, parent: parentNum }));
   }
 
   if (isRegistered) {
     const result = await removeSubIssue(octokit, owner, repo, parentNum, issue.id);
     if (result !== 'removed') {
       // DELETE 失敗: body は更新しない
-      process.stderr.write(tpl('error.unlink_failed', { num })+'\n');
-      process.exit(1);
+      exitWith(tpl('error.unlink_failed', { num }));
     }
   }
   // isRegistered === false かつ force === true の場合はここに到達する。
@@ -6510,11 +6483,12 @@ async function runMain(args) {
     // 一覧表示の意図を、タイトル「list」のゴミIssueとして黙って作成しない
     const guardWord = reservedTitleGuardWord(rest);
     if (guardWord) {
-      process.stderr.write(tpl('error.reserved_command_word', { word: guardWord })+'\n');
-      process.stderr.write(tpl('error.reserved_command_hint1', { cmd })+'\n');
-      process.stderr.write(tpl('error.reserved_command_hint2', { cmd, word: guardWord })+'\n');
-      process.stderr.write(t('error.command_list_hint')+'\n');
-      process.exit(1);
+      exitWith([
+        tpl('error.reserved_command_word', { word: guardWord }),
+        tpl('error.reserved_command_hint1', { cmd }),
+        tpl('error.reserved_command_hint2', { cmd, word: guardWord }),
+        t('error.command_list_hint')
+      ]);
     }
     return await runAdd(octokit, owner, repo, args);
   }
@@ -6563,15 +6537,14 @@ async function runMain(args) {
       // migrate sub-issue [--dry-run]
       const subCmd = rest[0];
       if (subCmd === 'sub-issue') return await runMigrateSubIssue(octokit, owner, repo, rest.slice(1));
-      process.stderr.write('Usage: run migrate sub-issue [--dry-run]\n'); process.exit(1);
+      exitWith('Usage: run migrate sub-issue [--dry-run]');
       break;
     }
     case 'activate': {
       const [num, date] = rest;
       const ACTIVATE_USAGE = 'Usage: /todo activate <#> <date>';
       if (!num || !date) {
-        process.stderr.write(`${ACTIVATE_USAGE}\n`);
-        process.exit(1);
+        exitWith(ACTIVATE_USAGE);
       }
       // #1937: このショートカットは rest[0]/rest[1] だけを取り出して
       // ['num','--activate',date] という新しい配列を合成し runEdit へ渡す。従来は
@@ -6594,19 +6567,21 @@ async function runMain(args) {
       // 第1引数が英字コマンド風で既知コマンドにない → 誤入力として即エラー
       // （GTD 原則: 仕分け済みをInboxに戻さない。暗黙の inbox 吸い込みは ghost issue を生む）
       if (/^[a-zA-Z][a-zA-Z0-9_-]*$/.test(cmd)) {
-        process.stderr.write(tpl('error.unknown_command', { cmd })+'\n');
-        process.stderr.write(t('error.unknown_command_hint1')+'\n');
-        process.stderr.write(tpl('error.unknown_command_hint2', { args: args.join(' ') })+'\n');
-        process.stderr.write(t('error.command_list_hint')+'\n');
-        process.exit(1);
+        exitWith([
+          tpl('error.unknown_command', { cmd }),
+          t('error.unknown_command_hint1'),
+          tpl('error.unknown_command_hint2', { args: args.join(' ') }),
+          t('error.command_list_hint')
+        ]);
       }
       // 第1引数が空白入りで1語目が既知コマンド名（例: "list next" を1引数で渡した誤爆）→ 止める。
       // 明示的な add / <GTD> <タイトル> 経路は別 case で処理されるため対象外（Issue #2131）。
       const mwWord = reservedMultiwordFirstWord(cmd);
       if (mwWord) {
-        process.stderr.write(tpl('error.reserved_multiword_title', { title: cmd, word: mwWord })+'\n');
-        process.stderr.write(tpl('error.reserved_multiword_title_hint', { title: cmd })+'\n');
-        process.exit(1);
+        exitWith([
+          tpl('error.reserved_multiword_title', { title: cmd, word: mwWord }),
+          tpl('error.reserved_multiword_title_hint', { title: cmd })
+        ]);
       }
       // 非英字（日本語タイトル等）は従来通り inbox 追加（摩擦ゼロ収集の維持）
       return await runAdd(octokit, owner, repo, args);
@@ -6623,8 +6598,9 @@ async function runMain(args) {
 // 後半の const が初期化される前に main() を呼ぶと TDZ で落ちる（旧構造で
 // `Cannot access 'UNKNOWN_FLAG_RE' before initialization` が実際に起きた）。
 //
-// 注意: バリデータ・ガード・run ハンドラの多くは失敗時に process.exit(1) を直接呼ぶ。
-// プロセス内から異常系を呼ぶテストは、テストランナー自身が終了する点に注意する。
+// 注意: バリデータ・ガード・run ハンドラは失敗時に exitWith() で stderr へ書いてから例外を投げる
+// （process.exit は呼ばない）。プロセス内から異常系を呼ぶテストは、isCliExit(e) で捕まえられる。
+// 例外を終了コードへ変換して process.exit するのは、トップレベル（main とその api / run の catch）だけ。
 // 末尾 export 範囲を run-tests.sh の runMain 抽出（/^async function runMain...[\s\S]*$/m）が
 // 取り込み、case ラベルの抽出対象になるため、ここに switch の case 句と同じ形の文字列を書かないこと。
 module.exports = {
