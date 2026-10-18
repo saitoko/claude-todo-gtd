@@ -741,6 +741,15 @@ const CORPUS = [
   { id: 'l04-bulk-done-mixed-after-numbers', argv: ['run', 'bulk', 'done', '1028', '1029', '1030abc'],
     responses: { 'issues.get': [iss(1028), iss(1029)], 'issues.update': [{}, {}], 'issues.listForRepo': [list(), list()] },
     marker: { logSeq: ['issues.get', 'issues.update', 'issues.get', 'issues.update'], exit: 0 } },
+  { id: 'l10-bulk-done-stray-word', argv: ['run', 'bulk', 'done', '1040', 'l10abc'],
+    responses: { 'issues.get': [iss(1040)], 'issues.update': [{}], 'issues.listForRepo': [list()] },
+    marker: { logSeq: ['issues.get', 'issues.update', 'issues.listForRepo'], exit: 0 } },
+  { id: 'l11-bulk-done-number-after-flag', argv: ['run', 'bulk', 'done', '1041', '--actual', '2h', '1042'],
+    responses: { 'issues.get': [iss(1041)], 'issues.update': [{}, {}], 'issues.listForRepo': [list()] },
+    marker: { logSeq: ['issues.get', 'issues.update', 'issues.update', 'issues.listForRepo'], exit: 0 } },
+  { id: 'l12-bulk-done-numbers-and-actual', argv: ['run', 'bulk', 'done', '1043', '1044', '--actual', '2h'],
+    responses: { 'issues.get': [iss(1043), iss(1044)], 'issues.update': [{}, {}, {}, {}], 'issues.listForRepo': [list(), list()] },
+    marker: { logSeq: ['issues.get', 'issues.update', 'issues.update', 'issues.get'], exit: 0 } },
   { id: 'l05-bulk-done-numbers-only', argv: ['run', 'bulk', 'done', '1031', '1032'],
     responses: { 'issues.get': [iss(1031), iss(1032)], 'issues.update': [{}, {}], 'issues.listForRepo': [list(), list()] },
     marker: { logSeq: ['issues.get', 'issues.update', 'issues.get', 'issues.update'], exit: 0 } },
@@ -767,7 +776,7 @@ const CORPUS = [
 //     J5  c01 c03 c05 c06 c08                priority / edit: 同上（優先度ラベル）
 //     J7  i01 i02 i04 i06                show の labels 正規化 / 絵文字なし GTD ラベルの gtd・tags（i03 i05 i07 は一致するはず）
 //     J8  j01                                template save from: 絵文字なしの GTD / project ラベルをタグにしない（j02 j03 は一致するはず）
-//     J12 l01 l02 l03 l04                    bulk done / tag / untag の番号に数字でない語が混ざる（l05〜l09 は一致するはず）
+//     J12 l01 l02 l03 l04 l10 l11            bulk done / tag / untag の番号に数字でない語が混ざる、bulk done の番号・--actual 以外の語（l05〜l09 l12 は一致するはず）
 const ALLOW_PRESETS = {
   'pr-b': [
     'a12-bulk-done-actual-invalid', 'a06-done-actual-invalid',
@@ -776,6 +785,7 @@ const ALLOW_PRESETS = {
     'i01-show-json-emoji-labels', 'i02-show-json-plain-labels', 'i04-show-json-closed-project', 'i06-show-text-plain-labels',
     'j01-template-save-from-plain-labels',
     'l01-bulk-done-mixed-number', 'l02-bulk-tag-mixed-number', 'l03-bulk-untag-mixed-number', 'l04-bulk-done-mixed-after-numbers',
+    'l10-bulk-done-stray-word', 'l11-bulk-done-number-after-flag',
   ],
 };
 

@@ -2330,6 +2330,7 @@ node tests/tools/engine-diff-harness.js --old /tmp/engine-old.js --new todo-engi
 ### 51-2. 番号の並びに数字でない語が混ざったとき（J12）
 
 - `bulk done 42 43abc 44` / `bulk tag 42 43abc @x` / `bulk untag 42 43abc @x` / `bulk tag 42 43 44abc @x`: `'43abc' is not an issue number. ...` で exit 1。書き込み系 API（`issues.update` / `addLabels` / `removeLabel` / `createLabel`）を1回も呼ばない。API 呼び出し自体がない
+- `bulk done` はさらに、番号と `--actual <時間>` 以外の語が1つでもあればエラー（`bulk done 42 abc` / `bulk done 42 --actual 2h 44`。`'abc' is not allowed in bulk done. ...`、exit 1、書き込み 0 回）。`bulk done 42 43 --actual 2h` は従来どおり処理される
 - 対照: `bulk done 42`、`bulk tag 42 @x`、`bulk untag 42 @x`、`bulk tag 42 43 @x` は従来どおり処理される。`bulk tag 42 home`（数字で始まらない語）は従来どおり `@home` として扱う
 
 ### 51-3. ラベル存在確認の位置（J4 / J5）
