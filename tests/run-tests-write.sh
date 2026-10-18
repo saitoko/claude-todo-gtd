@@ -6641,6 +6641,123 @@ if [ "$W59_N" -lt 35 ]; then
 fi
 rm -rf "$W59_HOME"
 
+# ── §W60 R5 PR-0: process.exit が try/catch に吸われる経路と、api の recur エラー表示の現状固定（Issue #2102 R5） ──
+# R5（process.exit を例外に置き換える）は、exit が例外になると try/catch に吸われる経路で挙動が変わりうる。
+# 吸われる経路は2つだけ（apiMain の try と bulk done のループの try。どちらも createRecurIssue → validateRecur 経由）。
+# 変更の前に現状を固定する（K1: bulk done の全体停止 / K6: api done-issue の recur エラーが日本語になりうる表示）。
+# R5 の PR-4（K1 を揃える）で、K1 のアサーション（W60-1〜W60-3）は期待値を書き換える前提。それ以外は変わらない。
+# 安全条件: HOME を一時ディレクトリに隔離し、OCTOKIT_STUB_ENV でスタブを指定する。
+echo ""
+echo "§W60  R5 PR-0 固定テスト（Issue #2102 R5）"
+
+W60_P0=$PASS
+W60_HOME=$(mktemp -d /tmp/todo-test-w60-XXXXXX)
+W60_LOG="$W60_HOME/stub.jsonl"
+
+# w60_run <ja|en> <responses-json> -- <args...>: W60_OUT=stdout / W60_ERR=stderr / W60_EC=終了コード
+# ja のときは LANG_ENV を渡さない（既定の言語）
+w60_run() {
+  case "$W60_HOME" in
+    /tmp/todo-test-w60-??????) : ;;
+    *) printf "  ❌ W60 隔離 HOME を作れていないため実行しない (%s)\n" "$W60_HOME"; FAIL=$((FAIL+1)); W60_OUT=""; W60_ERR=""; W60_EC=99; return 1 ;;
+  esac
+  : > "$W60_LOG"
+  local lang="$1" resp="$2"; shift 2
+  shift  # --
+  local langenv=()
+  [ "$lang" = "en" ] && langenv=(LANG_ENV=en)
+  W60_OUT=$(env -u LANG_ENV HOME="$W60_HOME" ${langenv[@]+"${langenv[@]}"} OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$resp" OCTOKIT_STUB_LOG_ENV="$W60_LOG" \
+    TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-10-18 \
+    node "$ENGINE" "$@" 2>"$W60_HOME/stderr"); W60_EC=$?
+  W60_ERR=$(cat "$W60_HOME/stderr")
+}
+
+W60_MSG_EN='Error: weekly day suffix must be one of mon/tue/wed/thu/fri/sat/sun (lowercase 3-letter)'
+W60_MSG_JA='エラー: weekly の曜日サフィックスは mon/tue/wed/thu/fri/sat/sun（小文字英字3文字）のみ有効です'
+w60_issue() { # <num> <body-with-\n-escapes>
+  printf '{"data":{"number":%s,"id":%s,"title":"W60 %s","body":"%s","labels":[{"name":"🎯 next"}],"state":"open"}}' "$1" "$((1000+$1))" "$1" "$2"
+}
+w60_lines() { printf '%s\n' "$1" | wc -l | tr -d ' '; }
+
+# W60-1 K1（現状）: bulk done の途中で壊れた recur に当たると、全体が止まる（exit 1・集計行なし・item_error なし・後続は未処理）
+w60_run en "{\"issues.get\":[$(w60_issue 1201 ''),$(w60_issue 1202 'due: 2026-10-10\nrecur: weekly:INVALID\n')],\"issues.update\":[{}],\"issues.listForRepo\":[{\"data\":[]}]}" -- run bulk done 1201 1202 1203
+assert_eq "W60-1 K1: bulk done 途中の壊れた recur → exit 1（item_error で続行しない）" "1" "$W60_EC"
+assert_eq "W60-1 K1: stderr は validateRecur のメッセージ1行だけ" "$W60_MSG_EN" "$W60_ERR"
+assert_not_contains "W60-1 K1: 集計行（bulk.done_count）が出ない" "completed" "$W60_OUT"
+assert_not_contains "W60-1 K1: item_error の行が出ない" "error:" "$W60_OUT"
+assert_eq "W60-1 K1: 壊れた Issue より前の #1201 は閉じられている（issues.update は close の1回）" "1" "$(log_count "$W60_LOG" issues.update)"
+assert_contains "W60-1 K1: #1201 は state closed で更新" '"issue_number":1201,"state":"closed"' "$(log_lines_for_method "$W60_LOG" issues.update)"
+assert_eq "W60-1 K1: 取得は #1201 と #1202 の2回だけ（#1203 は処理されない）" "2" "$(log_count "$W60_LOG" issues.get)"
+assert_not_contains "W60-1 K1: #1203 の取得なし" '"issue_number":1203' "$(log_lines_for_method "$W60_LOG" issues.get)"
+assert_eq "W60-1 K1: 壊れた #1202 では次周期 Issue を作らない" "0" "$(log_count "$W60_LOG" issues.create)"
+
+# W60-2 K1（現状・日本語）: 同じ入力で、言語を変えても exit 1・メッセージ1行
+w60_run ja "{\"issues.get\":[$(w60_issue 1201 ''),$(w60_issue 1202 'due: 2026-10-10\nrecur: weekly:INVALID\n')],\"issues.update\":[{}],\"issues.listForRepo\":[{\"data\":[]}]}" -- run bulk done 1201 1202 1203
+assert_eq "W60-2 K1(ja): exit 1" "1" "$W60_EC"
+assert_eq "W60-2 K1(ja): stderr は validateRecur のメッセージ1行だけ" "$W60_MSG_JA" "$W60_ERR"
+assert_not_contains "W60-2 K1(ja): 集計行（件完了）が出ない" "件完了" "$W60_OUT"
+
+# W60-3 K1（現状・--actual つき）: 壊れた #1212 は actual の更新（issues.update）まで済んだ後で止まる
+w60_run en "{\"issues.get\":[$(w60_issue 1211 ''),$(w60_issue 1212 'due: 2026-10-10\nrecur: weekly:INVALID\n')],\"issues.update\":[{},{},{}],\"issues.listForRepo\":[{\"data\":[]}]}" -- run bulk done 1211 1212 1213 --actual 30m
+assert_eq "W60-3 K1: --actual つきでも exit 1" "1" "$W60_EC"
+assert_eq "W60-3 K1: stderr は1行" "$W60_MSG_EN" "$W60_ERR"
+assert_eq "W60-3 K1: issues.update は3回（#1211 の actual / #1211 の close / #1212 の actual）" "3" "$(log_count "$W60_LOG" issues.update)"
+assert_contains "W60-3 K1: #1212 の actual 更新は済んでいる" '"issue_number":1212,"body":"due: 2026-10-10\nrecur: weekly:INVALID\nactual: 30' "$(log_lines_for_method "$W60_LOG" issues.update)"
+assert_not_contains "W60-3 K1: #1212 は閉じられていない" '"issue_number":1212,"state":"closed"' "$(log_lines_for_method "$W60_LOG" issues.update)"
+
+# W60-4 壊れた recur が先頭: 何も閉じずに exit 1
+w60_run en "{\"issues.get\":[$(w60_issue 1221 'due: 2026-10-10\nrecur: daily:x\n')]}" -- run bulk done 1221 1222
+assert_eq "W60-4 先頭の壊れた recur: exit 1" "1" "$W60_EC"
+assert_eq "W60-4 先頭の壊れた recur: 書き込みなし" "0" "$(log_count "$W60_LOG" issues.update)"
+
+# W60-5 K6（現状）: api done-issue で recur が壊れているとき、stderr に t() のメッセージが出る。言語は LANG_ENV に従い（api は英語固定のはずだが現状は日本語になりうる）、
+#       'GitHub API error:' や 'Error:' の接頭辞は付かず、1行だけ（apiMain の catch は _msgWritten を見て何も足さない）
+w60_run ja "{\"issues.get\":[$(w60_issue 1231 'due: 2026-10-10\nrecur: weekly:INVALID\n')]}" -- api done-issue 1231
+assert_eq "W60-5 K6(ja): api done-issue 壊れた recur → exit 1" "1" "$W60_EC"
+assert_eq "W60-5 K6(ja): stderr は日本語のメッセージ1行" "$W60_MSG_JA" "$W60_ERR"
+assert_eq "W60-5 K6(ja): stdout は空" "" "$W60_OUT"
+w60_run en "{\"issues.get\":[$(w60_issue 1232 'due: 2026-10-10\nrecur: weekly:INVALID\n')]}" -- api done-issue 1232
+assert_eq "W60-5 K6(en): exit 1" "1" "$W60_EC"
+assert_eq "W60-5 K6(en): stderr はメッセージ1行（二重表示なし）" "$W60_MSG_EN" "$W60_ERR"
+assert_eq "W60-5 K6(en): stderr の行数は1" "1" "$(w60_lines "$W60_ERR")"
+assert_eq "W60-5 K6: close も周期再作成もしない（issues.update 0・issues.create 0）" "0" "$(( $(log_count "$W60_LOG" issues.update) + $(log_count "$W60_LOG" issues.create) ))"
+
+# W60-6 run 経由の api（run の .catch を通る）: 同じ表示・同じ exit code
+w60_run en "{\"issues.get\":[$(w60_issue 1233 'due: 2026-10-10\nrecur: weekly:INVALID\n')]}" -- run api done-issue 1233
+assert_eq "W60-6 run api done-issue 壊れた recur: exit 1" "1" "$W60_EC"
+assert_eq "W60-6 run api done-issue: stderr はメッセージ1行" "$W60_MSG_EN" "$W60_ERR"
+
+# W60-7 単体の done（try の外）: 同じメッセージで exit 1
+w60_run en "{\"issues.get\":[$(w60_issue 1234 'due: 2026-10-10\nrecur: weekly:INVALID\n')]}" -- run done 1234
+assert_eq "W60-7 done 壊れた recur: exit 1" "1" "$W60_EC"
+assert_eq "W60-7 done 壊れた recur: stderr はメッセージ1行" "$W60_MSG_EN" "$W60_ERR"
+
+# W60-8 §1-3 の確認: bulk move / tag / untag / priority のループは、API の失敗を item_error にして exit 0 で続ける。
+#       ループの中から exit 箇所へ届く経路がない（届くなら exit 1 で止まる）ことの実行での確認
+W60_E500='{"__throw":true,"status":500,"message":"boom"}'
+w60_run en "{\"issues.get\":[$W60_E500,$(w60_issue 1242 '')],\"issues.removeLabel\":[{}],\"issues.addLabels\":[{}]}" -- run bulk move 1241 1242 someday
+assert_eq "W60-8 bulk move: 1件目の取得失敗でも exit 0（item_error で続行）" "0" "$W60_EC"
+assert_contains "W60-8 bulk move: 失敗は item_error として出る" "#1241 error: boom" "$W60_OUT"
+assert_eq "W60-8 bulk move: 2件目は処理される（addLabels 1回）" "1" "$(log_count "$W60_LOG" issues.addLabels)"
+w60_run en "{\"GET /repos/{owner}/{repo}/labels/{name}\":[{}],\"issues.addLabels\":[$W60_E500,{}]}" -- run bulk tag 1243 1244 @w60a
+assert_eq "W60-8 bulk tag: 1件目の addLabels 失敗でも exit 0" "0" "$W60_EC"
+assert_contains "W60-8 bulk tag: 失敗は item_error として出る" "#1243 error: boom" "$W60_OUT"
+assert_eq "W60-8 bulk tag: addLabels は2回呼ばれる（続行）" "2" "$(log_count "$W60_LOG" issues.addLabels)"
+w60_run en "{\"issues.removeLabel\":[$W60_E500,{}]}" -- run bulk untag 1245 1246 @w60a
+assert_eq "W60-8 bulk untag: 1件目の removeLabel 失敗でも exit 0" "0" "$W60_EC"
+assert_contains "W60-8 bulk untag: 失敗は item_error として出る" "#1245 error: boom" "$W60_OUT"
+assert_eq "W60-8 bulk untag: removeLabel は2回呼ばれる（続行）" "2" "$(log_count "$W60_LOG" issues.removeLabel)"
+w60_run en "{\"GET /repos/{owner}/{repo}/labels/{name}\":[{}],\"issues.get\":[$W60_E500,$(w60_issue 1248 '')],\"issues.addLabels\":[{}]}" -- run bulk priority 1247 1248 p2
+assert_eq "W60-8 bulk priority: 1件目の取得失敗でも exit 0" "0" "$W60_EC"
+assert_contains "W60-8 bulk priority: 失敗は item_error として出る" "#1247 error: boom" "$W60_OUT"
+assert_eq "W60-8 bulk priority: 2件目は処理される（addLabels 1回）" "1" "$(log_count "$W60_LOG" issues.addLabels)"
+
+W60_N=$((PASS-W60_P0))
+if [ "$W60_N" -lt 40 ]; then
+  printf "  ❌ §W60 アサーション数が少なすぎる (%s 件。40 件未満は検査の空振りとみなす)\n" "$W60_N"; FAIL=$((FAIL+1))
+fi
+rm -rf "$W60_HOME"
+
 echo ""
 echo "=========================================="
 W_TOTAL=$((PASS+FAIL))
