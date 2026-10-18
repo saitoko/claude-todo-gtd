@@ -5064,7 +5064,7 @@ assert_contains "§55-6 表示層・テンプレート/ビュー I/O 層の関�
 # §56  コマンド仕様の宣言表 COMMAND_SPECS の整合性（Issue #2102 R2）
 # 表と、表から導出する FLAG_SUPPORTED_BY / RESERVED_TITLE_GUARD_COMMANDS、runMain の switch、
 # help() のメッセージキーが食い違わないことを検査する。require() で表を直接読むため、
-# 異常系を呼ばない（ガードは process.exit するので、ここでは呼び出さない）。
+# 異常系を呼ばない（ガードは exitWith の例外を投げるが、ここでは配線の整合だけを見る）。
 # ガードの配線そのものの検査（適合テスト）は run-tests-write.sh §W37 を参照。
 # ──────────────────────────────────────────
 echo ""
@@ -5460,6 +5460,45 @@ else
 fi
 case "$_G59_HOME" in /tmp/todo-test-r5-home-??????) rm -rf "$_G59_HOME" ;; esac
 rm -f "$_G59_TMP" "$_G59_TMP.err"
+
+# ──────────────────────────────────────────
+# §60  run 層の例外化の到達点: process.exit の再混入がない（Issue #2102 R5 PR-3）
+# ソースを文字列として走査する（コメント行・ブロックコメントは除く）。process.exit(1) は 0 件、
+# process.exit( の残りは main() の中の process.exit(e.exitCode) だけ、exitWith( の呼び出しは下限以上。
+# ──────────────────────────────────────────
+echo ""
+echo "§60  process.exit の再混入がない（Issue #2102 R5 PR-3）"
+
+_G60_TMP=$(mktemp /tmp/todo-test-r5-scan-XXXXXX)
+cat > "$_G60_TMP" << 'R5_SCAN_TEST_EOF'
+const fs = require('fs');
+const src = fs.readFileSync(process.argv[2], 'utf8');
+const stripped = src.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ''));
+const lines = stripped.split('\n');
+const isComment = (l) => /^\s*\/\//.test(l);
+const startLine = lines.findIndex((l) => /^function main\(/.test(l));
+let endLine = -1;
+for (let i = startLine + 1; i < lines.length; i++) { if (lines[i] === '}') { endLine = i; break; } }
+const hits = [];
+lines.forEach((l, i) => { if (!isComment(l) && /process\.exit\(/.test(l)) hits.push({ i, l: l.trim() }); });
+const exit1 = hits.filter((h) => /process\.exit\(1\)/.test(h.l));
+const outside = hits.filter((h) => h.i <= startLine || h.i >= endLine || !/process\.exit\(e\.exitCode\)/.test(h.l));
+const exitWithCalls = lines.filter((l) => !isComment(l) && /(?<!function )\bexitWith\(/.test(l)).length;
+process.stdout.write(JSON.stringify({ mainFound: startLine >= 0 && endLine > startLine, exit1: exit1.length, outside: outside.map((h) => h.i + 1 + ': ' + h.l), inMain: hits.length - outside.length, exitWithCalls }) + '\n');
+R5_SCAN_TEST_EOF
+_G60_OUT=$(node "$_G60_TMP" "$ENGINE" 2>"$_G60_TMP.err"); _G60_EC=$?
+assert_exit_ok "§60 走査スクリプトが正常終了する" "$_G60_EC"
+assert_contains "§60-1 main() の範囲を特定できる" '"mainFound":true' "$_G60_OUT"
+assert_contains "§60-2 コメントを除いて process.exit(1) が 0 件" '"exit1":0' "$_G60_OUT"
+assert_contains "§60-3 process.exit( は main() 内の process.exit(e.exitCode) 以外に無い" '"outside":\[\]' "$_G60_OUT"
+assert_contains "§60-4 main() 内の process.exit(e.exitCode) は 3 箇所（直接サブコマンド・api・run の変換点）" '"inMain":3' "$_G60_OUT"
+_G60_EW=$(printf '%s' "$_G60_OUT" | sed -n 's/.*"exitWithCalls":\([0-9]*\).*/\1/p')
+if [ -n "$_G60_EW" ] && [ "$_G60_EW" -ge 121 ]; then
+  printf "  ✅ §60-5 exitWith( の呼び出しが 121 件以上（実測 %s）\n" "$_G60_EW"; PASS=$((PASS+1))
+else
+  printf "  ❌ §60-5 exitWith( の呼び出しが 121 件未満: %s\n" "${_G60_EW:-取得不能}"; FAIL=$((FAIL+1))
+fi
+rm -f "$_G60_TMP" "$_G60_TMP.err"
 
 # ──────────────────────────────────────────
 # 書き込み系ハンドラのスタブベーステスト（run-tests-write.sh、Issue #1648）

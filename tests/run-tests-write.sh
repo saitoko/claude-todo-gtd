@@ -2112,13 +2112,13 @@ W25_4B_ERR=$(OCTOKIT_STUB_ENV="$STUB" TODO_TIMING=1 node "$ENGINE" run schema 2>
 assert_regex "W25-4: run schema + TODO_TIMING=1 → [timing]行が出る" "$TIMING_LINE_RE" "$W25_4B_ERR"
 assert_eq "W25-4: run schema はAPI呼び出しなし → github 0ms" "0" "$(extract_timing_field "$W25_4B_ERR" github)"
 
-# W25-5 バリデーションエラーで process.exit(1) を直接呼ぶ経路（例: run done 番号なし）でも
-# [timing] 行が出力されること（.finally()では到達しないため process.on('exit') 方式を採用した
-# 核心の回帰テスト。修正前コードでは本アサーションがFAILすることを実装時に実機確認済み）
+# W25-5 バリデーションエラー（exitWith の例外を .catch が process.exit(e.exitCode) で終了させる経路。
+# 例: run done 番号なし）でも [timing] 行が出力されること（.finally()では到達しないため
+# process.on('exit') 方式を採用した核心の回帰テスト。修正前コードでは本アサーションがFAILすることを実装時に実機確認済み）
 W25_5_ERR=$(OCTOKIT_STUB_ENV="$STUB" TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODO_TIMING=1 \
   node "$ENGINE" run done 2>&1 1>/dev/null); W25_5_EC=$?
-assert_exit_fail "W25-5 run done(番号なし・process.exit直接): exit非0" "$W25_5_EC"
-assert_regex "W25-5 【核心】process.exit(1)直接呼び出し経路でも[timing]行が出力される" "$TIMING_LINE_RE" "$W25_5_ERR"
+assert_exit_fail "W25-5 run done(番号なし・CliExit→process.exit): exit非0" "$W25_5_EC"
+assert_regex "W25-5 【核心】process.exit(e.exitCode)で終了する経路でも[timing]行が出力される" "$TIMING_LINE_RE" "$W25_5_ERR"
 assert_eq "W25-5: バリデーション先行でAPI呼び出し前に終了 → github 0ms" "0" "$(extract_timing_field "$W25_5_ERR" github)"
 
 # W25-6 Octokit呼び出し中の例外（__throw）が発生しても [timing] 行が握りつぶされない
