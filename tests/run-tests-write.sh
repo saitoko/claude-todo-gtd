@@ -636,7 +636,7 @@ W9_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W9_1_RESP" OCTO
 assert_exit_ok "done-issue 正常系(recurあり): exit 0" "$W9_1_EC"
 assert_contains "done-issue 正常系: JSON応答に ok:true" '"ok":true' "$W9_1_OUT"
 assert_contains "done-issue 正常系: JSON応答に newIssueNumber（recur再作成先）" '"newIssueNumber":9001' "$W9_1_OUT"
-assert_contains "done-issue 正常系: recurLine に次周期の日付" '繰り返しタスク #9001 を 2026-04-12 で作成しました。' "$W9_1_OUT"
+assert_contains "done-issue 正常系: recurLine に次周期の日付" 'Recurring task #9001 created for 2026-04-12.' "$W9_1_OUT"
 assert_not_contains "done-issue 正常系: 期限超過スキップ表示が出ない（due=today、期限超過なし）" 'スキップしました' "$W9_1_OUT"
 assert_eq "done-issue 正常系: issues.get 呼び出し1回" "1" "$(log_count "$W9_1_LOG" issues.get)"
 assert_eq "done-issue 正常系: issues.update 呼び出し1回（close）" "1" "$(log_count "$W9_1_LOG" issues.update)"
@@ -670,8 +670,8 @@ W9_3_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W9_3_RESP" OCTO
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
   node "$ENGINE" api done-issue 960 2>&1); W9_3_EC=$?
 assert_exit_ok "done-issue 境界値(期限超過catchup): exit 0" "$W9_3_EC"
-assert_contains "done-issue 境界値: catchup後の日付（2026-04-12）で再作成" '繰り返しタスク #9002 を 2026-04-12 で作成しました。' "$W9_3_OUT"
-assert_contains "done-issue 境界値: 期限超過スキップ表示あり（nextDueCatchUp連携が壊れていない）" '期限超過のため過去の周期をスキップしました' "$W9_3_OUT"
+assert_contains "done-issue 境界値: catchup後の日付（2026-04-12）で再作成" 'Recurring task #9002 created for 2026-04-12.' "$W9_3_OUT"
+assert_contains "done-issue 境界値: 期限超過スキップ表示あり（nextDueCatchUp連携が壊れていない）" 'Skipped past cycles due to overdue schedule' "$W9_3_OUT"
 assert_eq "done-issue 境界値: issues.create 呼び出し1回" "1" "$(log_count "$W9_3_LOG" issues.create)"
 rm -f "$W9_3_LOG"
 
@@ -682,8 +682,8 @@ W9_4_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W9_4_RESP" OCTO
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
   node "$ENGINE" api done-issue 500 2>&1); W9_4_EC=$?
 assert_exit_ok "done-issue 境界値(depends_on昇格): exit 0" "$W9_4_EC"
-assert_contains "done-issue 境界値: #501が next に昇格したメッセージがotherLinesに含まれる" '#501 「Some other task」を next に昇格しました（#500 完了トリガー）' "$W9_4_OUT"
-assert_contains "done-issue 境界値: 昇格件数サマリー（1件）" '1件を next に昇格しました' "$W9_4_OUT"
+assert_contains "done-issue 境界値: #501が next に昇格したメッセージがotherLinesに含まれる" '#501 \"Some other task\" promoted to next (#500 completion trigger)' "$W9_4_OUT"
+assert_contains "done-issue 境界値: 昇格件数サマリー（1件）" '1 tasks promoted to next' "$W9_4_OUT"
 assert_eq "done-issue 境界値: issues.listForRepo 呼び出し1回（fetchAllOpen、project/depends_onどちらかがトリガー）" "1" "$(log_count "$W9_4_LOG" issues.listForRepo)"
 assert_eq "done-issue 境界値: issues.removeLabel 呼び出し1回（#501の旧someday除去）" "1" "$(log_count "$W9_4_LOG" issues.removeLabel)"
 assert_contains "done-issue 境界値: removeLabel対象が#501のsomeday" '"issue_number":501,"name":"🌈 someday"' "$(log_lines_for_method "$W9_4_LOG" issues.removeLabel)"
@@ -735,8 +735,8 @@ W10_1_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W10_1_RESP" OC
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
   node "$ENGINE" api done-issue 700 2>&1); W10_1_EC=$?
 assert_exit_ok "W10-1 正常系: exit 0" "$W10_1_EC"
-assert_contains "W10-1 正常系: project/dependsOnなしの完了Issueでも依存Issue(#701)がnextに昇格する" '#701 「Dependent Task」を next に昇格しました（#700 完了トリガー）' "$W10_1_OUT"
-assert_contains "W10-1 正常系: 昇格件数サマリー（1件）" '1件を next に昇格しました' "$W10_1_OUT"
+assert_contains "W10-1 正常系: project/dependsOnなしの完了Issueでも依存Issue(#701)がnextに昇格する" '#701 \"Dependent Task\" promoted to next (#700 completion trigger)' "$W10_1_OUT"
+assert_contains "W10-1 正常系: 昇格件数サマリー（1件）" '1 tasks promoted to next' "$W10_1_OUT"
 assert_eq "W10-1 正常系: issues.listForRepo 呼び出し1回（project/dependsOnなしでもfetchAllOpenされる）" "1" "$(log_count "$W10_1_LOG" issues.listForRepo)"
 assert_eq "W10-1 正常系: issues.addLabels 呼び出し1回（#701にnext付与）" "1" "$(log_count "$W10_1_LOG" issues.addLabels)"
 assert_contains "W10-1 正常系: addLabels対象が#701にnext" '"issue_number":701,"labels":["🎯 next"]' "$(log_lines_for_method "$W10_1_LOG" issues.addLabels)"
@@ -750,7 +750,7 @@ W10_2_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W10_2_RESP" OC
   TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
   node "$ENGINE" api done-issue 710 2>&1); W10_2_EC=$?
 assert_exit_ok "W10-2 正常系: exit 0" "$W10_2_EC"
-assert_contains "W10-2 正常系: depends_on昇格が引き続き動作する（#712がnextに昇格）" '#712 「Depends On Root」を next に昇格しました（#710 完了トリガー）' "$W10_2_OUT"
+assert_contains "W10-2 正常系: depends_on昇格が引き続き動作する（#712がnextに昇格）" '#712 \"Depends On Root\" promoted to next (#710 completion trigger)' "$W10_2_OUT"
 assert_contains "W10-2 正常系: プロジェクト次タスク昇格候補ヒントが引き続き表示される（プロジェクト#300言及）" '#300' "$W10_2_OUT"
 assert_contains "W10-2 正常系: 昇格候補ヒントに#711（同じproject配下、未昇格）が含まれる" '#711' "$W10_2_OUT"
 assert_eq "W10-2 正常系: issues.listForRepo 呼び出し1回（depends_on昇格とプロジェクトヒントで共有）" "1" "$(log_count "$W10_2_LOG" issues.listForRepo)"
@@ -2187,7 +2187,8 @@ assert_exit_fail "W25-12 api done-issue(壊れた recur・CliExit): exit非0" "$
 assert_eq "W25-12: [timing]行がちょうど1行" "1" "$(printf '%s\n' "$W25_12_ERR" | grep -c '^\[timing\]')"
 assert_eq "W25-12: [timing]行は stderr の最終行" "1" "$(printf '%s\n' "$W25_12_ERR" | tail -n 1 | grep -c '^\[timing\]')"
 assert_eq "W25-12: エラー文言は1行だけ（'Error:' の行が増えない）" "1" "$(printf '%s\n' "$W25_12_ERR" | grep -vc '^\[timing\]')"
-assert_not_contains "W25-12: 'Error: ' 行を足していない" "Error: " "$W25_12_ERR"
+# #2136: メッセージ自体が英語（'Error: ...'）になったので、「'Error: ' が1回だけ（catch が接頭辞を足していない）」で確かめる
+assert_eq "W25-12: 'Error: ' 行を足していない（メッセージ自身の1回だけ）" "1" "$(printf '%s\n' "$W25_12_ERR" | grep -c 'Error: ')"
 
 # ──────────────────────────────────────────
 # §W26  runComment — --body/--body-file 対応 + 未知フラグのエラー化（Issue #1919）
@@ -6744,11 +6745,13 @@ assert_eq "W60-4 先頭の壊れた recur: 書き込みは後続 #1222 の close
 assert_contains "W60-4 先頭の壊れた recur: #1222 は処理される" '"issue_number":1222,"state":"closed"' "$(log_lines_for_method "$W60_LOG" issues.update)"
 assert_contains "W60-4 先頭の壊れた recur: 集計行" "1 completed" "$W60_OUT"
 
-# W60-5 K6（現状）: api done-issue で recur が壊れているとき、stderr に t() のメッセージが出る。言語は LANG_ENV に従い（api は英語固定のはずだが現状は日本語になりうる）、
+# W60-5 K6（#2136 で英語固定に変更）: api done-issue で recur が壊れているとき、stderr に出るのは LANG_ENV に関わらず英語のメッセージ1行。
 #       'GitHub API error:' や 'Error:' の接頭辞は付かず、1行だけ（apiMain の catch は _msgWritten を見て何も足さない）
 w60_run ja "{\"issues.get\":[$(w60_issue 1231 'due: 2026-10-10\nrecur: weekly:INVALID\n')]}" -- api done-issue 1231
 assert_eq "W60-5 K6(ja): api done-issue 壊れた recur → exit 1" "1" "$W60_EC"
-assert_eq "W60-5 K6(ja): stderr は日本語のメッセージ1行" "$W60_MSG_JA" "$W60_ERR"
+assert_eq "W60-5 K6(ja): stderr は英語のメッセージ1行（LANG_ENV なしでも api は英語固定。二重表示なし）" "$W60_MSG_EN" "$W60_ERR"
+assert_no_japanese "W60-5 K6(ja): stderr に日本語が含まれない" "$W60_ERR"
+assert_eq "W60-5 K6(ja): stderr の行数は1" "1" "$(w60_lines "$W60_ERR")"
 assert_eq "W60-5 K6(ja): stdout は空" "" "$W60_OUT"
 w60_run en "{\"issues.get\":[$(w60_issue 1232 'due: 2026-10-10\nrecur: weekly:INVALID\n')]}" -- api done-issue 1232
 assert_eq "W60-5 K6(en): exit 1" "1" "$W60_EC"
@@ -6760,11 +6763,19 @@ assert_eq "W60-5 K6: close も周期再作成もしない（issues.update 0・is
 w60_run en "{\"issues.get\":[$(w60_issue 1233 'due: 2026-10-10\nrecur: weekly:INVALID\n')]}" -- run api done-issue 1233
 assert_eq "W60-6 run api done-issue 壊れた recur: exit 1" "1" "$W60_EC"
 assert_eq "W60-6 run api done-issue: stderr はメッセージ1行" "$W60_MSG_EN" "$W60_ERR"
+w60_run ja "{\"issues.get\":[$(w60_issue 1233 'due: 2026-10-10\nrecur: weekly:INVALID\n')]}" -- run api done-issue 1233
+assert_eq "W60-6 run api(ja): exit 1" "1" "$W60_EC"
+assert_eq "W60-6 run api(ja): stderr は英語のメッセージ1行（#2136: run 経由も英語固定）" "$W60_MSG_EN" "$W60_ERR"
+assert_no_japanese "W60-6 run api(ja): stderr に日本語が含まれない" "$W60_ERR"
 
 # W60-7 単体の done（try の外）: 同じメッセージで exit 1
 w60_run en "{\"issues.get\":[$(w60_issue 1234 'due: 2026-10-10\nrecur: weekly:INVALID\n')]}" -- run done 1234
 assert_eq "W60-7 done 壊れた recur: exit 1" "1" "$W60_EC"
 assert_eq "W60-7 done 壊れた recur: stderr はメッセージ1行" "$W60_MSG_EN" "$W60_ERR"
+# W60-7b #2136 の対照: CLI（run done）は LANG_ENV なしで日本語のまま（api だけが英語固定）
+w60_run ja "{\"issues.get\":[$(w60_issue 1235 'due: 2026-10-10\nrecur: weekly:INVALID\n')]}" -- run done 1235
+assert_eq "W60-7b done(ja) 壊れた recur: exit 1" "1" "$W60_EC"
+assert_eq "W60-7b done(ja): stderr は日本語のまま（CLI は変えない）" "$W60_MSG_JA" "$W60_ERR"
 
 # W60-8 §1-3 の確認: bulk move / tag / untag / priority のループは、API の失敗を item_error にして exit 0 で続ける。
 #       ループの中から exit 箇所へ届く経路がない（届くなら exit 1 で止まる）ことの実行での確認
@@ -7072,6 +7083,120 @@ if [ "$W62_N" -lt 60 ]; then
   printf "  ❌ §W62 アサーション数が少なすぎる (%s 件。60 件未満は検査の空振りとみなす)\n" "$W62_N"; FAIL=$((FAIL+1))
 fi
 rm -rf "$W62_HOME"
+
+# ── §W63 Issue #2136: api 経路（api / run api）の出力は LANG_ENV に関わらず英語固定 ──
+# 型: 「api 経路の stdout / stderr に t() / tpl() 由来のローカライズ文言が出る」。LANG_ENV なし（ja）で実行して、日本語が1文字も出ないことを固定する。
+# 経路: validateRecur / createRecurIssue（recurLine）/ postDoneProcessing（otherLines）/ execMoveGtd / nextDueCatchUp・nextDueMonthlyOnDay・fetchAllOpen の warn /
+#       401 の認証拒否 / runMain のリポジトリ未設定ガード。対照（変えない）: CLI（run done / run move）は ja のまま。
+# 安全条件: HOME を一時ディレクトリに隔離し、OCTOKIT_STUB_ENV でスタブを指定する。
+echo ""
+echo "§W63  api 経路は英語固定（Issue #2136）"
+
+W63_P0=$PASS
+W63_HOME=$(mktemp -d /tmp/todo-test-w63-XXXXXX)
+W63_LOG="$W63_HOME/stub.jsonl"
+W63_E401='{"__throw":true,"status":401,"message":"Bad credentials"}'
+
+# w63_run <responses-json> -- <args...>: LANG_ENV なし（ja）で実行する。W63_OUT / W63_ERR / W63_EC
+w63_run() {
+  local resp="$1"; shift; shift
+  case "$W63_HOME" in
+    /tmp/todo-test-w63-*) ;;
+    *) printf "  ❌ W63 隔離 HOME を作れていないため実行しない (%s)\n" "$W63_HOME"; FAIL=$((FAIL+1)); W63_OUT=""; W63_ERR=""; W63_EC=99; return 1 ;;
+  esac
+  : > "$W63_LOG"
+  W63_OUT=$(env -u LANG_ENV HOME="$W63_HOME" OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$resp" OCTOKIT_STUB_LOG_ENV="$W63_LOG" \
+    TODO_REPO_OWNER=test TODO_REPO_NAME=test TODAY=2026-10-18 node "$ENGINE" "$@" 2>"$W63_HOME/stderr"); W63_EC=$?
+  W63_ERR=$(cat "$W63_HOME/stderr")
+}
+w63_issue() {
+  printf '{"data":{"number":%s,"id":%s,"title":"W63 %s","body":"%s","labels":[{"name":"🎯 next"}],"state":"open"}}' "$1" "$((9000+$1))" "$1" "$2"
+}
+
+# 1) recur の検証エラー（K6 の本体）。api / run api とも ja で英語
+w63_run "{\"issues.get\":[$(w63_issue 1601 'due: 2026-10-10\nrecur: daily:x\n')]}" -- api done-issue 1601
+assert_eq "W63-1 api done-issue 壊れた recur(ja): exit 1" "1" "$W63_EC"
+assert_contains "W63-1 api: 英語の recur_suffix_not_allowed" "Error: daily/weekdays cannot have a colon suffix" "$W63_ERR"
+assert_no_japanese "W63-1 api: stderr に日本語なし" "$W63_ERR"
+assert_eq "W63-1 api: 日本語と英語の二重出力にならない（stderr 1行）" "1" "$(printf '%s\n' "$W63_ERR" | grep -c '')"
+w63_run "{\"issues.get\":[$(w63_issue 1602 'due: 2026-10-10\nrecur: monthly:40\n')]}" -- run api done-issue 1602
+assert_eq "W63-2 run api done-issue monthly:40(ja): exit 1" "1" "$W63_EC"
+assert_contains "W63-2 run api: 英語の recur_monthday_invalid" "Error: monthly day suffix must be a number between 1 and 31" "$W63_ERR"
+assert_no_japanese "W63-2 run api: stderr に日本語なし" "$W63_ERR"
+w63_run "{\"issues.get\":[$(w63_issue 1603 'due: 2026-10-10\nrecur: yearly\n')]}" -- api done-issue 1603
+assert_contains "W63-3 api recur_invalid(ja)" "Error: recur must be daily/weekly/monthly/weekdays" "$W63_ERR"
+assert_no_japanese "W63-3 api recur_invalid(ja): stderr に日本語なし" "$W63_ERR"
+assert_eq "W63-3 壊れた recur では書き込みなし（issues.update / create 0）" "0" "$(( $(log_count "$W63_LOG" issues.update) + $(log_count "$W63_LOG" issues.create) ))"
+
+# 2) done-issue の stdout の JSON（recurLine / otherLines）と warn
+w63_run "{\"issues.get\":[$(w63_issue 1604 'due: 2026-10-31\nrecur: monthly:31\n')],\"issues.create\":[{\"data\":{\"number\":9604}}],\"issues.update\":[{}],\"issues.listForRepo\":[{\"data\":[]}]}" -- api done-issue 1604
+assert_eq "W63-4 api done-issue recur(ja): exit 0" "0" "$W63_EC"
+assert_contains "W63-4 recurLine は英語" "Recurring task #9604 created for 2026-11-30." "$W63_OUT"
+assert_no_japanese "W63-4 stdout（recurLine）に日本語なし" "$W63_OUT"
+assert_contains "W63-4 warn.month_day_clamped は英語" "Day 31 does not exist in month 11" "$W63_ERR"
+assert_no_japanese "W63-4 stderr（warn）に日本語なし" "$W63_ERR"
+w63_run "{\"issues.get\":[$(w63_issue 1605 'due: 2010-01-01\nrecur: daily\n')],\"issues.create\":[{\"data\":{\"number\":9605}}],\"issues.update\":[{}],\"issues.listForRepo\":[{\"data\":[]}]}" -- api done-issue 1605
+assert_contains "W63-5 warn.recur_catchup_limit は英語" "Reached the recurrence cycle skip iteration limit" "$W63_ERR"
+assert_no_japanese "W63-5 stderr に日本語なし" "$W63_ERR"
+assert_no_japanese "W63-5 stdout（skip_note）に日本語なし" "$W63_OUT"
+w63_run "{\"issues.get\":[$(w63_issue 1606 'due: 2026-10-20\nrecur: weekly\nbefore: 3d\n')],\"issues.create\":[{\"data\":{\"number\":9606}}],\"issues.update\":[{}],\"issues.listForRepo\":[{\"data\":[]}]}" -- api done-issue 1606
+assert_contains "W63-6 recur_activate_note は英語" "(activate: 2026-10-24)" "$W63_OUT"
+assert_no_japanese "W63-6 stdout に日本語なし" "$W63_OUT"
+w63_run "{\"issues.get\":[$(w63_issue 1607 'project: #1699\n'),$(w63_issue 1699 '')],\"issues.update\":[{}],\"issues.listForRepo\":[{\"data\":[{\"number\":1608,\"id\":10608,\"title\":\"W63 1608\",\"body\":\"project: #1699\\n\",\"labels\":[{\"name\":\"🌈 someday\"}],\"updated_at\":\"2026-10-01T00:00:00Z\"},{\"number\":1609,\"id\":10609,\"title\":\"W63 1609\",\"body\":\"depends_on: #1607\\n\",\"labels\":[{\"name\":\"🌈 someday\"}],\"updated_at\":\"2026-10-01T00:00:00Z\"}]}],\"issues.removeLabel\":[{}],\"issues.addLabels\":[{}]}" -- api done-issue 1607
+assert_eq "W63-7 api done-issue 昇格系(ja): exit 0" "0" "$W63_EC"
+assert_contains "W63-7 otherLines: 昇格ヒントは英語" "has promotion candidates" "$W63_OUT"
+assert_contains "W63-7 otherLines: depends_on 昇格は英語" "promoted to next (#1607 completion trigger)" "$W63_OUT"
+assert_no_japanese "W63-7 stdout（otherLines）に日本語なし" "$W63_OUT"
+
+# 3) move-gtd（execMoveGtd）。api / run api
+w63_run '{}' -- api move-gtd 1610 project
+assert_eq "W63-8 api move-gtd project(ja): exit 1" "1" "$W63_EC"
+assert_contains "W63-8 move_to_project_forbidden は英語" "Error: Cannot move to project." "$W63_ERR"
+assert_no_japanese "W63-8 stderr に日本語なし" "$W63_ERR"
+w63_run '{}' -- run api move-gtd 1611 bogus
+assert_contains "W63-9 run api move-gtd bogus: gtd_label_required は英語" "Error: GTD label must be one of" "$W63_ERR"
+assert_no_japanese "W63-9 stderr に日本語なし" "$W63_ERR"
+w63_run "{\"issues.get\":[$(w63_issue 1612 '')]}" -- api move-gtd 1612 routine
+assert_contains "W63-10 api move-gtd routine（recur なし）は英語" "moving to routine requires recur" "$W63_ERR"
+assert_no_japanese "W63-10 stderr に日本語なし" "$W63_ERR"
+
+# 4) open Issue 上限の warn / 401 / リポジトリ未設定
+W63_PAGES=$(node -e '
+  const mk = (start, n) => Array.from({ length: n }, (_, k) => ({ number: start - k, id: start - k + 9000, title: "W63 " + (start - k), body: "", labels: [{ name: "🎯 next" }], state: "open", updated_at: "2026-10-01T00:00:00Z" }));
+  const pages = []; let left = 1001, start = 900000;
+  while (left > 0) { const n = Math.min(100, left); pages.push({ data: mk(start, n) }); left -= n; start -= 1000; }
+  pages.push({ data: [] }, { data: [] });
+  process.stdout.write(JSON.stringify(pages));')
+w63_run "{\"issues.get\":[$(w63_issue 1613 '')],\"issues.update\":[{}],\"issues.listForRepo\":$W63_PAGES}" -- api done-issue 1613
+assert_eq "W63-11 api done-issue 上限超過(ja): exit 0" "0" "$W63_EC"
+assert_contains "W63-11 warn.open_issue_limit は英語" "Open issue fetching reached the limit of 1000" "$W63_ERR"
+assert_no_japanese "W63-11 stderr に日本語なし" "$W63_ERR"
+w63_run "{\"issues.get\":[$W63_E401]}" -- api done-issue 1614
+assert_eq "W63-12 api 401(ja): exit 1" "1" "$W63_EC"
+assert_contains "W63-12 gh_auth_rejected は英語" "GitHub API authentication was rejected (401)" "$W63_ERR"
+assert_contains "W63-12 mcp_fallback_guidance は英語" "If /todo cannot be used in this environment" "$W63_ERR"
+assert_no_japanese "W63-12 stderr に日本語なし" "$W63_ERR"
+w63_run "{\"issues.get\":[$W63_E401]}" -- run api done-issue 1615
+assert_contains "W63-13 run api 401(ja): gh_auth_rejected は英語" "GitHub API authentication was rejected (401)" "$W63_ERR"
+assert_no_japanese "W63-13 run api 401(ja): stderr に日本語なし" "$W63_ERR"
+W63_NOREPO_OUT=$(env -u LANG_ENV HOME="$W63_HOME" OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV='{}' OCTOKIT_STUB_LOG_ENV="$W63_LOG" TODO_REPO_OWNER= TODO_REPO_NAME= node "$ENGINE" run api list-labels 2>&1); W63_NOREPO_EC=$?
+assert_eq "W63-14 run api リポジトリ未設定(ja): exit 1" "1" "$W63_NOREPO_EC"
+assert_contains "W63-14 repo_not_configured は英語" "Error: TODO_REPO_OWNER / TODO_REPO_NAME is not set." "$W63_NOREPO_OUT"
+assert_no_japanese "W63-14 出力に日本語なし" "$W63_NOREPO_OUT"
+
+# 5) 対照（変えない）: CLI は ja のまま
+w63_run '{}' -- run move 1616 project
+assert_eq "W63-15 run move project(ja): exit 1" "1" "$W63_EC"
+assert_contains "W63-15 CLI は日本語のまま（move_to_project_forbidden）" "プロジェクト" "$W63_ERR"
+w63_run '{"issues.listLabelsForRepo":[{"data":[{"name":"x","color":"ffffff","description":"日本語の説明"}]}]}' -- api list-labels
+assert_eq "W63-16 api list-labels(ja): exit 0" "0" "$W63_EC"
+assert_contains "W63-16 api の正常系 stdout は GitHub 由来のデータをそのまま返す（文言の翻訳対象ではない）" '"description":"日本語の説明"' "$W63_OUT"
+
+W63_N=$((PASS-W63_P0))
+if [ "$W63_N" -lt 40 ]; then
+  printf "  ❌ §W63 アサーション数が少なすぎる (%s 件。40 件未満は検査の空振りとみなす)\n" "$W63_N"; FAIL=$((FAIL+1))
+fi
+rm -rf "$W63_HOME"
 
 echo ""
 echo "=========================================="
