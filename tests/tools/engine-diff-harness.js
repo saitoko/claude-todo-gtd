@@ -23,6 +23,7 @@
 //   --allow-diff <ids>      差分が「出てよい」ケース ID（カンマ区切り、前方一致）。意図した挙動変更を
 //                           入れる変更で使う。許可したケースは差分が出ることを確かめ、
 //                           それ以外のケースは一致することを確かめる
+//                           要素は 'ケースID' か 'ケースID@ja'（@ja / @en を付けるとその言語の実行だけが対象。他方の言語は一致することを確かめる）
 //   --allow-preset <名前>   意図した挙動変更の許容リストを、名前で呼び出す（このファイル末尾の ALLOW_PRESETS）。
 //                           pr-b: R3 PR-B（J1 / J2 / J4 / J5 / J7 / J8 / J12）。旧 = PR-B の前の main、新 = PR-B の版で使う
 //   --coverage-lines A-B[,C-D...]
@@ -125,6 +126,11 @@ function parseRanges(s) {
     return [+m[1], +m[2]];
   });
 }
+
+// --allow-diff / プリセットの要素は 'ケースID' または 'ケースID@ja'（@ja / @en を付けるとその言語の実行だけを対象にする）。
+// 言語によって差分が出るかどうかが違う変更（#2136: LANG_ENV なし = ja だけが変わる）で使う
+function allowId(p) { return p.split('@')[0]; }
+function allowLang(p) { return p.includes('@') ? p.split('@')[1] : null; }
 
 function langText(v, lang) { return (v && typeof v === 'object' && !Array.isArray(v)) ? v[lang] : v; }
 
@@ -377,7 +383,7 @@ function main() {
   // 子プロセスは隔離 HOME を cwd にして起動するので、エンジンのパスは絶対パスにしておく
   o.old = path.resolve(o.old); o.new = path.resolve(o.new);
   if (!jobs.length) die('実行するケースが0件（--only / --lang の指定を確認）');
-  for (const id of o.allow) if (!corpus.some(c => c.id === id || c.id.startsWith(id))) die('--allow-diff に該当するケースが無い: ' + id);
+  for (const p of o.allow) { const id = allowId(p); if (!corpus.some(c => c.id === id || c.id.startsWith(id))) die('--allow-diff に該当するケースが無い: ' + p); }
 
   // 隔離の確認（失敗すれば1件も実行しない）
   canary(o.old, stub, '旧エンジン');
@@ -403,7 +409,7 @@ function main() {
     }
     reached++;
     const d = diffResults(a, b);
-    const allowed = o.allow.some(p => c.id === p || c.id.startsWith(p));
+    const allowed = o.allow.some(p => { const id = allowId(p), l = allowLang(p); return (c.id === id || c.id.startsWith(id)) && (!l || l === lang); });
     if (allowed) {
       if (d.length) { allowedOk++; report.push('差分あり（許可済み） ' + tag + ': ' + d.map(x => x[0]).join(', ')); }
       else { allowedMissing++; report.push('許可したのに差分が出ていない ' + tag); }
@@ -806,6 +812,56 @@ const N_CASES = [
     responses: { 'issues.listForRepo': pagesOf(1001) }, marker: { logSeq: SEQ12, exit: 0 } },
   { id: 'n16-api-open-pr-mix-crosses-1000', argv: ['api', 'list-issues'], langs: ['en'],
     responses: { 'issues.listForRepo': pagesOf(1200, { prEvery: 10 }) }, marker: { logSeq: SEQ12, exit: 0 } },
+];
+// ── Issue #2136: api 経路（api / run api）の出力を英語固定にする ──
+// 型: 「api 経路の出力（stdout / stderr）に t() / tpl() 由来のローカライズ文言が出る」。LANG_ENV なし（ja）で旧は日本語、新は英語。
+// 対象（静的に apiMain から到達しうる t()/tpl() 呼び出しを全数列挙して、ケースを用意した）:
+//   validateRecur（x42 / x43）/ createRecurIssue の recur_created・activate_note・skip_note（a14 y12）/ postDoneProcessing の promote.*・done.promote_hint_*（m24 y13）/
+//   execMoveGtd の3文言（y01〜y04）/ nextDueCatchUp・nextDueMonthlyOnDay・fetchAllOpen の warn（y09〜y11）/ 401 の認証拒否文言（y05 y06）/ runMain のリポジトリ未設定ガード（y08）。
+// 差分（ALLOW_PRESETS['i2136']）は LANG_ENV なし（ja）の stderr / stdout だけ。en の実行と、CLI（run done 等）の日本語出力は変わらない。
+const Y_RECUR = (extra) => 'due: 2026-10-10\nrecur: weekly\n' + (extra || '');
+const E401 = { __throw: true, status: 401, message: 'Bad credentials' };
+const Y_CASES = [
+  { id: 'y01-api-move-gtd-to-project', argv: ['api', 'move-gtd', '1501', 'project'], responses: {},
+    marker: { stderr: { ja: 'エラー', en: 'Error' }, exit: 1 } },
+  { id: 'y02-api-move-gtd-bad-label', argv: ['api', 'move-gtd', '1502', 'bogus'], responses: {},
+    marker: { stderr: { ja: 'エラー', en: 'Error' }, exit: 1 } },
+  { id: 'y03-api-move-gtd-routine-without-recur', argv: ['api', 'move-gtd', '1503', 'routine'],
+    responses: { 'issues.get': [iss(1503)] },
+    marker: { stderr: { ja: 'エラー', en: 'Error' }, log: 'issues.get', exit: 1 } },
+  { id: 'y04-run-api-move-gtd-to-project', argv: ['run', 'api', 'move-gtd', '1504', 'project'], responses: {},
+    marker: { stderr: { ja: 'エラー', en: 'Error' }, exit: 1 } },
+  { id: 'y05-api-done-issue-401', argv: ['api', 'done-issue', '1505'],
+    responses: { 'issues.get': [E401] },
+    marker: { stderr: { ja: '認証が拒否', en: 'authentication was rejected' }, exit: 1 } },
+  { id: 'y06-run-api-done-issue-401', argv: ['run', 'api', 'done-issue', '1506'],
+    responses: { 'issues.get': [E401] },
+    marker: { stderr: { ja: '認証が拒否', en: 'authentication was rejected' }, exit: 1 } },
+  // api 直接はもともと英語固定（apiMain の先頭ガード）。対照として置く（変わらないはず）
+  { id: 'y07-api-repo-unset', argv: ['api', 'list-labels'], env: { TODO_REPO_OWNER: '', TODO_REPO_NAME: '' }, responses: {},
+    marker: { stderr: 'TODO_REPO_OWNER and TODO_REPO_NAME must be set', exit: 1 } },
+  { id: 'y08-run-api-repo-unset', argv: ['run', 'api', 'list-labels'], env: { TODO_REPO_OWNER: '', TODO_REPO_NAME: '' }, responses: {},
+    marker: { stderr: { ja: '未設定です', en: 'is not set' }, exit: 1 } },
+  { id: 'y09-api-done-issue-month-day-clamped', argv: ['api', 'done-issue', '1509'],
+    responses: { 'issues.get': [iss(1509, { body: 'due: 2026-10-31\nrecur: monthly:31\n' })], 'issues.create': [{ data: { number: 9509 } }], 'issues.update': [{}], 'issues.listForRepo': [list()] },
+    marker: { stdout: '"newIssueNumber":9509', exit: 0 } },
+  { id: 'y10-api-done-issue-catchup-limit', argv: ['api', 'done-issue', '1510'],
+    responses: { 'issues.get': [iss(1510, { body: 'due: 2010-01-01\nrecur: daily\n' })], 'issues.create': [{ data: { number: 9510 } }], 'issues.update': [{}], 'issues.listForRepo': [list()] },
+    marker: { stdout: '"newIssueNumber":9510', exit: 0 } },
+  { id: 'y11-api-done-issue-open-limit', argv: ['api', 'done-issue', '1511'],
+    responses: { 'issues.get': [iss(1511)], 'issues.update': [{}], 'issues.listForRepo': pagesOf(1001) },
+    marker: { stdout: '"ok":true', exit: 0 } },
+  { id: 'y12-api-done-issue-recur-before', argv: ['api', 'done-issue', '1512'],
+    responses: { 'issues.get': [iss(1512, { body: 'due: 2026-10-20\nrecur: weekly\nbefore: 3d\n' })], 'issues.create': [{ data: { number: 9512 } }], 'issues.update': [{}], 'issues.listForRepo': [list()] },
+    marker: { stdout: '"newIssueNumber":9512', exit: 0 } },
+  { id: 'y13-api-done-issue-project-hint', argv: ['api', 'done-issue', '1513'],
+    responses: { 'issues.get': [iss(1513, { body: 'project: #1600\n' }), iss(1600, { title: 'Proj 1600', labels: [PROJ] })], 'issues.update': [{}],
+      'issues.listForRepo': [list(openItem(1514, { body: 'project: #1600\n', labels: [SOMEDAY] }))] },
+    marker: { stdout: '"ok":true', log: 'issues.listForRepo', exit: 0 } },
+  // 対照: CLI（run done）は LANG_ENV なしで日本語のまま（変わらないはず）
+  { id: 'y14-cli-done-broken-recur-stays-ja', argv: ['run', 'done', '1514'],
+    responses: { 'issues.get': [iss(1514, { body: 'due: 2026-10-10\nrecur: weekly:INVALID\n' })] },
+    marker: { stderr: M.recurWd, exit: 1 } },
 ];
 const CORPUS = [
   // ── (a) 完了フロー ──
@@ -1274,6 +1330,7 @@ const CORPUS = [
   ...X_CASES,
   ...V_CASES,
   ...N_CASES,
+  ...Y_CASES,
 ];
 
 // ─── 意図した挙動変更の許容リスト（--allow-preset で呼び出す）──────────
@@ -1316,6 +1373,15 @@ const ALLOW_PRESETS = {
   'i2130': [
     'n02-', 'n03-', 'n04-', 'n05-', 'n06-', 'n07-', 'n08-', 'n14-', 'n15-', 'n16-',
     'm03b-api-list-issues-200-cap-no-warning',
+  ],
+  // i2136: Issue #2136（api 経路の出力を英語固定にする）。旧 = #2136 の前の main、新 = #2136 の版。
+  //   LANG_ENV なし（ja）で api / run api の stdout / stderr が英語になる。変わるのは日本語の文言が出ていたケースだけ:
+  //   x42 x43（validateRecur）/ y01〜y06 y08〜y13（move-gtd の3文言・401・リポジトリ未設定・warn・昇格ヒント）。
+  //   a14 m24（done-issue の recurLine・otherLines）は langs: ['en'] のケースなので ja の実行がなく、y09〜y13 が同じ経路を ja で見る。
+  //   y07（api 直接のリポジトリ未設定）と y14（CLI の run done）は変わらないはず（プリセットに含めない）。en の実行は全件変わらない。
+  'i2136': [
+    'x42-api-done-issue-broken-recur@ja', 'x43-run-api-done-issue-broken-recur@ja',
+    'y01-@ja', 'y02-@ja', 'y03-@ja', 'y04-@ja', 'y05-@ja', 'y06-@ja', 'y08-@ja', 'y09-@ja', 'y10-@ja', 'y11-@ja', 'y12-@ja', 'y13-@ja',
   ],
   'r5-k1': ['x40-bulk-done-broken-recur-stops-all', 'x41-bulk-done-broken-recur-with-actual', 'x44-bulk-done-broken-recur-first'],
 };

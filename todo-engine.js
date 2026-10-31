@@ -91,6 +91,14 @@ const FLAG_FIELD_MAP = {
 
 // ─── i18n ───
 const LANG = process.env.LANG_ENV || 'ja';
+// #2136: api 経路（`api` と `run api`）は機械向けインターフェースなので、LANG_ENV に関わらず英語固定にする
+// （DEVELOPMENT.md §翻訳方針）。api コマンドを受けた入口（main の 'api' / runMain の 'api' / apiMain）で
+// useApiEnglish() を呼ぶ。以後、t() / tpl() / cnt() は常に英語を返す。1回のプロセスは1コマンドだけ実行するので戻さない。
+// これにより、api が呼ぶ共有関数（validateRecur / createRecurIssue / postDoneProcessing / execMoveGtd /
+// fetchAllOpen など）の文言が、メッセージを出す側の変更なしに、二重出力もなく英語になる。
+let API_ENGLISH_ONLY = false;
+function useApiEnglish() { API_ENGLISH_ONLY = true; }
+function activeLang() { return API_ENGLISH_ONLY ? 'en' : LANG; }
 
 // ─── 実行時間計測（Issue #455） ───
 // TODO_TIMING=1 のときのみ有効化する。厳密文字列一致は本ファイル既存の
@@ -889,7 +897,7 @@ const MESSAGES = {
     'warn.sub_issue_list_limit': '⚠️ Sub-issues for #{parent} reached the limit of {limit}. Some may be missing from the list.',
   }
 };
-function t(key) { return (MESSAGES[LANG] || MESSAGES.ja)[key] || MESSAGES.ja[key] || key; }
+function t(key) { return (MESSAGES[activeLang()] || MESSAGES.ja)[key] || MESSAGES.ja[key] || key; }
 function tpl(key, vars) {
   let s = t(key);
   // #1949: String.replace() は非グローバルのため、同一プレースホルダを1メッセージ内で
@@ -898,7 +906,7 @@ function tpl(key, vars) {
   for (const [k, v] of Object.entries(vars)) s = s.split('{' + k + '}').join(v);
   return s;
 }
-function cnt(n) { return LANG === 'ja' ? n + '件' : String(n); }
+function cnt(n) { return activeLang() === 'ja' ? n + '件' : String(n); }
 
 // ─── ユーティリティ関数 ───
 
@@ -2785,6 +2793,7 @@ const OCTOKIT_LOGGER = {
 };
 
 async function apiMain(subArgs) {
+  useApiEnglish(); // #2136: 入口（main / runMain）でも呼ぶが、apiMain を直接呼ばれても英語固定にする
   if (!REPO_OWNER || !REPO_NAME) {
     throw apiErr('TODO_REPO_OWNER and TODO_REPO_NAME must be set in .env or environment variables.');
   }
@@ -3269,6 +3278,7 @@ function main() {
       // hrtime.bigint()/配列演算/process.stderr.write() のみで完結し要件を満たす。
       const _timingStart = process.hrtime.bigint();
       if (TIMING_ENABLED) process.on('exit', () => printTiming(_timingStart));
+      useApiEnglish(); // #2136: 下の .catch の 401 文言（t()）も英語にするため、apiMain より前に切り替える
       apiMain(args.slice(1)).catch(e => {
         // exitWith() が投げた例外は stderr 書き込み済み。何も書かずに終了コードへ変換する
         if (isCliExit(e)) process.exit(e.exitCode);
@@ -6496,6 +6506,7 @@ function reservedMultiwordFirstWord(first) {
 // runMain: コマンドディスパッチャー
 async function runMain(args) {
   const cmd0 = args[0];
+  if (cmd0 === 'api') useApiEnglish(); // #2136: `run api` も api と同じく英語固定（リポジトリ未設定ガード・run の .catch の 401 文言を含む）
   // TODO_REPO_OWNER/TODO_REPO_NAME 未設定ガード（Issue #1695）。
   // help/schema はGitHub APIを使わないため、リポジトリ未設定でも動作させる。
   if (cmd0 !== 'help' && cmd0 !== 'schema' && (!REPO_OWNER || !REPO_NAME)) {
@@ -6639,7 +6650,7 @@ module.exports = {
   GTD_LABELS, PROJECT_LABEL, GTD_DISPLAY, PRI_COLORS, RECUR_WEEKDAY_TO_DOW,
   MAX_RECUR_CATCHUP_ITERATIONS, UNKNOWN_FLAG_RE, BRACKETED_GTD_RE, FLAG_FIELD_MAP,
   COMMAND_SPECS, deriveFlagSupportedBy, deriveReservedCommands, RESERVED_EXTRA,
-  FLAG_SUPPORTED_BY, MESSAGES, ADD_USAGE, RESERVED_TITLE_GUARD_COMMANDS, t, tpl, cnt, fmt, addDays,
+  FLAG_SUPPORTED_BY, MESSAGES, ADD_USAGE, RESERVED_TITLE_GUARD_COMMANDS, t, tpl, cnt, useApiEnglish, activeLang, fmt, addDays,
   addMonth, parseBeforeDuration, addMonths, isValidCalendarDate, isLeapYear, normalizeDue,
   bodyHasProject, parseBodyObj, parseBody, extractIssueFields, buildBody, parseTime,
   extractTimeField, estimateMinutesFromBody, actualMinutesFromBody, formatTime, priorityColor,

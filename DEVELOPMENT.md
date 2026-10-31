@@ -764,7 +764,7 @@ function guardExtraPositional(extraTokens, usage, hintKey, example) {
 
 `todo-engine.js` の出力は `MESSAGES`/`t()`（`LANG_ENV=en` で英語、それ以外は日本語）で管理しているが、以下の3箇所は方針として `t()` 化せず英語固定とする。新しくコマンド・出力を追加する際はこの方針に従うこと。
 
-- **`api` サブコマンド（`apiMain`）は英語固定**: JSON を他プログラムがパースする機械向けインターフェースのため。出力言語が実行環境の `LANG_ENV` で変わるとパース側の実装が壊れるため、`t()` を通さず常に英語文字列を返す
+- **`api` サブコマンド（`apiMain`）は英語固定**: JSON を他プログラムがパースする機械向けインターフェースのため。出力言語が実行環境の `LANG_ENV` で変わるとパース側の実装が壊れるため、`t()` を通さず常に英語文字列を返す。`api` / `run api` を受けた入口（`main()` の `api`・`runMain()` の `api`・`apiMain()`）で `useApiEnglish()` を呼び、以後 `t()` / `tpl()` / `cnt()` が常に英語を返す（Issue #2136）。`api` が呼ぶ共有関数（`validateRecur` / `createRecurIssue` / `postDoneProcessing` / `execMoveGtd` / `fetchAllOpen` など）の文言も、メッセージを出す側を変えずに英語になる。`api` 経路から新しいメッセージを出すときも `t()` / `tpl()` を使ってよく、`MESSAGES.en` に同じ文を用意する（`LANG_ENV=en` と同一出力になる）
 - **`Usage:` 文字列は常時英語で統一**: コマンド構文（`Usage: /todo add <title> ...` 等）は言語非依存の情報として扱い、日本語モードでもプレースホルダを含め英語表記（`<text>` 等）のまま表示する
 - **`[timing]` 診断行（`TODO_TIMING=1` 時のみ stderr へ出力）は英語固定**: 開発者・デバッグ向けの診断出力であり、一般ユーザー向けの操作結果メッセージとは性質が異なる。出力フォーマット自体が `total`/`github`/`parse`/`ms` という英語の技術語彙のみで構成されており、翻訳しても単位・キー名だけ英語が残るため翻訳する動機が薄い（Issue #455）
 
