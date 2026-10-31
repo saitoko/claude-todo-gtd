@@ -7198,6 +7198,141 @@ if [ "$W63_N" -lt 40 ]; then
 fi
 rm -rf "$W63_HOME"
 
+# ── §W64 Issue #2134: 値を取るフラグの「値が欠けた・形式が違う」入力は、書き込みを1回もせずに止める ──
+# 型: 値を取るフラグ（--due / --note / --actual / --outcome 等）が、(a) `--flag=値` 形式で渡された、
+#     (b) 次のトークンが別のフラグの字面だった、(c) --outcome の値が欠けた、ときに、値や次のフラグを
+#     黙って捨てる / 取り違えて、コマンドを最後まで進めていた。bulk done の `-` 始まりの語の素通りも含む。
+# 経路: parseArgs（hasVal）/ guardUnknownFlag（findEqualsFormFlag）/ runComment / runPromoteProject / runBulk の done 分岐。
+# 対照（変えない）: 空白区切りの正しい入力 / 値が数字 / 値に空白を含む文章 / comment の本文中の `--foo=bar`。
+# 安全条件: HOME を一時ディレクトリに隔離し、OCTOKIT_STUB_ENV でスタブを指定する。
+echo ""
+echo "§W64  値を取るフラグの値欠け・形式違い（Issue #2134）"
+
+W64_P0=$PASS
+W64_HOME=$(mktemp -d /tmp/todo-test-w64-XXXXXX)
+W64_LOG="$W64_HOME/stub.jsonl"
+W64_G='{"data":{"number":42,"id":9042,"title":"W64","body":"","labels":[{"name":"🎯 next"}],"state":"open"}}'
+W64_RESP="{\"issues.get\":[$W64_G,$W64_G,$W64_G],\"issues.update\":[{},{},{},{},{}],\"issues.listForRepo\":[{\"data\":[]},{\"data\":[]},{\"data\":[]}],\"issues.createComment\":[{\"data\":{\"id\":1}},{\"data\":{\"id\":2}}],\"issues.addLabels\":[{},{},{}],\"issues.removeLabel\":[{},{},{}],\"issues.createLabel\":[{},{}],\"GET /repos/{owner}/{repo}/labels/{name}\":[{\"data\":{\"name\":\"x\"}},{\"data\":{\"name\":\"x\"}},{\"data\":{\"name\":\"x\"}},{\"data\":{\"name\":\"x\"}}]}"
+
+# w64_run <args...>: LANG_ENV なし（ja）で実行する。W64_OUT / W64_ERR / W64_EC / W64_WRITES（GitHub への書き込み回数）
+w64_run() {
+  case "$W64_HOME" in
+    /tmp/todo-test-w64-*) ;;
+    *) printf "  ❌ W64 隔離 HOME を作れていないため実行しない (%s)\n" "$W64_HOME"; FAIL=$((FAIL+1)); W64_OUT=""; W64_ERR=""; W64_EC=99; W64_WRITES=99; return 1 ;;
+  esac
+  : > "$W64_LOG"; rm -rf "$W64_HOME/.claude"; mkdir -p "$W64_HOME/.claude"
+  W64_OUT=$(env -u LANG_ENV HOME="$W64_HOME" OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W64_RESP" OCTOKIT_STUB_LOG_ENV="$W64_LOG" \
+    TODO_REPO_OWNER=test TODO_REPO_NAME=test TODAY=2026-10-18 node "$ENGINE" run "$@" 2>"$W64_HOME/stderr"); W64_EC=$?
+  W64_ERR=$(cat "$W64_HOME/stderr")
+  W64_WRITES=$(grep -c -E '"method":"issues\.(update|create|createComment|addLabels|removeLabel|setLabels|createLabel)"' "$W64_LOG")
+}
+# w64_blocked <名前> <args...>: exit 1・書き込み0回・テンプレートファイルなしで止まる
+w64_blocked() {
+  local name="$1"; shift
+  w64_run "$@"
+  assert_eq "W64 $name: exit 1" "1" "$W64_EC"
+  assert_eq "W64 $name: 書き込み 0 回" "0" "$W64_WRITES"
+  assert_eq "W64 $name: テンプレートを保存していない" "no" "$([ -e "$W64_HOME/.claude/todo-templates.json" ] && echo yes || echo no)"
+}
+
+# 1) `--flag=値` 形式（値が黙って捨てられていた）。値を取るフラグを持つ全コマンド
+w64_blocked "done --note=x" done 42 --note=x
+assert_contains "W64 done --note=x: 止めた語を示す" "--note=x" "$W64_ERR"
+w64_blocked "done --actual=2h" done 42 --actual=2h
+w64_blocked "move --note=x" move 42 next --note=x
+w64_blocked "edit --due=日付" edit 42 --due=2026-11-01
+w64_blocked "edit --desc=x" edit 42 --desc=x
+w64_blocked "edit --priority=p1" edit 42 --priority=p1
+w64_blocked "bulk done --actual=2h" bulk done 42 --actual=2h
+w64_blocked "bulk done 42 43 --actual=2h" bulk done 42 43 --actual=2h
+w64_blocked "add --due=日付" add next "W64 title" --due=2026-11-01
+w64_blocked "add --desc=x" add next "W64 title" --desc=x
+w64_blocked "add --label=foo" add next "W64 title" --label=foo
+w64_blocked "template save --due=日付" template save w64tpl --due=2026-11-01
+w64_blocked "label add --color=hex" label add @w64 --color=FF0000
+w64_blocked "promote-project --outcome=x" promote-project 42 --outcome=Out
+w64_blocked "comment --body=x" comment 42 --body=x
+w64_blocked "comment --body-file=path" comment 42 --body-file=/nonexistent
+# 自由記述を持たないコマンドでは、既知でないフラグ名の `--typo=値` も止める
+w64_blocked "done --typo=1" done 42 --typo=1
+w64_blocked "list --group=due" list --group=due
+
+# 2) 次のトークンが別のフラグの字面（フラグが値として取り込まれていた）
+w64_blocked "done --note --actual 1h" done 42 --note --actual 1h
+w64_blocked "move --note --zzz" move 42 next --note --zzz
+w64_blocked "edit --desc --zzz" edit 42 --desc --zzz
+w64_blocked "edit --resume-condition --zzz" edit 42 --resume-condition --zzz
+w64_blocked "add --desc --zzz" add next "W64 title" --desc --zzz
+w64_blocked "add --depends-on --zzz" add next "W64 title" --depends-on --zzz
+w64_blocked "add --label --zzz" add next "W64 title" --label --zzz
+w64_blocked "bulk done --actual --note x" bulk done 42 --actual --note x
+w64_blocked "template save --desc --zzz" template save w64tpl --desc --zzz
+w64_blocked "comment --body --zzz" comment 42 --body --zzz
+w64_blocked "comment --body-file --zzz" comment 42 --body-file --zzz
+w64_blocked "promote-project --outcome --zzz" promote-project 42 --outcome --zzz
+
+# 3) --outcome の値が欠けた（タイトルの変更だけが黙って省かれ、昇格は進んでいた）
+w64_blocked "promote-project --outcome（値なし）" promote-project 42 --outcome
+assert_contains "W64 promote-project --outcome（値なし）: 値が必要という専用メッセージ" "--outcome には値が必要です" "$W64_ERR"
+assert_not_contains "W64 promote-project --outcome（値なし）: 不明なフラグとは言わない" "不明なフラグ" "$W64_ERR"
+
+# 4) bulk done の `-` 始まりの語（上流のガードは `--word` の形しか見ないため素通りしていた）
+w64_blocked "bulk done 42 -x" bulk done 42 -x
+assert_contains "W64 bulk done -x: stray_arg で止める" "'-x'" "$W64_ERR"
+w64_blocked "bulk done 42 -5" bulk done 42 -5
+w64_blocked "bulk done 42 -h" bulk done 42 -h
+w64_blocked "bulk done 42 --actual 2h -x" bulk done 42 --actual 2h -x
+
+# 5) 値が末尾で欠けた（もともと止まっていた。回帰の確認）
+w64_blocked "done --actual（末尾）" done 42 --actual
+w64_blocked "bulk done --actual（末尾）" bulk done 42 --actual
+w64_blocked "comment --body（末尾）" comment 42 --body
+
+# 6) 対照（変えない）
+w64_run bulk done 42 43 --actual 2h
+assert_eq "W64-c1 bulk done 42 43 --actual 2h: exit 0" "0" "$W64_EC"
+assert_eq "W64-c1 bulk done 42 43 --actual 2h: 書き込み 4 回（2 件 × actual 更新 + close）" "4" "$W64_WRITES"
+w64_run bulk done 42 --actual 43
+assert_eq "W64-c2 bulk done 42 --actual 43: exit 0（43 は分の値。従来どおり）" "0" "$W64_EC"
+assert_contains "W64-c2 actual は 43 分" "actual: 43" "$(grep '"method":"issues.update"' "$W64_LOG" | head -1)"
+w64_run done 42 --actual 2h --note "hello --world"
+assert_eq "W64-c3 done --actual 2h --note（空白入りの文章）: exit 0" "0" "$W64_EC"
+assert_eq "W64-c3 書き込み 3 回（actual・close・コメント）" "3" "$W64_WRITES"
+w64_run done 42 --note 43
+assert_eq "W64-c4 done --note 43（数字の本文）: exit 0" "0" "$W64_EC"
+w64_run edit 42 --due 2026-11-01
+assert_eq "W64-c5 edit --due 日付: exit 0" "0" "$W64_EC"
+assert_eq "W64-c5 書き込み 1 回" "1" "$W64_WRITES"
+w64_run promote-project 42 --outcome "W64 outcome"
+assert_eq "W64-c6 promote-project --outcome 値あり: exit 0" "0" "$W64_EC"
+w64_run promote-project 42
+assert_eq "W64-c7 promote-project（--outcome なし）: exit 0" "0" "$W64_EC"
+w64_run comment 42 --body "text with --flag inside"
+assert_eq "W64-c8 comment --body 本文中のフラグ字面（空白入り）: exit 0" "0" "$W64_EC"
+w64_run comment 42 --foo=bar
+assert_eq "W64-c9 comment 本文として渡した未知の --foo=bar は従来どおり本文（自由記述）: exit 0" "0" "$W64_EC"
+assert_contains "W64-c9 本文は --foo=bar" '--foo=bar' "$(grep '"method":"issues.createComment"' "$W64_LOG" | head -1)"
+w64_run template save w64tpl --due 2026-11-01
+assert_eq "W64-c10 template save --due 日付: exit 0" "0" "$W64_EC"
+assert_eq "W64-c10 テンプレートを保存した" "yes" "$([ -e "$W64_HOME/.claude/todo-templates.json" ] && echo yes || echo no)"
+w64_run add next "W64 title" --desc "a --b"
+assert_not_contains "W64-c11 add --desc 空白入り: 不明なフラグにならない" "不明なフラグ" "$W64_ERR"
+
+# 7) parseArgs の hasVal が直書きの正規表現（UNKNOWN_FLAG_RE と同じ字面）を使うことの整合チェック。
+#    ズレると findUnknownFlag と parseArgs で「フラグの字面」の定義が分かれる
+W64_SYNC=$(ENGINE_PATH="$ENGINE" node -e '
+  const src = require("fs").readFileSync(process.env.ENGINE_PATH, "utf8");
+  const a = src.match(/const UNKNOWN_FLAG_RE = \/(.+)\/;/);
+  const b = src.match(/const hasVal = \(idx\) => [^\n]*!\/(.+)\/\.test\(remaining/);
+  process.stdout.write(a && b && a[1] === b[1] ? "same" : "diff:" + (a && a[1]) + " vs " + (b && b[1]));')
+assert_eq "W64-s1 parseArgs の hasVal と UNKNOWN_FLAG_RE の正規表現が同じ" "same" "$W64_SYNC"
+
+W64_N=$((PASS-W64_P0))
+if [ "$W64_N" -lt 100 ]; then
+  printf "  ❌ §W64 アサーション数が少なすぎる (%s 件。100 件未満は検査の空振りとみなす)\n" "$W64_N"; FAIL=$((FAIL+1))
+fi
+rm -rf "$W64_HOME"
+
 echo ""
 echo "=========================================="
 W_TOTAL=$((PASS+FAIL))

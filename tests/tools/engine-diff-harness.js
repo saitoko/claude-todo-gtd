@@ -588,11 +588,11 @@ const X_CASES = [
   // K6: api done-issue で recur が壊れている。LANG_ENV なし（ja）では日本語、en では英語のメッセージが出る（api は英語固定のはずだが現状は t() 経由）
   { id: 'x42-api-done-issue-broken-recur', argv: ['api', 'done-issue', '1231'],
     responses: { 'issues.get': [iss(1231, { body: 'due: 2026-10-10\nrecur: weekly:INVALID\n' })] },
-    marker: { stderr: M.recurWd, exit: 1 } },
+    marker: { stderr: 'weekly day suffix must be one of mon/tue', exit: 1 } },
   // run 経由の api（run の .catch を通る）
   { id: 'x43-run-api-done-issue-broken-recur', argv: ['run', 'api', 'done-issue', '1232'],
     responses: { 'issues.get': [iss(1232, { body: 'due: 2026-10-10\nrecur: weekly:INVALID\n' })] },
-    marker: { stderr: M.recurWd, exit: 1 } },
+    marker: { stderr: 'weekly day suffix must be one of mon/tue', exit: 1 } },
   // 単体の done（W13-6 と同じ入力）。try の外なので exit 1 のまま終わる
   { id: 'x45-done-broken-recur', argv: ['run', 'done', '1233'],
     responses: { 'issues.get': [iss(1233, { body: 'due: 2026-10-10\nrecur: weekly:INVALID\n' })] },
@@ -818,30 +818,32 @@ const N_CASES = [
 // 対象（静的に apiMain から到達しうる t()/tpl() 呼び出しを全数列挙して、ケースを用意した）:
 //   validateRecur（x42 / x43）/ createRecurIssue の recur_created・activate_note・skip_note（a14 y12）/ postDoneProcessing の promote.*・done.promote_hint_*（m24 y13）/
 //   execMoveGtd の3文言（y01〜y04）/ nextDueCatchUp・nextDueMonthlyOnDay・fetchAllOpen の warn（y09〜y11）/ 401 の認証拒否文言（y05 y06）/ runMain のリポジトリ未設定ガード（y08）。
-// 差分（ALLOW_PRESETS['i2136']）は LANG_ENV なし（ja）の stderr / stdout だけ。en の実行と、CLI（run done 等）の日本語出力は変わらない。
+// 差分（ALLOW_PRESETS['i2136']）は LANG_ENV なし（ja）の stderr / stdout だけ。
+// （#2134 で更新: #2136 は main に取り込み済みのため、x42 x43 y01〜y06 y08 の marker は #2136 後の英語固定の挙動で到達できる形に書き換えた。
+//   i2136 プリセットは #2136 前のエンジンと比べるときの履歴として残す。現在の main に対しては使わない）en の実行と、CLI（run done 等）の日本語出力は変わらない。
 const Y_RECUR = (extra) => 'due: 2026-10-10\nrecur: weekly\n' + (extra || '');
 const E401 = { __throw: true, status: 401, message: 'Bad credentials' };
 const Y_CASES = [
   { id: 'y01-api-move-gtd-to-project', argv: ['api', 'move-gtd', '1501', 'project'], responses: {},
-    marker: { stderr: { ja: 'エラー', en: 'Error' }, exit: 1 } },
+    marker: { stderr: 'Error', exit: 1 } },
   { id: 'y02-api-move-gtd-bad-label', argv: ['api', 'move-gtd', '1502', 'bogus'], responses: {},
-    marker: { stderr: { ja: 'エラー', en: 'Error' }, exit: 1 } },
+    marker: { stderr: 'Error', exit: 1 } },
   { id: 'y03-api-move-gtd-routine-without-recur', argv: ['api', 'move-gtd', '1503', 'routine'],
     responses: { 'issues.get': [iss(1503)] },
-    marker: { stderr: { ja: 'エラー', en: 'Error' }, log: 'issues.get', exit: 1 } },
+    marker: { stderr: 'Error', log: 'issues.get', exit: 1 } },
   { id: 'y04-run-api-move-gtd-to-project', argv: ['run', 'api', 'move-gtd', '1504', 'project'], responses: {},
-    marker: { stderr: { ja: 'エラー', en: 'Error' }, exit: 1 } },
+    marker: { stderr: 'Error', exit: 1 } },
   { id: 'y05-api-done-issue-401', argv: ['api', 'done-issue', '1505'],
     responses: { 'issues.get': [E401] },
-    marker: { stderr: { ja: '認証が拒否', en: 'authentication was rejected' }, exit: 1 } },
+    marker: { stderr: 'authentication was rejected', exit: 1 } },
   { id: 'y06-run-api-done-issue-401', argv: ['run', 'api', 'done-issue', '1506'],
     responses: { 'issues.get': [E401] },
-    marker: { stderr: { ja: '認証が拒否', en: 'authentication was rejected' }, exit: 1 } },
+    marker: { stderr: 'authentication was rejected', exit: 1 } },
   // api 直接はもともと英語固定（apiMain の先頭ガード）。対照として置く（変わらないはず）
   { id: 'y07-api-repo-unset', argv: ['api', 'list-labels'], env: { TODO_REPO_OWNER: '', TODO_REPO_NAME: '' }, responses: {},
     marker: { stderr: 'TODO_REPO_OWNER and TODO_REPO_NAME must be set', exit: 1 } },
   { id: 'y08-run-api-repo-unset', argv: ['run', 'api', 'list-labels'], env: { TODO_REPO_OWNER: '', TODO_REPO_NAME: '' }, responses: {},
-    marker: { stderr: { ja: '未設定です', en: 'is not set' }, exit: 1 } },
+    marker: { stderr: 'is not set', exit: 1 } },
   { id: 'y09-api-done-issue-month-day-clamped', argv: ['api', 'done-issue', '1509'],
     responses: { 'issues.get': [iss(1509, { body: 'due: 2026-10-31\nrecur: monthly:31\n' })], 'issues.create': [{ data: { number: 9509 } }], 'issues.update': [{}], 'issues.listForRepo': [list()] },
     marker: { stdout: '"newIssueNumber":9509', exit: 0 } },
@@ -863,6 +865,73 @@ const Y_CASES = [
     responses: { 'issues.get': [iss(1514, { body: 'due: 2026-10-10\nrecur: weekly:INVALID\n' })] },
     marker: { stderr: M.recurWd, exit: 1 } },
 ];
+// ── Issue #2134: 値を取るフラグの「値が欠けた・形式が違う」入力 ──
+// 型: 値を取るフラグ（--due / --note / --actual / --outcome 等）が (a) `--flag=値` 形式で渡された、(b) 次のトークンが別のフラグの字面だった、
+//   (c) --outcome の値が欠けた、(d) bulk done に `-` 始まりの語が混ざった、ときに、値や次のフラグを黙って捨てる / 取り違えてコマンドを最後まで進める。
+//   旧は書き込み系 API を呼んで exit 0（または exit 1 だが書き込み済み）、新は書き込み0回で exit 1。
+// 全数確認（値を取るフラグ 17 個 + --outcome を COMMAND_SPECS / parseArgs から列挙し、(a)〜(d) をスタブで実行した結果）から、コマンドごとに代表を置いた。
+// 差分（ALLOW_PRESETS['i2134']）は 旧で黙って進んでいたケースだけ。末尾の対照（z90〜）と、旧から止まっていた入力（z80〜）は変わらない。
+const Z_CASES = [
+  { id: 'z01-done-note-equals', argv: ['run', 'done', '1701', '--note=memo'],
+    responses: { 'issues.get': [iss(1701)], 'issues.update': [{}], 'issues.listForRepo': [list()] }, marker: { log: 'issues.update', exit: 0 } },
+  { id: 'z02-done-actual-equals', argv: ['run', 'done', '1702', '--actual=2h'],
+    responses: { 'issues.get': [iss(1702)], 'issues.update': [{}], 'issues.listForRepo': [list()] }, marker: { log: 'issues.update', exit: 0 } },
+  { id: 'z03-done-note-swallows-flag', argv: ['run', 'done', '1703', '--note', '--actual', '1h'],
+    responses: { 'issues.get': [iss(1703)], 'issues.update': [{}], 'issues.createComment': [{ data: { id: 1 } }], 'issues.listForRepo': [list()] }, marker: { log: 'issues.createComment', exit: 0 } },
+  { id: 'z04-move-note-equals', argv: ['run', 'move', '1704', 'next', '--note=memo'],
+    responses: { 'issues.get': [iss(1704, { labels: [INBOX] })], 'issues.removeLabel': [{}], 'issues.addLabels': [{}] }, marker: { log: 'issues.addLabels', exit: 0 } },
+  { id: 'z05-edit-due-equals', argv: ['run', 'edit', '1705', '--due=2026-11-01'],
+    responses: { 'issues.get': [iss(1705)], 'issues.update': [{}] }, marker: { log: 'issues.update', exit: 0 } },
+  { id: 'z06-edit-desc-swallows-flag', argv: ['run', 'edit', '1706', '--desc', '--zzz'],
+    responses: { 'issues.get': [iss(1706)], 'issues.update': [{}] }, marker: { log: '--zzz', exit: 0 } },
+  { id: 'z07-edit-depends-on-equals', argv: ['run', 'edit', '1707', '--depends-on=1700'],
+    responses: { 'issues.get': [iss(1707)], 'issues.update': [{}] }, marker: { log: 'issues.update', exit: 0 } },
+  { id: 'z08-bulk-done-actual-equals', argv: ['run', 'bulk', 'done', '1708', '--actual=2h'],
+    responses: { 'issues.get': [iss(1708)], 'issues.update': [{}], 'issues.listForRepo': [list()] }, marker: { log: 'issues.update', exit: 0 } },
+  { id: 'z09-bulk-done-dash-word', argv: ['run', 'bulk', 'done', '1709', '-x'],
+    responses: { 'issues.get': [iss(1709)], 'issues.update': [{}], 'issues.listForRepo': [list()] }, marker: { log: 'issues.update', exit: 0 } },
+  { id: 'z10-bulk-done-dash-number', argv: ['run', 'bulk', 'done', '1710', '--actual', '2h', '-5'],
+    responses: { 'issues.get': [iss(1710)], 'issues.update': [{}, {}], 'issues.listForRepo': [list()] }, marker: { log: 'issues.update', exit: 0 } },
+  { id: 'z11-add-due-equals', argv: ['run', 'add', 'next', 'tz11', '--due=2026-11-01'],
+    responses: { [LBL]: [E404, E404], 'issues.createLabel': [{}, {}], 'issues.create': [{ data: { number: 1711, id: 10711, html_url: 'x' } }] }, marker: { log: 'issues.create', exit: 0 } },
+  { id: 'z12-add-depends-on-swallows-flag', argv: ['run', 'add', 'next', 'tz12', '--depends-on', '--zzz'],
+    responses: { [LBL]: [E404, E404], 'issues.createLabel': [{}, {}], 'issues.create': [{ data: { number: 1712, id: 10712, html_url: 'x' } }] }, marker: { log: '#--zzz', exit: 0 } },
+  { id: 'z13-comment-body-equals', argv: ['run', 'comment', '1713', '--body=memo'],
+    responses: { 'issues.createComment': [{ data: { id: 1 } }] }, marker: { log: '--body=memo', exit: 0 } },
+  { id: 'z14-comment-body-swallows-flag', argv: ['run', 'comment', '1714', '--body', '--zzz'],
+    responses: { 'issues.createComment': [{ data: { id: 1 } }] }, marker: { log: 'issues.createComment', exit: 0 } },
+  { id: 'z15-promote-project-outcome-missing', argv: ['run', 'promote-project', '1715', '--outcome'],
+    responses: { 'issues.get': [iss(1715)], [LBL]: [E404], 'issues.createLabel': [{}], 'issues.removeLabel': [{}], 'issues.addLabels': [{}] }, marker: { log: 'issues.addLabels', exit: 0 } },
+  { id: 'z16-promote-project-outcome-equals', argv: ['run', 'promote-project', '1716', '--outcome=Title'],
+    responses: { 'issues.get': [iss(1716)], [LBL]: [E404], 'issues.createLabel': [{}], 'issues.removeLabel': [{}], 'issues.addLabels': [{}] }, marker: { log: 'issues.addLabels', exit: 0 } },
+  { id: 'z17-template-save-due-equals', argv: ['run', 'template', 'save', 'tz17', '--due=2026-11-01'],
+    files: { '.claude/todo-templates.json': {} }, responses: {}, marker: { stdout: { ja: 'tz17', en: 'tz17' }, exit: 0 } },
+  { id: 'z18-template-save-desc-swallows-flag', argv: ['run', 'template', 'save', 'tz18', '--desc', '--zzz'],
+    files: { '.claude/todo-templates.json': {} }, responses: {}, marker: { stdout: { ja: 'tz18', en: 'tz18' }, exit: 0 } },
+  { id: 'z19-label-add-color-equals', argv: ['run', 'label', 'add', '@tz19', '--color=FF0000'],
+    responses: { [LBL]: [E404], 'issues.createLabel': [{}] }, marker: { log: 'issues.createLabel', exit: 0 } },
+  { id: 'z20-done-typo-equals', argv: ['run', 'done', '1720', '--typo=1'],
+    responses: { 'issues.get': [iss(1720)], 'issues.update': [{}], 'issues.listForRepo': [list()] }, marker: { log: 'issues.update', exit: 0 } },
+  // 旧から止まっていた入力（変わらないはず）
+  { id: 'z80-done-actual-trailing', argv: ['run', 'done', '1780', '--actual'], responses: {}, marker: { stderr: '--actual', exit: 1 } },
+  { id: 'z81-bulk-done-actual-trailing', argv: ['run', 'bulk', 'done', '1781', '--actual'], responses: {}, marker: { stderr: '--actual', exit: 1 } },
+  { id: 'z82-comment-body-trailing', argv: ['run', 'comment', '1782', '--body'], responses: {}, marker: { stderr: '--body', exit: 1 } },
+  { id: 'z83-bulk-done-stray-word', argv: ['run', 'bulk', 'done', '1783', 'abc'], responses: {}, marker: { stderr: "'abc'", exit: 1 } },
+  // 対照（変わらないはず）: 正しい入力。値が数字・値に空白を含む文章・comment の本文中の --foo=bar
+  { id: 'z90-bulk-done-two-actual', argv: ['run', 'bulk', 'done', '1790', '1791', '--actual', '2h'],
+    responses: { 'issues.get': [iss(1790), iss(1791)], 'issues.update': [{}, {}, {}, {}], 'issues.listForRepo': [list(), list()] }, marker: { logSeq: ['issues.update', 'issues.update', 'issues.update', 'issues.update'], exit: 0 } },
+  { id: 'z91-bulk-done-actual-number', argv: ['run', 'bulk', 'done', '1792', '--actual', '43'],
+    responses: { 'issues.get': [iss(1792)], 'issues.update': [{}, {}], 'issues.listForRepo': [list()] }, marker: { log: 'actual: 43', exit: 0 } },
+  { id: 'z92-done-note-with-space', argv: ['run', 'done', '1793', '--note', 'memo --with flag'],
+    responses: { 'issues.get': [iss(1793)], 'issues.update': [{}], 'issues.createComment': [{ data: { id: 1 } }], 'issues.listForRepo': [list()] }, marker: { log: 'memo --with flag', exit: 0 } },
+  { id: 'z93-edit-due-valid', argv: ['run', 'edit', '1794', '--due', '2026-11-01'],
+    responses: { 'issues.get': [iss(1794)], 'issues.update': [{}] }, marker: { log: 'due: 2026-11-01', exit: 0 } },
+  { id: 'z94-comment-foo-equals-as-text', argv: ['run', 'comment', '1795', '--foo=bar'],
+    responses: { 'issues.createComment': [{ data: { id: 1 } }] }, marker: { log: '--foo=bar', exit: 0 } },
+  { id: 'z95-promote-project-outcome-valid', argv: ['run', 'promote-project', '1796', '--outcome', 'Title'],
+    responses: { 'issues.get': [iss(1796)], [LBL]: [E404], 'issues.createLabel': [{}], 'issues.removeLabel': [{}], 'issues.addLabels': [{}], 'issues.update': [{}] }, marker: { log: 'issues.update', exit: 0 } },
+];
+
 const CORPUS = [
   // ── (a) 完了フロー ──
   { id: 'a01-done-plain', argv: ['run', 'done', '301'],
@@ -1331,6 +1400,7 @@ const CORPUS = [
   ...V_CASES,
   ...N_CASES,
   ...Y_CASES,
+  ...Z_CASES,
 ];
 
 // ─── 意図した挙動変更の許容リスト（--allow-preset で呼び出す）──────────
@@ -1382,6 +1452,13 @@ const ALLOW_PRESETS = {
   'i2136': [
     'x42-api-done-issue-broken-recur@ja', 'x43-run-api-done-issue-broken-recur@ja',
     'y01-@ja', 'y02-@ja', 'y03-@ja', 'y04-@ja', 'y05-@ja', 'y06-@ja', 'y08-@ja', 'y09-@ja', 'y10-@ja', 'y11-@ja', 'y12-@ja', 'y13-@ja',
+  ],
+  // i2134: Issue #2134（値を取るフラグの値欠け・形式違いは書き込みなしで止める）。旧 = #2134 の前の main、新 = #2134 の版。
+  //   旧は書き込み系 API を呼んで進んでいた入力が、新は exit 1・書き込み0回になる。stdout / stderr / 終了コード / stub-log が変わる。
+  //   z80〜z83（旧から止まっていた入力）と z90〜z95（正しい入力）は変わらないはず（プリセットに含めない）。
+  'i2134': [
+    'z01-', 'z02-', 'z03-', 'z04-', 'z05-', 'z06-', 'z07-', 'z08-', 'z09-', 'z10-',
+    'z11-', 'z12-', 'z13-', 'z14-', 'z15-', 'z16-', 'z17-', 'z18-', 'z19-', 'z20-',
   ],
   'r5-k1': ['x40-bulk-done-broken-recur-stops-all', 'x41-bulk-done-broken-recur-with-actual', 'x44-bulk-done-broken-recur-first'],
 };
