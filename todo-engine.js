@@ -82,6 +82,17 @@ const FLAG_FIELD_MAP = {
   contexts: '@ctx', tags: '#tag',
 };
 
+// #2134: 値を取るフラグの `--name=値` 形式の検出に使う。
+// parseArgs は `--actual 2h`（空白区切り）しか値として読まない。`--actual=2h` は UNKNOWN_FLAG_RE にも
+// 合わない（`=` を含む）ため、どのガードにも掛からず extra に残り、値だけが黙って捨てられたまま
+// コマンドが最後まで進んでいた（`done 42 --note=x` はコメントなしで完了、`edit 42 --due=2026-11-01` は
+// 何も変えずに「updated」と表示）。FLAG_FIELD_MAP の `--` 始まりの代表表記に、parseArgs の外で
+// 値を読む `--outcome`（promote-project）を足したものを「値を取るフラグ名」とする。
+// 【この2定数をここ（ファイル冒頭の定数ブロック）から動かさないこと】理由は UNKNOWN_FLAG_RE のコメントと同じ。
+const EQUALS_FORM_FLAG_RE = /^(--[A-Za-z][A-Za-z0-9-]*)=/;
+const VALUE_FLAG_NAMES = Object.keys(FLAG_FIELD_MAP)
+  .map(k => FLAG_FIELD_MAP[k]).filter(f => f.startsWith('--')).concat(['--outcome']);
+
 // FLAG_SUPPORTED_BY（フィールド名 → それを実際に読むコマンドの一覧。エラーメッセージのヒント用）は、
 // コマンド仕様の宣言表 COMMAND_SPECS（parseArgs 定義の直前）から導出する（Issue #2102 R2）。
 // 手で更新する表ではない。ヒント文のコマンド並びは COMMAND_SPECS の並び順で決まる。
@@ -345,6 +356,7 @@ const MESSAGES = {
     'error.routine_needs_recur_move_bulk': 'routineへの移動にはrecurが必須です。先に /todo edit {num} --recur weekly のようにrecurを設定してから移動してください。',
     'error.title_empty': 'エラー: タイトルが空です。',
     'error.unknown_flag': 'エラー: 不明なフラグです: {flag}',
+    'error.flag_value_missing': 'エラー: {flag} には値が必要です（末尾、または次が別のフラグです）。',
     'error.unknown_flag_hint': 'ヒント: この語をタイトルに含めたい場合は、タイトル全体を1つの引数としてクォートしてください（例: /todo add next "--dry-run を追加する"）。タイトルがこの語1語だけの場合は、前後に語を足してください（例: 「--dry-run」の扱いを決める）。',
     'error.unknown_flag_hint_body': 'ヒント: この語を本文に含めたい場合は、本文全体を1つの引数としてクォートしてください（例: /todo comment 42 "--dry-run を追加した"）。',
     'error.unknown_flag_hint_options': 'ヒント: このコマンドで使えるオプションは /todo help で確認してください。',
@@ -733,6 +745,7 @@ const MESSAGES = {
     'error.routine_needs_recur_move_bulk': 'moving to routine requires recur. Set recur first, e.g. /todo edit {num} --recur weekly, then move.',
     'error.title_empty': 'Error: Title is empty.',
     'error.unknown_flag': 'Error: unknown flag: {flag}',
+    'error.flag_value_missing': 'Error: {flag} needs a value (it is last, or followed by another flag).',
     'error.unknown_flag_hint': 'Hint: to keep this word in the title, quote the whole title as a single argument (e.g. /todo add next "add --dry-run"). If the title is only this word, add words around it (e.g. "decide how to handle --dry-run").',
     'error.unknown_flag_hint_body': 'Hint: to keep this word in the body text, quote the whole body as a single argument (e.g. /todo comment 42 "added --dry-run").',
     'error.unknown_flag_hint_options': 'Hint: run /todo help to see the options this command accepts.',
@@ -3474,8 +3487,21 @@ function findUnknownFlag(tokens, allowedFlags) {
 // 【関数宣言（function）で書くこと】アロー関数を代入した const にすると、ファイル冒頭の
 // UNKNOWN_FLAG_RE と同じ TDZ 問題（モジュール評価の途中でトップレベル switch が走る）を
 // 別の形で踏む。理由の詳細はファイル冒頭 24-35行のコメントを参照。
+// #2134: `--name=値` 形式のトークンを探す。値を取る既知フラグの名前（VALUE_FLAG_NAMES）なら常に対象。
+// anyName が真のときは名前を問わない（自由記述を持たないコマンドでは `--typo=値` も黙って捨てられるため）。
+// 自由記述（タイトル・本文）を持つコマンドでは、既知フラグ名以外の `--foo=bar` は本文として通す。
+function findEqualsFormFlag(tokens, anyName) {
+  for (const tok of tokens) {
+    const m = EQUALS_FORM_FLAG_RE.exec(tok);
+    if (m && (anyName || VALUE_FLAG_NAMES.indexOf(m[1]) >= 0)) return tok;
+  }
+  return null;
+}
+
 function guardUnknownFlag(tokens, allowedFlags, usage, hintKey) {
-  const flag = findUnknownFlag(tokens, allowedFlags);
+  // hintKey が 'error.unknown_flag_hint_options' のコマンドは自由記述を持たない（上のコメント参照）
+  const flag = findUnknownFlag(tokens, allowedFlags)
+    || findEqualsFormFlag(tokens, hintKey === 'error.unknown_flag_hint_options');
   if (!flag) return;
   exitWith([
     ...(usage ? [usage] : []),
@@ -3856,47 +3882,53 @@ function parseArgs(tokens) {
     labels: [], extra: []
   };
   const remaining = [...tokens];
+  // #2134: 値を取るフラグは、次のトークンが別のフラグの字面（`--note` 等）なら値として読まない。
+  // 読むと `--note --actual 1h` が「コメント本文 '--actual'」になり、本来のフラグも値も黙って失われた。
+  // 読まなかったフラグは extra に残り、末尾で値が欠けた場合と同じく guardUnknownFlag が止める
+  // 判定の正規表現は UNKNOWN_FLAG_RE と同じ字面。parseArgs を関数単体で取り出して評価するテスト
+  // （tests/run-tests.sh の BUG1321 / BUG1329）があり、外側の定数を参照できないため、ここに直書きする
+  const hasVal = (idx) => idx + 1 < remaining.length && !/^--[A-Za-z][A-Za-z0-9-]*$/.test(remaining[idx + 1]);
 
   let i = 0;
   while (i < remaining.length) {
     const tok = remaining[i];
-    if (tok === '--due' && i+1 < remaining.length) {
+    if (tok === '--due' && hasVal(i)) {
       result.due = remaining[i+1]; remaining.splice(i, 2); continue;
-    } else if (tok === '--desc' && i+1 < remaining.length) {
+    } else if (tok === '--desc' && hasVal(i)) {
       // クォートで囲まれている場合はまとめて次のトークン
       result.desc = remaining[i+1]; remaining.splice(i, 2); continue;
-    } else if (tok === '--recur' && i+1 < remaining.length) {
+    } else if (tok === '--recur' && hasVal(i)) {
       result.recur = remaining[i+1]; remaining.splice(i, 2); continue;
-    } else if (tok === '--project' && i+1 < remaining.length) {
+    } else if (tok === '--project' && hasVal(i)) {
       result.project = remaining[i+1]; remaining.splice(i, 2); continue;
-    } else if (tok === '--priority' && i+1 < remaining.length) {
+    } else if (tok === '--priority' && hasVal(i)) {
       result.priority = remaining[i+1]; remaining.splice(i, 2); continue;
     } else if (/^--p[123]$/.test(tok)) {
       // --p1 / --p2 / --p3 ショートハンド（--priority p1 の省略形）
       result.priority = tok.slice(2); remaining.splice(i, 1); continue;
-    } else if (tok === '--estimate' && i+1 < remaining.length) {
+    } else if (tok === '--estimate' && hasVal(i)) {
       result.estimate = remaining[i+1]; remaining.splice(i, 2); continue;
-    } else if (tok === '--actual' && i+1 < remaining.length) {
+    } else if (tok === '--actual' && hasVal(i)) {
       result.actual = remaining[i+1]; remaining.splice(i, 2); continue;
-    } else if (tok === '--due-offset' && i+1 < remaining.length) {
+    } else if (tok === '--due-offset' && hasVal(i)) {
       result.dueOffset = remaining[i+1].replace(/^\+/, ''); remaining.splice(i, 2); continue;
-    } else if (tok === '--color' && i+1 < remaining.length) {
+    } else if (tok === '--color' && hasVal(i)) {
       result.color = remaining[i+1]; remaining.splice(i, 2); continue;
-    } else if (tok === '--activate' && i+1 < remaining.length) {
+    } else if (tok === '--activate' && hasVal(i)) {
       result.activate = remaining[i+1]; remaining.splice(i, 2); continue;
-    } else if (tok === '--before' && i+1 < remaining.length) {
+    } else if (tok === '--before' && hasVal(i)) {
       result.before = remaining[i+1]; remaining.splice(i, 2); continue;
-    } else if (tok === '--depends-on' && i+1 < remaining.length) {
+    } else if (tok === '--depends-on' && hasVal(i)) {
       result.dependsOn = remaining[i+1].replace(/^#/, ''); remaining.splice(i, 2); continue;
-    } else if (tok === '--resume-condition' && i+1 < remaining.length) {
+    } else if (tok === '--resume-condition' && hasVal(i)) {
       result.resumeCondition = remaining[i+1]; remaining.splice(i, 2); continue;
-    } else if (tok === '--note' && i+1 < remaining.length) {
+    } else if (tok === '--note' && hasVal(i)) {
       result.note = remaining[i+1]; remaining.splice(i, 2); continue;
-    } else if (tok === '--body' && i+1 < remaining.length) {
+    } else if (tok === '--body' && hasVal(i)) {
       result.body = remaining[i+1]; remaining.splice(i, 2); continue;
-    } else if (tok === '--body-file' && i+1 < remaining.length) {
+    } else if (tok === '--body-file' && hasVal(i)) {
       result.bodyFile = remaining[i+1]; remaining.splice(i, 2); continue;
-    } else if (tok === '--label' && i+1 < remaining.length) {
+    } else if (tok === '--label' && hasVal(i)) {
       result.labels.push(remaining[i+1]); remaining.splice(i, 2); continue;
     } else if (tok.startsWith('@')) {
       result.contexts.push(tok); remaining.splice(i, 1); continue;
@@ -4924,11 +4956,14 @@ async function runComment(octokit, owner, repo, tokens) {
   let bodyOpt = null, bodyFileOpt = null;
   for (let i = 0; i < rest.length; i++) {
     const tok = rest[i];
-    if (tok === '--body' && i + 1 < rest.length) {
+    // #2134: 次のトークンが別のフラグの字面なら値として読まない（parseArgs の hasVal と同じ。
+    // 読むと `--body --zzz` が本文 '--zzz' として投稿された）。読まなかった --body は下の分岐でエラーになる
+    const hasVal = i + 1 < rest.length && !UNKNOWN_FLAG_RE.test(rest[i + 1]);
+    if (tok === '--body' && hasVal) {
       bodyOpt = rest[i + 1]; i++;
-    } else if (tok === '--body-file' && i + 1 < rest.length) {
+    } else if (tok === '--body-file' && hasVal) {
       bodyFileOpt = rest[i + 1]; i++;
-    } else if (UNKNOWN_FLAG_RE.test(tok)) {
+    } else if (UNKNOWN_FLAG_RE.test(tok) || findEqualsFormFlag([tok], false)) {
       // 未知のフラグ、または値が欠落した既知フラグ（末尾の --body-file 等）。
       // ここで本文へ連結せず即エラー終了する（#1919 の再発防止の核）。
       // #1921 第2弾: 英語ハードコードをやめ add と同じ error.unknown_flag へ寄せた。
@@ -5987,11 +6022,12 @@ async function runBulk(octokit, owner, repo, tokens) {
     // #1934 パート1: bulk done が実際に読むのは actual のみ（配線直前にコードを再確認済み）。
     guardUnsupportedFlag(parsed, COMMAND_SPECS['bulk done'].supportedFields, BULK_USAGE);
     // 番号とフラグ（--actual とその値）以外の語があれば何も処理せずに落とす（'abc' や、フラグの後ろの番号 '44'）。
-    // 未知フラグ・未サポートフラグは上のガードで処理済みなので、'-' 始まりの語はここでは読み飛ばす
-    for (let k = 0; k < rest.length; k++) {
-      if (rest[k] === '--actual') { k++; continue; }
-      if (rest[k].startsWith('-')) continue;
-      exitWith(tpl('error.bulk_done_stray_arg', { token: rest[k] }));
+    // #2134: parseArgs が --actual とその値を取り除いた後の extra が空でなければ、それが余りの語。
+    // 以前は rest を走査して '--actual' の次の1語を無条件に値として読み飛ばし、'-' 始まりの語（'-x'、'-5'）を
+    // 通していた。'-' 始まりは上のガード（`--word` 形式しか見ない）も通るため、`bulk done 42 -x` が
+    // 黙って 42 を完了にしていた。extra を直接見れば、値の取り違えも '-' の素通りも起きない
+    if (parsed.extra.length) {
+      exitWith(tpl('error.bulk_done_stray_arg', { token: parsed.extra[0] }));
     }
     // --actual は全 Issue 共通の1つの値。解釈できない値を黙って捨てず、ループに入る前（API を呼ぶ前）に落とす
     const actualValue = parseActualOrExit(parsed);
@@ -6190,6 +6226,11 @@ async function runPromoteProject(octokit, owner, repo, tokens) {
   // （addLabels等）より前に落とす。
   guardUnknownFlag(tokens.slice(1), ['--outcome'], PROMOTE_PROJECT_USAGE, 'error.unknown_flag_hint_options');
   const outcomeIdx = tokens.indexOf('--outcome');
+  // #2134: --outcome の値が欠けている（末尾、または次が別のフラグの字面）と、タイトルの変更だけが
+  // 黙って省かれて昇格（ラベルの付け替え）は進んでいた。値が欠けた既知フラグは他のコマンドと同じく止める
+  if (outcomeIdx !== -1 && (outcomeIdx + 1 >= tokens.length || UNKNOWN_FLAG_RE.test(tokens[outcomeIdx + 1]))) {
+    exitWith([PROMOTE_PROJECT_USAGE, tpl('error.flag_value_missing', { flag: '--outcome' })]);
+  }
   // outcome値のクォート漏れ（`--outcome New Marketing Campaign` のような複数トークン）は
   // 2トークン目以降を黙って切り捨てていた（due/activateと同型。値は自由記述のタイトルで
   // 空白を含みうるためhint_quoteを使う）。
@@ -6675,7 +6716,7 @@ module.exports = {
   runReviewSomeday, runPromote, runPromoteProject, runUnlink, runWeeklyProjectAudit,
   runMigrateSubIssue, reservedTitleGuardWord, reservedMultiwordFirstWord, runMain,
   envOpen, envClosed, envListFilters, envTemplateFields, envViewFilters,
-  detectGtd, extractTags, parseActualOrExit, ensurePriorityLabel, completeIssue, fetchParentProject, swapGtdLabel, replacePriorityLabel, getReviewedAt, getRecurValue, getBodyProjectNum,
+  detectGtd, extractTags, parseActualOrExit, findEqualsFormFlag, ensurePriorityLabel, completeIssue, fetchParentProject, swapGtdLabel, replacePriorityLabel, getReviewedAt, getRecurValue, getBodyProjectNum,
   readBodyFileOrExit, ensureCtxLabel, ensureTagLabel,
   CTX_LABEL_COLOR, TAG_LABEL_COLOR, EXTRA_LABEL_COLOR, PROJECT_LABEL_COLOR,
 };
