@@ -16,6 +16,7 @@ const GTD_DISPLAY = {
 };
 const FORBIDDEN_CHARS = ';$`()\"\'' + String.fromCharCode(92) + '|&><{}';
 const MAX_OPEN_ISSUES_LIMIT = 1000; // open Issue 取得の安全上限（100件×10ページ。#2130: 200 から引き上げ）。上限で打ち切ったときは警告を出す
+const MAX_CLOSED_SINCE_LIMIT = 3000; // report の closed 取得（fetchClosedSince）の安全上限（100件×30ページ。#2138: 1年分程度の closed を収める値）。上限で打ち切ったときは警告を出す
 const API_LIST_ISSUES_LEGACY_CAP = 200; // api list-issues の --limit 指定時・--state closed|all の取得上限（#2130 以前の値のまま。open 引数なしだけが MAX_OPEN_ISSUES_LIMIT）
 const MAX_SUB_ISSUES_LIMIT = 500; // sub-issue 一覧のページネーション上限（#1881: 無限ループ防止の安全弁。GitHub の現行上限は親1つにつき100件なので通常は到達しない）
 const PRI_COLORS = { p1: 'B60205', p2: 'FBCA04', p3: '0075CA' };
@@ -518,6 +519,7 @@ const MESSAGES = {
     'list.project_children_header': '## 📁 プロジェクト #{parent} の子タスク（{n}件）',
     'list.no_children': '  （子タスクなし）',
     'warn.open_issue_limit': '⚠️ オープン Issue の取得が上限の {limit} 件に達したため、この一覧にはすべての Issue が表示されていません。',
+    'warn.closed_issue_limit': '⚠️ クローズ済み Issue の取得が上限の {limit} 件に達したため、このレポートの完了件数は実際より少ない可能性があります。期間を短くすると正確に集計できます。',
     'warn.sub_issue_list_limit': '⚠️ #{parent} の sub-issue が {limit} 件の上限に達しました。一部が一覧から欠落している可能性があります。',
   },
   en: {
@@ -907,6 +909,7 @@ const MESSAGES = {
     'list.project_children_header': '## 📁 Project #{parent} subtasks ({n})',
     'list.no_children': '  (No subtasks)',
     'warn.open_issue_limit': '⚠️ Open issue fetching reached the limit of {limit}, so this list does not show all open issues.',
+    'warn.closed_issue_limit': '⚠️ Closed issue fetching reached the limit of {limit}, so the completed counts in this report may be lower than actual. Use a shorter period for exact counts.',
     'warn.sub_issue_list_limit': '⚠️ Sub-issues for #{parent} reached the limit of {limit}. Some may be missing from the list.',
   }
 };
@@ -4571,6 +4574,37 @@ async function fetchRecentClosed(octokit, owner, repo, limit, fields) {
   });
 }
 
+// report 用: sinceIso 以降に更新された closed Issue を全ページ取得する（#2138）。
+// fetchRecentClosed（件数指定）は listForRepo の既定順 = 作成日の降順で先頭から数えるため、
+// 「期間内に閉じた Issue」を取り切れる保証がない（古く作られて最近閉じた Issue は後ろのページにある）。
+// GitHub の since は updated_at で絞り込む。close すると updated_at も更新されるので
+// 「closed_at >= since」の Issue は必ず含まれる（閉じた後に更新された古い Issue も混ざるが、report() が closedAt で絞る）。
+// 並び順は既定（created 降順）のまま: updated で並べると取得中の更新でページ間を移動し、取りこぼしうるため。
+// 上限 MAX_CLOSED_SINCE_LIMIT で打ち切ったときは fetchAllOpen と同じく stderr に警告する（上限到達の判定も同じ）。
+// fetchAllOpen / fetchRecentClosed と違い、PR だけのページでは止めない（data が100件未満のときだけ終了）。
+// 戻り値は fetchRecentClosed(..., null) と同じ形。
+async function fetchClosedSince(octokit, owner, repo, sinceIso) {
+  const allIssues = [];
+  let page = 1;
+  let truncated = false;
+  while (true) {
+    if (allIssues.length >= MAX_CLOSED_SINCE_LIMIT) { truncated = true; break; }
+    const { data } = await octokit.issues.listForRepo({ owner, repo, state: 'closed', since: sinceIso, per_page: 100, page });
+    const issues = data.filter(i => !i.pull_request);
+    allIssues.push(...issues);
+    if (data.length < 100) break;
+    page++;
+  }
+  if (truncated) {
+    if (allIssues.length > MAX_CLOSED_SINCE_LIMIT) allIssues.length = MAX_CLOSED_SINCE_LIMIT;
+    process.stderr.write(tpl('warn.closed_issue_limit', { limit: MAX_CLOSED_SINCE_LIMIT })+'\n');
+  }
+  return allIssues.map(i => ({
+    number: i.number, closedAt: i.closed_at||null, title: i.title, body: i.body||'',
+    labels: i.labels.map(l => ({name:l.name})),
+  }));
+}
+
 // close 後の共通後処理（recur再作成 + depends_on昇格 + プロジェクト昇格候補ヒント）
 // runDone（単体完了）と runBulk の done 分岐（一括完了）の両方から呼ばれる。
 // #1642: bulk done がこの後処理をスキップしていたため、リカレンス付きIssueを
@@ -5549,9 +5583,15 @@ async function runReport(octokit, owner, repo, tokens) {
       tpl('error.report_invalid_sub', { sub })
     ]);
   }
+  // #2138: closed は件数（旧: 200件固定）ではなく期間の開始日で取る。開始日は report() と同じ計算
+  // （days の正規化 `parseInt || 7` も同じ）。JST の日付境界とタイムゾーン差を吸収するため1日手前から取る
+  // （範囲外は report() が closedAt の JST 日付で落とす）
+  const sinceDate = new Date(todayStr);
+  sinceDate.setDate(sinceDate.getDate() - (parseInt(days) || 7) - 1);
+  const sinceIso = sinceDate.toISOString().slice(0, 10) + 'T00:00:00Z';
   const [open, closed] = await Promise.all([
     fetchAllOpen(octokit, owner, repo, { parallel: true }),
-    fetchRecentClosed(octokit, owner, repo, 200, null)
+    fetchClosedSince(octokit, owner, repo, sinceIso)
   ]);
   report({ open, closed, today: todayStr, days });
 }
@@ -6708,7 +6748,7 @@ module.exports = {
   findBracketedGtdLabel, guardBracketedGtdLabel, findUnsupportedFlagField, guardUnsupportedFlag,
   guardExtraPositional, parseArgs, getToday, toJstDateStr, ensureLabel, fetchAndParseIssue,
   addSubIssue, listSubIssues, removeSubIssue, updateIssueBody, runOut, runAdd, runList,
-  fetchAllOpen, fetchOpenByCategory, labelNamesForCategory, fetchRecentClosed, createRecurIssue, postDoneProcessing, runDone, execMoveGtd,
+  fetchAllOpen, fetchOpenByCategory, labelNamesForCategory, fetchRecentClosed, fetchClosedSince, createRecurIssue, postDoneProcessing, runDone, execMoveGtd,
   removeLabelIfPresent, execRemoveLabels, runMove, sanitizeCommentBody, assertCommentBody, createCommentSanitized, runComment, runEdit,
   runDue, runDesc, runRecur, runLink, runRename, runPriority, normalizeTagTokens, validateTagLabels, renameCtxLabel,
   runTag, runUntag, runLabel, runSearch, runArchive, runDashboard, runToday, runEisenhower,

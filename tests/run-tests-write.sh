@@ -7333,6 +7333,143 @@ if [ "$W64_N" -lt 100 ]; then
 fi
 rm -rf "$W64_HOME"
 
+# ── §W65 Issue #2138: report の closed 取得を件数（200件固定）から期間（since）に変え、上限で打ち切ったら必ず警告 ──
+# 型: 「固定の件数上限で取得を打ち切る」（§W62 と同型）。旧 runReport は fetchRecentClosed(..., 200) で
+# 作成日の降順の先頭 200 件しか見ず、`report 90d` など期間内の closed が 200 件を超えると黙って欠けていた。
+# 新: fetchClosedSince が since（期間の開始日の1日前 00:00Z）以降の closed を全ページ取り、MAX_CLOSED_SINCE_LIMIT（3000）で
+# 打ち切ったときだけ stderr に警告する。検証は「完了件数 / 警告の有無 / closed の listForRepo の回数と引数」。
+# スタブはメソッド単位のキューなので、応答は open の2ページ（1ページ目・先読みの2ページ目。どちらも空）→ closed のページ列の順に並べる。
+# スタブは since で絞らないため、期間外の closed も応答に混ぜて report() 側で落ちることを確かめる。
+# 安全条件: HOME を一時ディレクトリに隔離し、OCTOKIT_STUB_ENV でスタブを指定する。応答は件数が多いのでファイル（@path）で渡す。
+echo ""
+echo "§W65  report の closed 取得は期間ベース・上限 3000（Issue #2138）"
+
+W65_P0=$PASS
+W65_HOME=$(mktemp -d /tmp/todo-test-w65-XXXXXX)
+W65_LOG="${W65_HOME}/stub.jsonl"
+W65_RESP="${W65_HOME}/resp.json"
+
+# w65_resp <segments-json>: segments は [[件数, closed_at, PRなら1], ...]。番号は降順（= 作成日の降順）で並べ、100件ずつのページにする。
+# 最終ページが満杯なら空ページを1つ足す（次ページの要求に応える）
+w65_resp() {
+  node -e '
+    const segs = JSON.parse(process.argv[1]);
+    const items = []; let num = 900000;
+    for (const [n, closedAt, pr] of segs) for (let k = 0; k < n; k++, num--)
+      items.push({ number: num, id: num + 9000, title: "W65 " + num, body: "", labels: [{ name: "🎯 next" }], state: "closed", closed_at: closedAt, updated_at: closedAt, ...(pr ? { pull_request: {} } : {}) });
+    const pages = [{ data: [] }, { data: [] }];
+    for (let i = 0; i < items.length; i += 100) pages.push({ data: items.slice(i, i + 100) });
+    if (items.length % 100 === 0) pages.push({ data: [] });
+    require("fs").writeFileSync(process.argv[2], JSON.stringify({ "issues.listForRepo": pages }));
+  ' "$1" "$W65_RESP"
+}
+# w65_run <segments-json> <lang> -- <args...>: W65_OUT / W65_ERR / W65_EC / W65_COUNT（report の完了件数）/
+#   W65_CALLS（closed の listForRepo 回数）/ W65_SINCE（closed 呼び出しの since。全回同じなら1つ、違えば空白区切り）/ W65_PERPAGE
+w65_run() {
+  case "$W65_HOME" in
+    /tmp/todo-test-w65-??????) : ;;
+    *) printf "  ❌ W65 隔離 HOME を作れていないため実行しない (%s)\n" "$W65_HOME"; FAIL=$((FAIL+1)); W65_COUNT=ERR; W65_CALLS=ERR; W65_EC=99; return 1 ;;
+  esac
+  : > "$W65_LOG"
+  local segs="$1" lang="$2"; shift 3
+  w65_resp "$segs"
+  W65_OUT=$(env -u LANG_ENV HOME="$W65_HOME" LANG_ENV="$lang" OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="@${W65_RESP}" OCTOKIT_STUB_LOG_ENV="$W65_LOG" \
+    TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-11-01 \
+    node "$ENGINE" "$@" 2>"${W65_HOME}/stderr"); W65_EC=$?
+  W65_ERR=$(cat "${W65_HOME}/stderr")
+  W65_COUNT=$(printf '%s\n' "$W65_OUT" | node -e '
+    let t = ""; process.stdin.on("data", d => t += d).on("end", () => {
+      const m = t.match(/\| (?:Completed tasks|完了タスク数) \| \*\*(\d+)(?:件)?\*\* \|/);
+      process.stdout.write(m ? m[1] : "NONE");
+    });')
+  local info; info=$(LOGFILE="$W65_LOG" node -e '
+    const fs = require("fs");
+    const calls = fs.readFileSync(process.env.LOGFILE, "utf8").trim().split("\n").filter(Boolean).map(l => JSON.parse(l))
+      .filter(c => c.method === "issues.listForRepo" && c.args.state === "closed");
+    const uniq = a => [...new Set(a.map(v => v === undefined ? "none" : String(v)))].join(",");
+    process.stdout.write(calls.length + " " + (calls.length ? uniq(calls.map(c => c.args.since)) : "-") + " " + (calls.length ? uniq(calls.map(c => c.args.per_page)) : "-"));')
+  set -- $info; W65_CALLS="$1"; W65_SINCE="$2"; W65_PERPAGE="$3"
+}
+w65_warned() { case "$W65_ERR" in *"limit of 3000"*|*"上限の 3000 件"*) echo 1 ;; *) echo 0 ;; esac; }
+
+# --- 核心: 期間内の closed が 200 件を超える ---
+w65_run '[[450,"2026-10-01T03:00:00Z"]]' en -- run report 90d
+assert_eq "W65-1【核心】report 90d・期間内 closed 450件: 完了件数 450（旧は200で欠けた）" "450" "$W65_COUNT"
+assert_eq "W65-1 警告なし" "0" "$(w65_warned)"
+assert_eq "W65-1 closed の listForRepo 5回（100×4＋50）" "5" "$W65_CALLS"
+assert_eq "W65-1 since は開始日 2026-08-03 の1日前 00:00Z（全ページ同じ）" "2026-08-02T00:00:00Z" "$W65_SINCE"
+assert_eq "W65-1 per_page 100" "100" "$W65_PERPAGE"
+assert_eq "W65-1 exit 0" "0" "$W65_EC"
+# --- 核心: 作成日の降順で後ろのページにある「古く作られて最近閉じた」Issue ---
+# 先頭 250 件は期間外（since 以降に更新されたが閉じたのは期間前）、その後ろに期間内の 10 件。旧は先頭200件で止まり 0 件だった
+w65_run '[[250,"2026-07-01T00:00:00Z"],[10,"2026-10-30T00:00:00Z"]]' en -- run report 90d
+assert_eq "W65-2【核心】3ページ目にある期間内 closed 10件を数える／期間外 250件は数えない" "10" "$W65_COUNT"
+assert_eq "W65-2 closed の listForRepo 3回" "3" "$W65_CALLS"
+assert_eq "W65-2 警告なし" "0" "$(w65_warned)"
+# --- 期間の境界（JST の日付で判定。since は1日手前から取るので境界の前後とも取得され、report() が落とす）---
+# 90d の開始日は 2026-08-03（JST）。2026-08-02T15:00:00Z = 08-03 00:00 JST は数え、2026-08-02T14:59:59Z = 08-02 23:59 JST は数えない
+w65_run '[[1,"2026-08-02T15:00:00Z"],[1,"2026-08-02T14:59:59Z"],[1,"2026-11-01T14:59:59Z"],[1,"2026-11-01T15:00:00Z"]]' en -- run report 90d
+assert_eq "W65-3 境界: 開始日 00:00 JST と今日 23:59 JST の2件だけ数える" "2" "$W65_COUNT"
+# --- 期間の指定ごとの since ---
+w65_run '[[30,"2026-10-30T00:00:00Z"]]' en -- run report
+assert_eq "W65-4 report（weekly 既定）: 完了件数 30" "30" "$W65_COUNT"
+assert_eq "W65-4 since は開始日 2026-10-25 の1日前" "2026-10-24T00:00:00Z" "$W65_SINCE"
+assert_eq "W65-4 closed の listForRepo 1回" "1" "$W65_CALLS"
+w65_run '[[30,"2026-10-30T00:00:00Z"]]' en -- run report monthly
+assert_eq "W65-5 report monthly: since は開始日 2026-10-02 の1日前" "2026-10-01T00:00:00Z" "$W65_SINCE"
+w65_run '[[30,"2026-10-30T00:00:00Z"]]' en -- run report 365d
+assert_eq "W65-6 report 365d: since は開始日 2025-11-01 の1日前" "2025-10-31T00:00:00Z" "$W65_SINCE"
+# --- 100 件ちょうど: 次ページ（空）を確かめて終わる ---
+w65_run '[[100,"2026-10-30T00:00:00Z"]]' en -- run report 30d
+assert_eq "W65-7 100件ちょうど: 完了件数 100" "100" "$W65_COUNT"
+assert_eq "W65-7 100件ちょうど: closed の listForRepo 2回（2ページ目は空）" "2" "$W65_CALLS"
+# --- PR だけのページでは止めない（fetchRecentClosed は PR だけのページで止まる）---
+w65_run '[[100,"2026-10-30T00:00:00Z",1],[30,"2026-10-30T00:00:00Z"]]' en -- run report 30d
+assert_eq "W65-8 1ページ目が PR 100件・2ページ目に Issue 30件: 30件を数える" "30" "$W65_COUNT"
+assert_eq "W65-8 closed の listForRepo 2回" "2" "$W65_CALLS"
+w65_run '[[50,"2026-10-30T00:00:00Z",1],[50,"2026-10-30T00:00:00Z"]]' en -- run report 30d
+assert_eq "W65-9 PR 混在ページ: Issue だけ数える" "50" "$W65_COUNT"
+# --- 上限 3000 ---
+w65_run '[[2999,"2026-10-30T00:00:00Z"]]' en -- run report 400d
+assert_eq "W65-10 2999件: 全件数える" "2999" "$W65_COUNT"
+assert_eq "W65-10 2999件: 警告なし" "0" "$(w65_warned)"
+assert_eq "W65-10 2999件: closed の listForRepo 30回" "30" "$W65_CALLS"
+w65_run '[[3000,"2026-10-30T00:00:00Z"]]' en -- run report 400d
+assert_eq "W65-11 3000件ちょうど: 3000件" "3000" "$W65_COUNT"
+assert_eq "W65-11 3000件ちょうど: 警告あり（最後のページが満杯で先があるか判別できないため打ち切り扱い。fetchAllOpen と同じ）" "1" "$(w65_warned)"
+assert_eq "W65-11 3000件ちょうど: closed の listForRepo 30回（31ページ目は要求しない）" "30" "$W65_CALLS"
+w65_run '[[3001,"2026-10-30T00:00:00Z"]]' en -- run report 400d
+assert_eq "W65-12 3001件: 3000件で切る" "3000" "$W65_COUNT"
+assert_eq "W65-12 3001件: 警告あり" "1" "$(w65_warned)"
+assert_eq "W65-12 3001件: closed の listForRepo 30回" "30" "$W65_CALLS"
+assert_eq "W65-12 3001件: exit 0（警告して集計は出す）" "0" "$W65_EC"
+w65_run '[[3150,"2026-10-30T00:00:00Z",0]]' en -- run report 400d
+assert_eq "W65-13 3150件: 3000件で切る" "3000" "$W65_COUNT"
+assert_eq "W65-13 3150件: 警告あり" "1" "$(w65_warned)"
+# PR 混在で上限をまたぐ（30ページで 2999 件 → 31ページ目で 3099 件）: 3000 に揃えて警告
+w65_run '[[1,"2026-10-30T00:00:00Z",1],[3099,"2026-10-30T00:00:00Z"]]' en -- run report 400d
+assert_eq "W65-14 PR 混在で上限をまたぐ: 3000 に揃える" "3000" "$W65_COUNT"
+assert_eq "W65-14 PR 混在で上限をまたぐ: 警告あり" "1" "$(w65_warned)"
+# --- 警告文言（ja / en）---
+w65_run '[[3001,"2026-10-30T00:00:00Z"]]' en -- run report 400d
+assert_contains "W65-15 警告(en)" "Closed issue fetching reached the limit of 3000, so the completed counts in this report may be lower than actual. Use a shorter period for exact counts." "$W65_ERR"
+w65_run '[[3001,"2026-10-30T00:00:00Z"]]' ja -- run report 400d
+assert_contains "W65-16 警告(ja)" "クローズ済み Issue の取得が上限の 3000 件に達したため、このレポートの完了件数は実際より少ない可能性があります。期間を短くすると正確に集計できます。" "$W65_ERR"
+assert_eq "W65-16 ja の完了件数も 3000" "3000" "$W65_COUNT"
+# --- 変えないもの: report 以外の closed 取得（fetchRecentClosed）は件数指定のまま・since なし ---
+w65_run '[[60,"2026-10-30T00:00:00Z"]]' en -- run stats
+assert_eq "W65-17 stats: closed の listForRepo 1回（変えない）" "1" "$W65_CALLS"
+assert_eq "W65-17 stats: since なし（変えない）" "none" "$W65_SINCE"
+assert_eq "W65-17 stats: per_page 50（変えない）" "50" "$W65_PERPAGE"
+w65_run '[[60,"2026-10-30T00:00:00Z"]]' en -- run dashboard
+assert_eq "W65-18 dashboard: since なし・per_page 30（変えない）" "none 30" "${W65_SINCE} ${W65_PERPAGE}"
+
+W65_N=$((PASS-W65_P0))
+if [ "$W65_N" -lt 41 ]; then
+  printf "  ❌ §W65 アサーション数が少なすぎる (%s 件。41 件未満は検査の空振りとみなす)\n" "$W65_N"; FAIL=$((FAIL+1))
+fi
+rm -rf "$W65_HOME"
+
 echo ""
 echo "=========================================="
 W_TOTAL=$((PASS+FAIL))
