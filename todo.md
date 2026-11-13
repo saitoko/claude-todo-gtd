@@ -91,14 +91,17 @@ GTD ラベルは `next` / `routine` / `inbox` / `waiting` / `someday` / `referen
 > 判定対象は「`--` + 英字始まり + 英数字/ハイフンのみで構成される1語」に限る。Markdown の水平線（`---`）や空白・日本語を含む文字列（`"--body を説明する"`）は自由記述として通る。
 >
 > **対象外（未知フラグとしてはエラーにならないもの）**:
-> - 上の対象コマンド・下記の個別ガード対象以外（`stats` / `dashboard` / `today` / `eisenhower` / `help` / `schema` / `promote` / `weekly-project-audit` など、そもそも引数を受け取らない設計のコマンド）は該当なし
+> - 上の対象コマンド・下記の個別ガード対象以外（`stats` / `dashboard` / `today` / `eisenhower` / `help` / `schema` など、そもそも引数を受け取らない読み取り専用のコマンド）は該当なし
 > - `tag` / `untag` / `bulk tag` / `bulk untag` の `-` 始まりトークンは、専用の「オプション指定に見えます」エラーで従来どおり止まる（エラーにはなるが文言が異なる）
 > - `unlink <#> [--force]` の `--force` はタイプミス（`--forse` 等）であれば未知フラグとしてエラー終了する（17種の値付きフラグとは別の単発フラグのため上の対象コマンド一覧には含めていないが、`--force` 以外の未知の `--` 引数は個別にガードしている）
 > - `show <#> [--json]` の `--json` はタイプミス（`--jsn` 等）であれば未知フラグとしてエラー終了する（`unlink` と同型。第2の位置引数スロットを持たないため位置引数の余剰チェックはない）
-> - `migrate sub-issue [--dry-run]` の `--dry-run` はタイプミス（`--dryrun` 等）であれば未知フラグとしてエラー終了する（デフォルトが本実行側のため、タイプミス放置は #1937 の `unlink --force` より実害が大きい）
-> - `review-someday <#>` は位置引数以外の `--` 始まり引数を未知フラグとしてエラー終了する（`unlink` と同型。位置引数の余剰チェックはない）
+> - `migrate sub-issue [--dry-run]` は `--dry-run` 以外のトークンをすべてエラー終了する。`--dryrun` のような `--` 始まりのタイプミスは未知フラグ、`dry-run`（ダッシュ忘れ）・`-n` のような `--` で始まらない語は余分な引数として止める（デフォルトが本実行側のため、タイプミス放置は #1937 の `unlink --force` より実害が大きい）
+> - `promote` / `weekly-project-audit` は引数を受け付けない。`promote --dry-run` や `promote 42` のように何かを渡すと、本実行せずにエラー終了する
+> - 番号や名前を固定の位置で受け取る書き込み系コマンド（`done` / `move` / `edit` / `label add` / `label delete` / `label rename` / `tag rename` / `template save` / `template delete` / `archive reopen` / `view delete` / `bulk move` / `bulk priority` / `unlink` / `review-someday`）は、位置引数の後ろに余った語（`done 42 abc`・`done 42 -x` のような `--` で始まらないものを含む）を黙って捨てず、「余分な引数があります」でエラー終了する。`template save` のインライン形式はタイトルを保存できないため、`template save <名前> next 週次レビュー` の「週次レビュー」も同じエラーになる（タイトルは `template use` のときに指定する）。`unlink` は `--force` だけを許可する
 > - `promote-project <#> [--outcome "タイトル"]` の `--outcome` はタイプミス（`--outcom` 等）であれば未知フラグとしてエラー終了する。値のクォート漏れ（`--outcome New Marketing Campaign` のような複数トークン）も位置引数の余剰としてエラー終了する
-> - `view save <名前> [GTD] [@ctx] [p1|p2|p3]` は GTD ラベル・優先度・`@ctx` のいずれにも一致しないトークンを、フラグ字面（`--` 始まり）なら未知フラグ、それ以外なら位置引数の余剰としてエラー終了する（書き込み先はローカル `views.json` のみ）。`view use` / `view delete` / `view list` は対象外（現状維持）
+> - `view save <名前> [GTD] [@ctx] [p1|p2|p3]` は GTD ラベル・優先度・`@ctx` のいずれにも一致しないトークンを、フラグ字面（`--` 始まり）なら未知フラグ、それ以外なら位置引数の余剰としてエラー終了する（書き込み先はローカル `views.json` のみ）。`view use` / `view list` は対象外（現状維持）。`view delete <名前>` は名前の後ろの余剰語をエラー終了する
+>
+> **同じ値付きフラグの重複指定**: 値を取るフラグ（`--label` を除く）を**異なる値で2回**指定すると、後の値を黙って採用せず「複数回指定されています」でエラー終了する（例: `edit 42 --due 2026-10-01 --due 2026-10-02`）。同じ値の重複は通る。`--p1` / `--p2` / `--p3` / `--priority` は同じ優先度の指定として扱い、異なる値の混在（`--p1 --priority p3`）はエラー、同じ値（`--p1 --priority p1`）は通る。`--body` と `--body-file` は別のフラグなので併用でき、従来どおり `--body-file` が優先される。`--label` は複数指定が仕様のため対象外。
 >
 > **17種の値付きフラグ（`--due` / `--desc` / `--recur` / `--project` / `--priority` / `--estimate` / `--actual` / `--due-offset` / `--color` / `--activate` / `--before` / `--depends-on` / `--resume-condition` / `--note` / `--body` / `--body-file` / `--label`）と `@ctx` / `#tag`（`parseArgs()` が消費する位置トークン）に共通の注記**:
 > - 対象コマンドであっても、**別のコマンドでは有効だがそのコマンドが読まないフラグ・トークン**（例: `add` の `--note` / `--actual` / `--color`、`edit` の `--note`、`list` の `--due`、`done` / `move` / `edit` / `label add` / `bulk done` の `@ctx` / `#tag`）を渡すと、**「このコマンドでは使えません」というエラーで終了する**（`--` の綴りミスと区別されるが、いずれもエラー終了する点は同じ）
@@ -138,7 +141,7 @@ GTD ラベルは `next` / `routine` / `inbox` / `waiting` / `someday` / `referen
 
 | コマンド | 引数 | 説明 |
 |---------|------|------|
-| `comment` | `<#> <テキスト> [--body "本文"] [--body-file <path>]` | Issue にコメントを追加（任意タイミング）。`--body`/`--body-file` で本文を直接指定可能（`--body-file` が優先、`add` と同じ挙動）。位置引数の `<テキスト>` も従来通り使用可（`--body`/`--body-file` 未指定時）。`--body`/`--body-file` 以外の `--` で始まる引数は未知フラグとしてエラー終了する（本文として黙って投稿しない）。書き込み系（`run_in_background: true`） |
+| `comment` | `<#> <テキスト> [--body "本文"] [--body-file <path>]` | Issue にコメントを追加（任意タイミング）。`--body`/`--body-file` で本文を直接指定可能（`--body-file` が優先、`add` と同じ挙動）。位置引数の `<テキスト>` も従来通り使用可（`--body`/`--body-file` 未指定時）。`--body`/`--body-file` 以外の `--` で始まる引数は未知フラグとしてエラー終了する（本文として黙って投稿しない）。`<テキスト>` が複数の語に分かれていたときは、`desc` / `rename` と同じく空白でつないで1つの本文にする（`comment 42 hello world` は「hello world」を投稿する）。`--body` / `--body-file` を指定したときは位置引数の語は使われない。書き込み系（`run_in_background: true`） |
 
 ユーザーが「#N の経緯まとめて」「#N の状況確認」「#N にこれまでのメモ一覧を見せて」のような自然言語で依頼した場合は、
 `bash ~/.claude/todo.sh api list-comments <N>` を実行し、取得結果を要約して返す。
