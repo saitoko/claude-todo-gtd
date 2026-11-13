@@ -369,6 +369,11 @@ const MESSAGES = {
     'error.extra_positional': 'エラー: 余分な引数があります: {extra}',
     'error.extra_positional_hint_quote': 'ヒント: 値に空白が含まれる場合はクォートしてください: {example}',
     'error.extra_positional_hint_single': 'ヒント: このコマンドは値を1つだけ指定できます: {example}',
+    'error.extra_positional_hint_none': 'ヒント: このコマンドは引数を受け付けません: {example}',
+    'error.extra_positional_hint_flags_only': 'ヒント: このコマンドが受け付けるのは記載のオプションだけです: {example}',
+    'error.extra_positional_hint_template_save': 'ヒント: テンプレートにタイトルは保存できません（タイトルは template use のときに指定します）: {example}',
+    'error.duplicate_flag': 'エラー: {flag} が異なる値で複数回指定されています: {first} / {second}',
+    'error.duplicate_flag_hint': 'ヒント: 値は1つだけ指定してください（同じ値の重複は許可されます。--label は複数回指定できます）。',
     'hint.project_outcome': '💡 ヒント: プロジェクト名は「〜している状態」「〜が完了している」のような\n   成果物（outcome）の形で書くと Next Action を導出しやすくなります。',
     'label.desc_context': 'コンテキスト',
     'label.desc_tag': 'タグ',
@@ -759,6 +764,11 @@ const MESSAGES = {
     'error.extra_positional': 'Error: extra arguments: {extra}',
     'error.extra_positional_hint_quote': 'Hint: if the value contains spaces, quote it: {example}',
     'error.extra_positional_hint_single': 'Hint: this command accepts only one value: {example}',
+    'error.extra_positional_hint_none': 'Hint: this command takes no arguments: {example}',
+    'error.extra_positional_hint_flags_only': 'Hint: this command accepts only the options shown in its usage: {example}',
+    'error.extra_positional_hint_template_save': 'Hint: a template cannot store a title (give the title when you run template use): {example}',
+    'error.duplicate_flag': 'Error: {flag} was given more than once with different values: {first} / {second}',
+    'error.duplicate_flag_hint': 'Hint: give the value only once (repeating the same value is allowed; --label may be repeated).',
     'hint.project_outcome': '💡 Hint: Project titles are easier to derive Next Actions from when written\n   as an outcome (e.g. "X is done", "X has been completed").',
     'label.desc_context': 'Context',
     'label.desc_tag': 'Tag',
@@ -3625,6 +3635,21 @@ function guardExtraPositional(extraTokens, usage, hintKey, example) {
   ]);
 }
 
+// 固定の位置引数だけを取るハンドラ用（#2113）。位置引数の後ろに残ったトークンを「すべて」拒否する。
+// guardUnknownFlag() は `--` で始まる語しか見ないため、単ダッシュの `-x` や typo の `dry-run` / `-n` は
+// 検出できない。固定の位置引数だけを取るハンドラでは、余ったトークンは必ず入力ミスなので、
+// フラグ字面（不明なフラグ）→ それ以外すべて（余分な引数）の順で止める。
+//   tokens       : 固定の位置引数より後ろに残ったトークン（tokens.slice(N) 等）
+//   allowedFlags : そのハンドラが自前で読む既知フラグ（unlink の --force 等）。余分な引数としては数えない
+//   hintKey      : 'error.extra_positional_hint_single' / '_none' / '_flags_only' / '_template_save'
+//   example      : 修正済みの実行例（呼び出し側が組み立てる）
+// 関数宣言で書くこと（guardUnknownFlag と同じ理由。ファイル冒頭 24-35行参照）。
+function guardNoExtra(tokens, allowedFlags, usage, hintKey, example) {
+  const allowed = allowedFlags || [];
+  guardUnknownFlag(tokens, allowed, usage, 'error.unknown_flag_hint_options');
+  guardExtraPositional(tokens.filter(tok => allowed.indexOf(tok) < 0), usage, hintKey, example);
+}
+
 // /todo add の Usage 行（未知フラグ検出時に stderr へ出す）。
 // DEVELOPMENT.md §翻訳方針「Usage: 文字列は常時英語で統一」に従い t() を通さない。
 // 掲載範囲: runAdd が実際に参照するフラグのみを載せる。parseArgs は --actual / --note /
@@ -3677,7 +3702,10 @@ const HINT_TITLE = 'error.unknown_flag_hint';          // 自由記述のタイ�
 const HINT_BODY = 'error.unknown_flag_hint_body';      // 自由記述の本文を持つ（comment / desc）
 const HINT_OPTIONS = 'error.unknown_flag_hint_options'; // 上記以外
 const EXTRA_QUOTE = 'error.extra_positional_hint_quote';   // 値が空白を含みうる（due / recur / activate / --outcome）
-const EXTRA_SINGLE = 'error.extra_positional_hint_single'; // 値が単一トークン（link / priority / view save）
+const EXTRA_SINGLE = 'error.extra_positional_hint_single'; // 値が単一トークン（link / priority / view save / done / move / edit など）
+const EXTRA_NONE = 'error.extra_positional_hint_none';     // 引数を取らない（promote / weekly-project-audit。#2113）
+const EXTRA_FLAGS_ONLY = 'error.extra_positional_hint_flags_only'; // 位置引数を取らず、既知フラグだけ受け付ける（unlink / migrate sub-issue。#2113）
+const EXTRA_TEMPLATE_SAVE = 'error.extra_positional_hint_template_save'; // template save のインライン形式（タイトルは保存できない。#2113）
 const NO_ARGS_NOTE = 'runMain がトークンを渡さないため、引数は黙って無視される。塞ぐと挙動が変わるので R2 では残した';
 const TAG_EXEMPT_NOTE = 'normalizeTagTokens が - 始まりを error.option_like_token で弾く（#1686）。ガードを足すと文言が変わる（#1921 第2弾の決定）';
 const VIEW_NAME_NOTE = '名前の後ろのトークンを見ない（#1938 は view save だけを検査する）。塞ぐと挙動が変わるので R2 では残した';
@@ -3700,16 +3728,19 @@ const COMMAND_SPECS = {
   'done': {
     aliases: ['close'], helpKey: 'done', supportedFields: ['actual', 'note'],
     unknownFlag: { slots: { extra: HINT_OPTIONS } },
+    extraPositional: { hint: EXTRA_SINGLE },
   },
   'move': {
     helpKey: 'move', supportedFields: ['note'],
     unknownFlag: { slots: { extra: HINT_OPTIONS } },
+    extraPositional: { hint: EXTRA_SINGLE },
   },
   'edit': {
     helpKey: 'edit',
     supportedFields: ['due','recur','project','desc','estimate','before',
       'activate','dependsOn','resumeCondition','priority'],
     unknownFlag: { slots: { extra: HINT_OPTIONS } },
+    extraPositional: { hint: EXTRA_SINGLE },
   },
   'due': {
     helpKey: 'due', unknownFlag: { slots: { rest: HINT_OPTIONS } },
@@ -3733,9 +3764,12 @@ const COMMAND_SPECS = {
     helpKey: 'tag',
     unknownFlag: { exempt: TAG_EXEMPT_NOTE },
   },
-  // tag rename は label rename と共用の renameCtxLabel が old / new の位置だけを検査する。
-  // 3語目以降の余剰トークンは検査しない（label rename は slice(1) で検査しているので非対称）
-  'tag rename': { unknownFlag: { slots: { names: HINT_OPTIONS } } },
+  // tag rename は label rename と共用の renameCtxLabel が old / new の位置（names）と、
+  // 3語目以降の余剰トークン（rest。#2113 で追加）を検査する
+  'tag rename': {
+    unknownFlag: { slots: { names: HINT_OPTIONS, rest: HINT_OPTIONS } },
+    extraPositional: { hint: EXTRA_SINGLE },
+  },
   'untag': {
     helpKey: 'untag',
     unknownFlag: { exempt: TAG_EXEMPT_NOTE },
@@ -3745,11 +3779,12 @@ const COMMAND_SPECS = {
   'label add': {
     supportedFields: ['color'],
     unknownFlag: { slots: { name: HINT_OPTIONS, extra: HINT_OPTIONS } },
+    extraPositional: { hint: EXTRA_SINGLE },
   },
-  'label delete': { unknownFlag: { slots: { rest: HINT_OPTIONS } } },
+  'label delete': { unknownFlag: { slots: { rest: HINT_OPTIONS } }, extraPositional: { hint: EXTRA_SINGLE } },
   // renameCtxLabel 内の検査（old / new）は、同じトークンを先に検査するこちらの slice(1) が
   // 先に発火するため、label rename の経路では到達しない（tag rename の経路で発火する）
-  'label rename': { unknownFlag: { slots: { rest: HINT_OPTIONS } } },
+  'label rename': { unknownFlag: { slots: { rest: HINT_OPTIONS } }, extraPositional: { hint: EXTRA_SINGLE } },
   // --json は先に除去してから検査する（許可リストには入れない）
   'search': { helpKey: 'search', unknownFlag: { slots: { tokens: HINT_OPTIONS } } },
   'archive': { helpKey: 'archive', unknownFlag: { exempt: PARENT_NOTE } },
@@ -3757,7 +3792,7 @@ const COMMAND_SPECS = {
     unknownFlag: { unguarded: 'サブコマンド省略時も同じ。tokens[1] が GTD でも @ctx でもなければフィルタなしで全件表示し、2語目以降も見ない。塞ぐと挙動が変わるので R2 では残した' },
   },
   'archive search': { unknownFlag: { slots: { rest: HINT_OPTIONS } } },
-  'archive reopen': { unknownFlag: { unguarded: 'tokens[2..] を見ない。塞ぐと挙動が変わるので R2 では残した' } },
+  'archive reopen': { unknownFlag: { slots: { rest: HINT_OPTIONS } }, extraPositional: { hint: EXTRA_SINGLE } },
   'dashboard': { aliases: ['dash'], helpKey: 'dashboard', unknownFlag: { unguarded: NO_ARGS_NOTE } },
   'today': { helpKey: 'today', unknownFlag: { unguarded: NO_ARGS_NOTE } },
   'eisenhower': { helpKey: 'eisenhower', unknownFlag: { unguarded: NO_ARGS_NOTE } },
@@ -3771,7 +3806,10 @@ const COMMAND_SPECS = {
   'template list': { unknownFlag: { slots: { rest: HINT_OPTIONS } } },
   'template show': { unknownFlag: { slots: { rest: HINT_OPTIONS } } },
   // name スロットは save-from 形式・インライン形式の両方に効く共有の検査（分岐より前）
-  'template save from': { unknownFlag: { slots: { name: HINT_OPTIONS, rest: HINT_OPTIONS } } },
+  'template save from': {
+    unknownFlag: { slots: { name: HINT_OPTIONS, rest: HINT_OPTIONS } },
+    extraPositional: { hint: EXTRA_SINGLE },
+  },
   // #1934 パート1.5 / #1936: @ctx・#tag はいずれも add / list / template save
   // （インライン形式・save-from 形式の両方）で読まれる。旧実装は #tag だけ
   // template save から読んでいなかった非対称があったが #1936 で解消済み。
@@ -3779,10 +3817,11 @@ const COMMAND_SPECS = {
   'template save': {
     supportedFields: ['due','recur','project','desc','dueOffset','priority','contexts','tags'],
     unknownFlag: { slots: { name: HINT_OPTIONS, extra: HINT_OPTIONS } },
+    extraPositional: { hint: EXTRA_TEMPLATE_SAVE },
   },
   // title スロットはテンプレートの上書きタイトル（自由記述）なのでタイトル向けヒント
   'template use': { unknownFlag: { slots: { name: HINT_OPTIONS, title: HINT_TITLE } } },
-  'template delete': { unknownFlag: { slots: { rest: HINT_OPTIONS } } },
+  'template delete': { unknownFlag: { slots: { rest: HINT_OPTIONS } }, extraPositional: { hint: EXTRA_SINGLE } },
   'schema': { helpKey: 'schema', unknownFlag: { unguarded: NO_ARGS_NOTE } },
   'show': {
     helpKey: 'show', allowedFlags: ['--json'],
@@ -3795,7 +3834,7 @@ const COMMAND_SPECS = {
     unknownFlag: { slots: { unmatched: HINT_OPTIONS } },
     extraPositional: { hint: EXTRA_SINGLE },
   },
-  'view delete': { unknownFlag: { unguarded: VIEW_NAME_NOTE } },
+  'view delete': { unknownFlag: { slots: { rest: HINT_OPTIONS } }, extraPositional: { hint: EXTRA_SINGLE } },
   // view <name>（use を省略した形）も同じ経路
   'view use': { unknownFlag: { unguarded: VIEW_NAME_NOTE } },
   'bulk': { helpKey: 'bulk', unknownFlag: { exempt: PARENT_NOTE } },
@@ -3803,15 +3842,16 @@ const COMMAND_SPECS = {
     supportedFields: ['actual'],
     unknownFlag: { slots: { extra: HINT_OPTIONS } },
   },
-  'bulk move': { unknownFlag: { slots: { rest: HINT_OPTIONS } } },
+  'bulk move': { unknownFlag: { slots: { rest: HINT_OPTIONS } }, extraPositional: { hint: EXTRA_SINGLE } },
   'bulk tag': {
     unknownFlag: { exempt: TAG_EXEMPT_NOTE },
   },
   'bulk untag': {
     unknownFlag: { exempt: TAG_EXEMPT_NOTE },
   },
-  'bulk priority': { unknownFlag: { slots: { rest: HINT_OPTIONS } } },
-  'promote': { helpKey: 'promote', unknownFlag: { unguarded: NO_ARGS_NOTE } },
+  'bulk priority': { unknownFlag: { slots: { rest: HINT_OPTIONS } }, extraPositional: { hint: EXTRA_SINGLE } },
+  // 引数を取らないので、余ったトークンはすべて拒否する（#2113。`promote --dry-run` が本実行になっていた）
+  'promote': { helpKey: 'promote', unknownFlag: { slots: { rest: HINT_OPTIONS } }, extraPositional: { hint: EXTRA_NONE } },
   'promote-project': {
     helpKey: 'promote_project', allowedFlags: ['--outcome'],
     unknownFlag: { slots: { rest: HINT_OPTIONS } },
@@ -3820,13 +3860,22 @@ const COMMAND_SPECS = {
   'unlink': {
     helpKey: 'unlink', allowedFlags: ['--force'],
     unknownFlag: { slots: { rest: HINT_OPTIONS } },
+    extraPositional: { hint: EXTRA_FLAGS_ONLY, when: '--force 以外のトークンがあるとき（--force は許可フラグとして除外して検査する）' },
   },
-  'review-someday': { helpKey: 'review_someday', unknownFlag: { slots: { rest: HINT_OPTIONS } } },
-  'weekly-project-audit': { helpKey: 'weekly_project_audit', unknownFlag: { unguarded: NO_ARGS_NOTE } },
+  'review-someday': {
+    helpKey: 'review_someday', unknownFlag: { slots: { rest: HINT_OPTIONS } },
+    extraPositional: { hint: EXTRA_SINGLE },
+  },
+  'weekly-project-audit': {
+    helpKey: 'weekly_project_audit', unknownFlag: { slots: { rest: HINT_OPTIONS } },
+    extraPositional: { hint: EXTRA_NONE },
+  },
   'migrate': { helpKey: 'migrate', unknownFlag: { exempt: PARENT_NOTE } },
   'migrate sub-issue': {
     allowedFlags: ['--dry-run'],
     unknownFlag: { slots: { tokens: HINT_OPTIONS } },
+    // `dry-run` / `-n` のような typo は `--` 始まりの字面ではないので、--dry-run 以外のトークンをすべて拒否する（#2113）
+    extraPositional: { hint: EXTRA_FLAGS_ONLY },
   },
   // runMain 内に直書きのショートカット。edit へ合成引数 [番号, '--activate', 日付] で委譲するので、
   // edit 側のガードは発火しない（#1937）。そのため委譲前にここで検査する。
@@ -3891,46 +3940,59 @@ function parseArgs(tokens) {
   // 判定の正規表現は UNKNOWN_FLAG_RE と同じ字面。parseArgs を関数単体で取り出して評価するテスト
   // （tests/run-tests.sh の BUG1321 / BUG1329）があり、外側の定数を参照できないため、ここに直書きする
   const hasVal = (idx) => idx + 1 < remaining.length && !/^--[A-Za-z][A-Za-z0-9-]*$/.test(remaining[idx + 1]);
+  // #2113: 値を取るスカラーフラグが「異なる値で」2回指定されたらエラーにする。従来は後に書いた方が黙って勝ち、
+  // 先に書いた値が捨てられていた。同じ値の重複は許す。`--label` は複数指定が仕様なので対象外。
+  // 比較は正規化後の値（`--depends-on #4` と `--depends-on 4`、`--due-offset +3` と `3` は同じ値）。
+  // --p1 / --p2 / --p3 / --priority は同じ priority フィールドなので、混在も同じ規則で判定する。
+  // exitWith / tpl は重複を検出したときだけ参照する（BUG1321 / BUG1329 のテストが parseArgs 単体を
+  // eval するため、通常の経路から外側の定義を参照してはならない）
+  const setScalar = (field, flag, value) => {
+    const prev = result[field];
+    if (prev !== null && prev !== value) {
+      exitWith([tpl('error.duplicate_flag', { flag, first: prev, second: value }), t('error.duplicate_flag_hint')]);
+    }
+    result[field] = value;
+  };
 
   let i = 0;
   while (i < remaining.length) {
     const tok = remaining[i];
     if (tok === '--due' && hasVal(i)) {
-      result.due = remaining[i+1]; remaining.splice(i, 2); continue;
+      setScalar('due', '--due', remaining[i+1]); remaining.splice(i, 2); continue;
     } else if (tok === '--desc' && hasVal(i)) {
       // クォートで囲まれている場合はまとめて次のトークン
-      result.desc = remaining[i+1]; remaining.splice(i, 2); continue;
+      setScalar('desc', '--desc', remaining[i+1]); remaining.splice(i, 2); continue;
     } else if (tok === '--recur' && hasVal(i)) {
-      result.recur = remaining[i+1]; remaining.splice(i, 2); continue;
+      setScalar('recur', '--recur', remaining[i+1]); remaining.splice(i, 2); continue;
     } else if (tok === '--project' && hasVal(i)) {
-      result.project = remaining[i+1]; remaining.splice(i, 2); continue;
+      setScalar('project', '--project', remaining[i+1]); remaining.splice(i, 2); continue;
     } else if (tok === '--priority' && hasVal(i)) {
-      result.priority = remaining[i+1]; remaining.splice(i, 2); continue;
+      setScalar('priority', '--priority', remaining[i+1]); remaining.splice(i, 2); continue;
     } else if (/^--p[123]$/.test(tok)) {
       // --p1 / --p2 / --p3 ショートハンド（--priority p1 の省略形）
-      result.priority = tok.slice(2); remaining.splice(i, 1); continue;
+      setScalar('priority', '--priority', tok.slice(2)); remaining.splice(i, 1); continue;
     } else if (tok === '--estimate' && hasVal(i)) {
-      result.estimate = remaining[i+1]; remaining.splice(i, 2); continue;
+      setScalar('estimate', '--estimate', remaining[i+1]); remaining.splice(i, 2); continue;
     } else if (tok === '--actual' && hasVal(i)) {
-      result.actual = remaining[i+1]; remaining.splice(i, 2); continue;
+      setScalar('actual', '--actual', remaining[i+1]); remaining.splice(i, 2); continue;
     } else if (tok === '--due-offset' && hasVal(i)) {
-      result.dueOffset = remaining[i+1].replace(/^\+/, ''); remaining.splice(i, 2); continue;
+      setScalar('dueOffset', '--due-offset', remaining[i+1].replace(/^\+/, '')); remaining.splice(i, 2); continue;
     } else if (tok === '--color' && hasVal(i)) {
-      result.color = remaining[i+1]; remaining.splice(i, 2); continue;
+      setScalar('color', '--color', remaining[i+1]); remaining.splice(i, 2); continue;
     } else if (tok === '--activate' && hasVal(i)) {
-      result.activate = remaining[i+1]; remaining.splice(i, 2); continue;
+      setScalar('activate', '--activate', remaining[i+1]); remaining.splice(i, 2); continue;
     } else if (tok === '--before' && hasVal(i)) {
-      result.before = remaining[i+1]; remaining.splice(i, 2); continue;
+      setScalar('before', '--before', remaining[i+1]); remaining.splice(i, 2); continue;
     } else if (tok === '--depends-on' && hasVal(i)) {
-      result.dependsOn = remaining[i+1].replace(/^#/, ''); remaining.splice(i, 2); continue;
+      setScalar('dependsOn', '--depends-on', remaining[i+1].replace(/^#/, '')); remaining.splice(i, 2); continue;
     } else if (tok === '--resume-condition' && hasVal(i)) {
-      result.resumeCondition = remaining[i+1]; remaining.splice(i, 2); continue;
+      setScalar('resumeCondition', '--resume-condition', remaining[i+1]); remaining.splice(i, 2); continue;
     } else if (tok === '--note' && hasVal(i)) {
-      result.note = remaining[i+1]; remaining.splice(i, 2); continue;
+      setScalar('note', '--note', remaining[i+1]); remaining.splice(i, 2); continue;
     } else if (tok === '--body' && hasVal(i)) {
-      result.body = remaining[i+1]; remaining.splice(i, 2); continue;
+      setScalar('body', '--body', remaining[i+1]); remaining.splice(i, 2); continue;
     } else if (tok === '--body-file' && hasVal(i)) {
-      result.bodyFile = remaining[i+1]; remaining.splice(i, 2); continue;
+      setScalar('bodyFile', '--body-file', remaining[i+1]); remaining.splice(i, 2); continue;
     } else if (tok === '--label' && hasVal(i)) {
       result.labels.push(remaining[i+1]); remaining.splice(i, 2); continue;
     } else if (tok.startsWith('@')) {
@@ -4779,6 +4841,9 @@ async function runDone(octokit, owner, repo, tokens) {
   guardUnknownFlag(parsed.extra, [], DONE_USAGE, 'error.unknown_flag_hint_options');
   // #1934 パート1: runDone が実際に読むのは actual/note のみ（配線直前にコードを再確認済み）。
   guardUnsupportedFlag(parsed, COMMAND_SPECS['done'].supportedFields, DONE_USAGE);
+  // #2113: 番号の後ろの余剰トークン（`done 42 abc` / `done 42 -x`）を黙って捨てて close しない。
+  // parseArgs が消費した後の extra に正当な位置引数は残らないので、残ったものはすべて入力ミス
+  guardExtraPositional(parsed.extra, DONE_USAGE, 'error.extra_positional_hint_single', `/todo done ${num}`);
 
   // --actual の検証は Issue の取得（API 呼び出し）より前に行う
   const actualValue = parseActualOrExit(parsed);
@@ -4916,6 +4981,8 @@ async function runMove(octokit, owner, repo, tokens) {
   guardUnknownFlag(parsed.extra, [], MOVE_USAGE, 'error.unknown_flag_hint_options');
   // #1934 パート1: runMove が実際に読むのは note のみ（配線直前にコードを再確認済み）。
   guardUnsupportedFlag(parsed, COMMAND_SPECS['move'].supportedFields, MOVE_USAGE);
+  // #2113: 移動先の後ろの余剰トークン（`move 42 someday abc`）を黙って捨てて移動しない
+  guardExtraPositional(parsed.extra, MOVE_USAGE, 'error.extra_positional_hint_single', `/todo move ${num} ${target}`);
   const noteText = parsed.note || null;
   // --note の検証は GTD ラベルの付け替えより前に行う（Issue #2135）
   if (noteText) assertCommentBody(noteText);
@@ -4988,6 +5055,9 @@ async function runComment(octokit, owner, repo, tokens) {
   // --body / --body-file を走査しつつ、未知の `--` フラグを検出する。
   // 単一ハイフン始まりの本文（例: "- 箇条書き"）はここでは対象外（`--` 判定のみ）。
   let bodyOpt = null, bodyFileOpt = null;
+  // #2113: --body / --body-file の値でもフラグでもないトークン（位置引数の本文）。desc / rename と同じく
+  // 空白でつないで1つの本文にする（従来は先頭の1語だけを投稿し、残りを黙って捨てていた）
+  const words = [];
   for (let i = 0; i < rest.length; i++) {
     const tok = rest[i];
     // #2134: 次のトークンが別のフラグの字面なら値として読まない（parseArgs の hasVal と同じ。
@@ -5006,6 +5076,8 @@ async function runComment(octokit, owner, repo, tokens) {
       // rest 全体 + 許可リスト ['--body','--body-file'] へリファクタしてはいけない:
       // 値が欠落した末尾の --body-file が許可リストに載ってしまい、W26-5b（値欠落のエラー化）が壊れる。
       guardUnknownFlag([tok], [], usage, 'error.unknown_flag_hint_body');
+    } else {
+      words.push(tok);
     }
   }
 
@@ -5016,8 +5088,9 @@ async function runComment(octokit, owner, repo, tokens) {
   } else if (bodyOpt !== null) {
     text = bodyOpt;
   } else {
-    // 従来形式: 位置引数（Claudeが単一トークンとして渡す。#1919 以前と同じ挙動を維持）
-    text = rest[0] || '';
+    // 従来形式: 位置引数。1語（Claude が単一トークンとして渡す形）はそのまま、複数語は空白でつなぐ（#2113）。
+    // --body / --body-file があるときはそちらが優先され、位置引数は採用されない（W26-11 で固定済みの仕様）
+    text = words.join(' ');
   }
 
   if (!text.trim()) {
@@ -5042,6 +5115,8 @@ async function runEdit(octokit, owner, repo, tokens) {
   // #1934 パート1: runEdit が実際に読むのは due/recur/project/desc/estimate/before/
   // activate/dependsOn/resumeCondition/priority のみ（配線直前にコードを再確認済み）。
   guardUnsupportedFlag(parsed, COMMAND_SPECS['edit'].supportedFields, EDIT_USAGE);
+  // #2113: edit は自由記述の位置引数を持たない。`edit 42 --due X abc` の abc を黙って捨てて更新しない
+  guardExtraPositional(parsed.extra, EDIT_USAGE, 'error.extra_positional_hint_single', `/todo edit ${num}`);
 
   const issue = await fetchAndParseIssue(octokit, owner, repo, num);
   let changed = [];
@@ -5358,7 +5433,7 @@ function validateTagLabels(labelList) {
 }
 
 // @ctx ラベルを全タスク横断でリネームする（label rename / tag rename で共用。Issue #1644）
-async function renameCtxLabel(octokit, owner, repo, raw1, raw2, usage) {
+async function renameCtxLabel(octokit, owner, repo, raw1, raw2, usage, extraTokens) {
   if (!raw1 || !raw2) { exitWith(`Usage: ${usage}`); }
   // #1921 第2弾: old / new どちらの位置にフラグ字面が来ても
   // 「@--foo というゴミラベルを作ったうえで実在の @old を削除する」という不可逆な副作用に
@@ -5368,6 +5443,9 @@ async function renameCtxLabel(octokit, owner, repo, raw1, raw2, usage) {
   // 「余剰トークン」までカバーしており、この関数は raw1 / raw2 しか受け取らないため
   // 余剰が見えない。両方が必要（片方では守備範囲が埋まらない）。
   guardUnknownFlag([raw1, raw2], [], `Usage: ${usage}`, 'error.unknown_flag_hint_options');
+  // #2113: old / new の後ろの余剰トークン（`tag rename old new abc` / `... --zzz`）を黙って捨てて本実行しない。
+  // label rename は呼び出し元が slice(1) で検査済みだが、tag rename は検査していなかった
+  guardNoExtra(extraTokens || [], [], `Usage: ${usage}`, 'error.extra_positional_hint_single', `${usage.replace(/ <old> <new>$/, '')} ${raw1} ${raw2}`);
   const oldName = raw1.startsWith('@') ? raw1 : '@'+raw1;
   const newName = raw2.startsWith('@') ? raw2 : '@'+raw2;
   validateCtx(oldName.slice(1)); validateCtx(newName.slice(1));
@@ -5384,7 +5462,7 @@ async function renameCtxLabel(octokit, owner, repo, raw1, raw2, usage) {
 
 async function runTag(octokit, owner, repo, tokens) {
   if (tokens[0] === 'rename') {
-    return await renameCtxLabel(octokit, owner, repo, tokens[1], tokens[2], '/todo tag rename <old> <new>');
+    return await renameCtxLabel(octokit, owner, repo, tokens[1], tokens[2], '/todo tag rename <old> <new>', tokens.slice(3));
   }
   const num = parseInt(tokens[0]);
   if (!num) { exitWith(t('error.positive_int')); }
@@ -5439,6 +5517,8 @@ async function runLabel(octokit, owner, repo, tokens) {
     guardUnknownFlag(parsed.extra, [], LABEL_USAGE, 'error.unknown_flag_hint_options');
     // #1934 パート1: label add が実際に読むのは color のみ（配線直前にコードを再確認済み）。
     guardUnsupportedFlag(parsed, COMMAND_SPECS['label add'].supportedFields, LABEL_USAGE);
+    // #2113: `label add foo bar` は foo だけ作って bar を黙って捨てていた（複数ラベル指定の誤解を招く）
+    guardExtraPositional(parsed.extra, LABEL_USAGE, 'error.extra_positional_hint_single', `/todo label add ${raw1}`);
     validateCtx(name.slice(1));
     const color = parsed.color || CTX_LABEL_COLOR;
     if (parsed.color) validateColor(parsed.color);
@@ -5449,6 +5529,8 @@ async function runLabel(octokit, owner, repo, tokens) {
     if (!raw1) { exitWith(LABEL_USAGE); }
     // slice(1) にすることで名前の位置（tokens[1]）と余剰トークンを1回で検査する（上記 add のコメント参照）
     guardUnknownFlag(tokens.slice(1), [], LABEL_USAGE, 'error.unknown_flag_hint_options');
+    // #2113: `label delete foo bar` は foo だけ削除して bar を黙って捨てていた
+    guardExtraPositional(tokens.slice(2), LABEL_USAGE, 'error.extra_positional_hint_single', `/todo label delete ${raw1}`);
     const name = raw1.startsWith('@') ? raw1 : '@'+raw1;
     validateCtx(name.slice(1));
     try { await octokit.issues.deleteLabel({ owner, repo, name }); } catch(e) { if (e.status !== 404) throw e; }
@@ -5458,7 +5540,7 @@ async function runLabel(octokit, owner, repo, tokens) {
     // rename は「@old を消して @new を作る」操作なので、どちらの位置にフラグ字面が来ても
     // 不可逆な副作用（既存ラベルの削除 + ゴミラベルの作成）になる。
     guardUnknownFlag(tokens.slice(1), [], LABEL_USAGE, 'error.unknown_flag_hint_options');
-    return await renameCtxLabel(octokit, owner, repo, tokens[1], tokens[2], '/todo label rename <old> <new>');
+    return await renameCtxLabel(octokit, owner, repo, tokens[1], tokens[2], '/todo label rename <old> <new>', tokens.slice(3));
   } else {
     exitWith(LABEL_USAGE);
   }
@@ -5520,6 +5602,8 @@ async function runArchive(octokit, owner, repo, tokens) {
     const num = parseInt(tokens[1]);
     if (!num) { exitWith('Usage: run archive reopen <number>'); }
     assertIssueNumberArg(tokens[1]);
+    // #2113: `archive reopen 50 next` は「next に戻す」つもりでも黙って inbox に戻していた（余剰を捨てていた）
+    guardNoExtra(tokens.slice(2), [], 'Usage: run archive reopen <number>', 'error.extra_positional_hint_single', `/todo archive reopen ${tokens[1]}`);
     await octokit.issues.update({ owner, repo, issue_number: num, state: 'open' });
     await octokit.issues.addLabels({ owner, repo, issue_number: num, labels: ['📥 inbox'] });
     runOut(tpl('archive.reopened', { num }));
@@ -5630,7 +5714,7 @@ async function runTemplate(octokit, owner, repo, tokens) {
     const rest = tokens.slice(2);
     // save-from 形式
     if (rest[0] === 'from' && rest[1]) {
-      guardUnknownFlag(rest.slice(2), [], TEMPLATE_USAGE, 'error.unknown_flag_hint_options');
+      guardNoExtra(rest.slice(2), [], TEMPLATE_USAGE, 'error.extra_positional_hint_single', `/todo template save ${name} from ${rest[1]}`);
       validateNumber(rest[1]);
       const num = parseInt(rest[1]);
       const issue = await fetchAndParseIssue(octokit, owner, repo, num);
@@ -5663,6 +5747,10 @@ async function runTemplate(octokit, owner, repo, tokens) {
       // supportedFields に含める。#tag をテンプレートへ保存できなかった旧来の非対称は
       // #1936 で解消済み（詳細: DEVELOPMENT.md バグ修正履歴）。
       guardUnsupportedFlag(parsed, COMMAND_SPECS['template save'].supportedFields, TEMPLATE_USAGE);
+      // #2113: インライン形式にタイトルの概念はない（タイトルは template use で指定する）。
+      // `template save tn next 週次レビュー` の「週次レビュー」を黙って捨てて保存しない
+      guardExtraPositional(parsed.extra, TEMPLATE_USAGE, 'error.extra_positional_hint_template_save',
+        `/todo template save ${name}${gtd !== 'inbox' ? ' ' + gtd : ''}`);
       const contexts = parsed.contexts;
       const tags = parsed.tags;
       const priority = parsed.priority || 'p3';
@@ -5769,6 +5857,8 @@ async function runTemplate(octokit, owner, repo, tokens) {
     if (!name) { exitWith(TEMPLATE_USAGE); }
     // slice(1) で名前の位置も検査する（上記 show のコメント参照）
     guardUnknownFlag(tokens.slice(1), [], TEMPLATE_USAGE, 'error.unknown_flag_hint_options');
+    // #2113: `template delete tn abc` は tn だけ削除して abc を黙って捨てていた
+    guardExtraPositional(tokens.slice(2), TEMPLATE_USAGE, 'error.extra_positional_hint_single', `/todo template delete ${name}`);
     validateName(name);
     templateDelete(name);
   } else {
@@ -6004,6 +6094,8 @@ async function runView(octokit, owner, repo, tokens) {
     const name = tokens[1];
     if (!name) { exitWith('Usage: run view delete <name>'); }
     validateName(name);
+    // #2113: `view delete vn abc` は vn だけ削除して abc を黙って捨てていた
+    guardNoExtra(tokens.slice(2), [], 'Usage: run view delete <name>', 'error.extra_positional_hint_single', `/todo view delete ${name}`);
     viewDelete(name);
   } else if (sub === 'use' || !sub.startsWith('-')) {
     // view use <name> または view <name>（subがコマンド名でない場合）
@@ -6119,7 +6211,8 @@ async function runBulk(octokit, owner, repo, tokens) {
     }
     // #1921 パターンB: bulk move は rest[0]（移動先 GTD）しか読まず rest.slice(1) を捨てていた。
     // 単体 move と違い `bulk move 1 2 next --note "x"` の --note は効かない（黙って無視される）。
-    guardUnknownFlag(rest.slice(1), [], BULK_USAGE, 'error.unknown_flag_hint_options');
+    // #2113: 余剰の非フラグ語（`bulk move 42 someday abc`）も、フラグ字面と同じく黙って捨てない
+    guardNoExtra(rest.slice(1), [], BULK_USAGE, 'error.extra_positional_hint_single', `/todo bulk move ${nums.join(' ')} ${target}`);
     const newLabel = GTD_DISPLAY[target];
     for (const num of nums) {
       try {
@@ -6172,7 +6265,8 @@ async function runBulk(octokit, owner, repo, tokens) {
     if (!level) { exitWith(BULK_USAGE); }
     if (level !== 'clear') validatePriority(level);
     // #1921 パターンB: rest.slice(1) は従来黙って捨てられていた。ラベル作成（ensureLabel）より前に落とす。
-    guardUnknownFlag(rest.slice(1), [], BULK_USAGE, 'error.unknown_flag_hint_options');
+    // #2113: 余剰の非フラグ語（`bulk priority 42 p1 abc`）も黙って捨てない
+    guardNoExtra(rest.slice(1), [], BULK_USAGE, 'error.extra_positional_hint_single', `/todo bulk priority ${nums.join(' ')} ${level}`);
     if (level !== 'clear') { const pcolor = priorityColor(level); await ensureLabel(octokit, owner, repo, level, pcolor, t('label.desc_priority')); }
     for (const num of nums) {
       try {
@@ -6197,7 +6291,8 @@ async function runReviewSomeday(octokit, owner, repo, tokens) {
   // 位置引数スロット」を持たないため guardExtraPositional の対象ではなく（#1937の
   // runUnlinkと同型）、guardUnknownFlag のみを配線する。API呼び出し（fetchAndParseIssue
   // 以降）より前に落とす。
-  guardUnknownFlag(tokens.slice(1), [], REVIEW_SOMEDAY_USAGE, 'error.unknown_flag_hint_options');
+  // #2113: `review-someday 46 47` は 46 だけ更新して 47 を黙って捨てていた。余剰はすべて拒否する
+  guardNoExtra(tokens.slice(1), [], REVIEW_SOMEDAY_USAGE, 'error.extra_positional_hint_single', `/todo review-someday ${num}`);
 
   const issue = await fetchAndParseIssue(octokit, owner, repo, num);
 
@@ -6212,7 +6307,9 @@ async function runReviewSomeday(octokit, owner, repo, tokens) {
   runOut(tpl('someday.reviewed', { num, date: today }));
 }
 
-async function runPromote(octokit, owner, repo) {
+async function runPromote(octokit, owner, repo, tokens) {
+  // #2113: promote は引数を取らない。`promote --dry-run` / `promote 42` が黙って全件の本実行になっていた
+  guardNoExtra(tokens || [], [], 'Usage: /todo promote', 'error.extra_positional_hint_none', '/todo promote');
   const today = getToday();
   const allIssues = await fetchAllOpen(octokit, owner, repo);
   const nextLabel = GTD_DISPLAY['next'];
@@ -6330,7 +6427,8 @@ async function runUnlink(octokit, owner, repo, tokens) {
   // typoに気づけない）。unlink は「第2の位置引数スロット」を持たないため
   // guardExtraPositional の対象ではなく、guardUnknownFlag のみを配線する。
   // API 呼び出し（fetchAndParseIssue 以降）より前に落とす。
-  guardUnknownFlag(tokens.slice(1), ['--force'], UNLINK_USAGE, 'error.unknown_flag_hint_options');
+  // #2113: 余剰の非フラグ語（`unlink 42 43`）は 42 だけ解除して 43 を黙って捨てていた。--force 以外はすべて拒否する
+  guardNoExtra(tokens.slice(1), ['--force'], UNLINK_USAGE, 'error.extra_positional_hint_flags_only', `/todo unlink ${num} [--force]`);
   const force = tokens.includes('--force');
 
   const issue = await fetchAndParseIssue(octokit, owner, repo, num);
@@ -6386,7 +6484,9 @@ async function runUnlink(octokit, owner, repo, tokens) {
 }
 
 // /todo weekly-project-audit — 全プロジェクトを走査し棚卸しを促す
-async function runWeeklyProjectAudit(octokit, owner, repo) {
+async function runWeeklyProjectAudit(octokit, owner, repo, tokens) {
+  // #2113: weekly-project-audit は引数を取らない（reviewed_at を書き込むため、`--dry-run` を期待した入力を黙って通さない）
+  guardNoExtra(tokens || [], [], 'Usage: /todo weekly-project-audit', 'error.extra_positional_hint_none', '/todo weekly-project-audit');
   const today = getToday();
   const allIssues = await fetchAllOpen(octokit, owner, repo);
 
@@ -6496,7 +6596,9 @@ async function runMigrateSubIssue(octokit, owner, repo, tokens) {
   // （デフォルト値が危険側＝#1937のrunUnlinkの--forceとは逆パターン）。API呼び出し
   // （fetchAllOpen 以降）より前に落とす。migrate sub-issue は位置引数を取らないため
   // guardExtraPositional の対象ではなく guardUnknownFlag のみを配線する。
-  guardUnknownFlag(tokens, ['--dry-run'], MIGRATE_USAGE, 'error.unknown_flag_hint_options');
+  // #2113: `--dry-run` の typo（`dry-run` / `-n`）は `--` 始まりの字面ではないため上の検査をすり抜け、
+  // ドライランのつもりが一括登録の本実行になっていた。`--dry-run` 以外のトークンはすべて拒否する
+  guardNoExtra(tokens, ['--dry-run'], MIGRATE_USAGE, 'error.extra_positional_hint_flags_only', '/todo migrate sub-issue --dry-run');
   const dryRun = tokens.includes('--dry-run');
   const allIssues = await fetchAllOpen(octokit, owner, repo);
 
@@ -6652,11 +6754,11 @@ async function runMain(args) {
     case 'show':      return await runShow(octokit, owner, repo, rest);
     case 'view':      return await runView(octokit, owner, repo, rest);
     case 'bulk':      return await runBulk(octokit, owner, repo, rest);
-    case 'promote':         return await runPromote(octokit, owner, repo);
+    case 'promote':         return await runPromote(octokit, owner, repo, rest);
     case 'promote-project': return await runPromoteProject(octokit, owner, repo, rest);
     case 'unlink':          return await runUnlink(octokit, owner, repo, rest);
     case 'review-someday':         return await runReviewSomeday(octokit, owner, repo, rest);
-    case 'weekly-project-audit':   return await runWeeklyProjectAudit(octokit, owner, repo);
+    case 'weekly-project-audit':   return await runWeeklyProjectAudit(octokit, owner, repo, rest);
     case 'migrate': {
       // migrate sub-issue [--dry-run]
       const subCmd = rest[0];
@@ -6746,7 +6848,7 @@ module.exports = {
   templateDelete, viewSave, viewUse, viewList, viewDelete, apiErr, exitWith, isCliExit, apiMain, main,
   wrapOctokitTiming, computeGithubMs, printTiming, initOctokit, findUnknownFlag, guardUnknownFlag,
   findBracketedGtdLabel, guardBracketedGtdLabel, findUnsupportedFlagField, guardUnsupportedFlag,
-  guardExtraPositional, parseArgs, getToday, toJstDateStr, ensureLabel, fetchAndParseIssue,
+  guardExtraPositional, guardNoExtra, parseArgs, getToday, toJstDateStr, ensureLabel, fetchAndParseIssue,
   addSubIssue, listSubIssues, removeSubIssue, updateIssueBody, runOut, runAdd, runList,
   fetchAllOpen, fetchOpenByCategory, labelNamesForCategory, fetchRecentClosed, fetchClosedSince, createRecurIssue, postDoneProcessing, runDone, execMoveGtd,
   removeLabelIfPresent, execRemoveLabels, runMove, sanitizeCommentBody, assertCommentBody, createCommentSanitized, runComment, runEdit,

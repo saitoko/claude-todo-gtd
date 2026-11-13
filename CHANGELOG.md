@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- 余った引数を黙って捨てて本実行していた19のコマンドを、エラー終了するようにした（Issue #2113）。`--zzz` のような `--` 始まりの語は従来から止まっていたが、`abc` のような裸の語や単ダッシュの `-x` は検出されず、書き込みまで進んでいた。今後は位置引数の後ろに余った語がひとつでもあれば、書き込み系の API を1回も呼ばずに「余分な引数があります: <語>」で終了コード 1 になる。対象: (1) `done` / `move` / `edit`（`done 42 abc` が余剰を捨てて close していた）。(2) `tag rename`（3語目以降を検査しておらず、`--zzz` も通っていた）/ `label add` / `label delete` / `label rename`。(3) `template save <名前> from <#>` / `template save`（インライン形式）/ `template delete`。インライン形式の `template save` はテンプレートにタイトルを保存できないため、`template save tn next 週次レビュー` の「週次レビュー」は黙って捨てられていた。(4) `archive reopen`（`archive reopen 50 next` が「next に戻す」つもりでも inbox に戻していた）/ `view delete` / `bulk move` / `bulk priority` / `unlink` / `review-someday` / `migrate sub-issue`。(5) 引数を取らない `promote` / `weekly-project-audit`。**とくに `migrate sub-issue` と `promote`**: `migrate sub-issue dry-run`（ダッシュ忘れ）や `migrate sub-issue -n` は `--dry-run` のつもりで打っても本実行（sub-issue の一括登録）になり、`promote --dry-run` や `promote 42` は全件の一括昇格を実行していた。`unlink` は `--force` だけを許可し、それ以外の語を拒否する。エラーの順序は従来の規約どおりで、`--` 始まりの語があれば「不明なフラグです」が先に出る。余剰語を渡さない正しい入力の挙動は変わらない
+- 値を取るフラグ（`--label` を除く）が異なる値で2回指定されたとき、後の値を黙って採用せずエラー終了するようにした（Issue #2113）。従来は `edit 42 --due 2026-10-01 --due 2026-10-02` が後の日付で更新し、先に書いた値は捨てられていた。今後は書き込みの前に「`--due` が異なる値で複数回指定されています: 2026-10-01 / 2026-10-02」で終了コード 1 になる。同じ値の重複は通る（`--depends-on #44 --depends-on 44` のように正規化後に同じ値になる場合も同じ値として扱う）。`--p1` / `--p2` / `--p3` / `--priority` は同じ優先度の指定として扱い、`--p1 --p2` や `--p1 --priority p3` はエラー、`--p1 --priority p1` は通る。`--body` と `--body-file` は別のフラグなので併用でき、従来どおり `--body-file` が優先される（変えていない）。`--label` は複数指定が仕様のため対象外。検査は全コマンド共通の引数解析（`parseArgs`）の1か所で行う
+- `comment` の位置引数の本文が複数の語に分かれていたとき、先頭の1語だけでなくすべてを空白でつないで投稿するようにした（Issue #2113）。従来は `comment 42 hello world` が「hello」だけを投稿し、「world」を黙って捨てていた（`desc` と `rename` は余った語を連結する）。1語だけの場合と、空白を含む1つの引数として渡した場合は変わらない。`--body` / `--body-file` を指定したときは従来どおりそちらが優先され、位置引数の語は使われない（`--body-file` が `--body` より優先される点も変えていない）
+
 ---
 
 ## [v2.10.0] - 2026-11-01

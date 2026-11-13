@@ -5639,7 +5639,11 @@ const PROBES = {
   'link': { rest: ['link', '42', '43', '@@'] },
   'rename': { rest: ['rename', '42', '@@'] },
   'priority': { rest: ['priority', '42', 'p1', '@@'] },
-  'tag rename': { names: ['tag', 'rename', 'old', '@@'] },
+  'tag rename': { names: ['tag', 'rename', 'old', '@@'], rest: ['tag', 'rename', 'old', 'new', '@@'] },
+  'archive reopen': { rest: ['archive', 'reopen', '42', '@@'] },
+  'view delete': { rest: ['view', 'delete', 'vn', '@@'] },
+  'promote': { rest: ['promote', '@@'] },
+  'weekly-project-audit': { rest: ['weekly-project-audit', '@@'] },
   'label list': { rest: ['label', 'list', '@@'] },
   'label add': { name: ['label', 'add', '@@'], extra: ['label', 'add', 'foo', '@@'] },
   'label delete': { rest: ['label', 'delete', '@@'] },
@@ -5680,6 +5684,26 @@ const FIELD_FLAGS = {
 };
 // guardExtraPositional を持つ spec: 非フラグの余剰語1つを渡す argv と、渡さなければ発火しない argv
 const X_PROBES = {
+  // #2113: 固定の位置引数だけを取るハンドラ。後ろに残った非フラグの語は黙って捨てず「余分な引数」で止める
+  'done': { fire: ['done', '42', 'extraword'] },
+  'move': { fire: ['move', '42', 'next', 'extraword'] },
+  'edit': { fire: ['edit', '42', 'extraword'] },
+  'tag rename': { fire: ['tag', 'rename', 'old', 'new', 'extraword'] },
+  'label add': { fire: ['label', 'add', 'foo', 'extraword'] },
+  'label delete': { fire: ['label', 'delete', 'foo', 'extraword'] },
+  'label rename': { fire: ['label', 'rename', 'old', 'new', 'extraword'] },
+  'template save from': { fire: ['template', 'save', 'tn', 'from', '42', 'extraword'] },
+  'template save': { fire: ['template', 'save', 'tn', 'extraword'] },
+  'template delete': { fire: ['template', 'delete', 'tn', 'extraword'] },
+  'archive reopen': { fire: ['archive', 'reopen', '42', 'extraword'] },
+  'view delete': { fire: ['view', 'delete', 'vn', 'extraword'] },
+  'bulk move': { fire: ['bulk', 'move', '42', 'next', 'extraword'] },
+  'bulk priority': { fire: ['bulk', 'priority', '42', 'p1', 'extraword'] },
+  'unlink': { fire: ['unlink', '42', 'extraword'], quiet: ['unlink', '42', '--force'] },
+  'review-someday': { fire: ['review-someday', '42', 'extraword'] },
+  'migrate sub-issue': { fire: ['migrate', 'sub-issue', 'extraword'], quiet: ['migrate', 'sub-issue', '--dry-run'] },
+  'promote': { fire: ['promote', 'extraword'] },
+  'weekly-project-audit': { fire: ['weekly-project-audit', 'extraword'] },
   'due': { fire: ['due', '42', '2026-10-20', 'extraword'] },
   'recur': { fire: ['recur', '42', 'weekly', 'extraword'] },
   'link': { fire: ['link', '42', '43', 'extraword'] },
@@ -5698,13 +5722,12 @@ const NOGUARD_PROBES = {
   'label': { argv: ['label', PROBE] }, 'archive': { argv: ['archive', PROBE] },
   'template': { argv: ['template', PROBE] }, 'view': { argv: ['view', PROBE] },
   'bulk': { argv: ['bulk', PROBE] }, 'migrate': { argv: ['migrate', PROBE] },
-  'archive list': { argv: ['archive', 'list', PROBE] }, 'archive reopen': { argv: ['archive', 'reopen', '42', PROBE] },
+  'archive list': { argv: ['archive', 'list', PROBE] },
   'dashboard': { argv: ['dashboard', PROBE] }, 'today': { argv: ['today', PROBE] },
   'eisenhower': { argv: ['eisenhower', PROBE] }, 'stats': { argv: ['stats', PROBE] },
   'report': { argv: ['report', 'weekly', PROBE] }, 'help': { argv: ['help', PROBE] },
   'schema': { argv: ['schema', PROBE] }, 'view list': { argv: ['view', 'list', PROBE] },
-  'view delete': { argv: ['view', 'delete', 'vn', PROBE] }, 'view use': { argv: ['view', 'use', 'vn', PROBE] },
-  'promote': { argv: ['promote', PROBE] }, 'weekly-project-audit': { argv: ['weekly-project-audit', PROBE] },
+  'view use': { argv: ['view', 'use', 'vn', PROBE] },
   'api': { argv: ['api', PROBE] },
 };
 
@@ -5728,7 +5751,7 @@ const NOGUARD_PROBES = {
     const af = specs[k].allowedFlags;
     if (af !== undefined && (!Array.isArray(af) || af.some(f => !/^--[a-z][a-z-]*$/.test(f)))) c1.push(k + ': allowedFlags の形が不正');
     const xp = specs[k].extraPositional;
-    if (xp !== undefined && !/^error\.extra_positional_hint_(quote|single)$/.test(xp.hint || '')) c1.push(k + ': extraPositional.hint が不正');
+    if (xp !== undefined && !/^error\.extra_positional_hint_(quote|single|none|flags_only|template_save)$/.test(xp.hint || '')) c1.push(k + ': extraPositional.hint が不正');
   }
   check('C-1', '全 spec が unknownFlag を宣言している（slots / exempt / unguarded のどれか1つ。理由は空でない）', c1.length === 0, c1.join(' / '));
 
@@ -7469,6 +7492,270 @@ if [ "$W65_N" -lt 41 ]; then
   printf "  ❌ §W65 アサーション数が少なすぎる (%s 件。41 件未満は検査の空振りとみなす)\n" "$W65_N"; FAIL=$((FAIL+1))
 fi
 rm -rf "$W65_HOME"
+
+# ── §W66 Issue #2113: 余った引数・重複フラグを黙って無視しない ──
+# 型: 固定の位置引数だけを取るハンドラが、その後ろに残ったトークンを黙って捨てて本実行していた。
+#     `--` 始まりの語は guardUnknownFlag が止めるが、単ダッシュ `-x` や裸の `abc` / `dry-run` / `-n` は
+#     UNKNOWN_FLAG_RE に合わないため素通りし、書き込み・一括登録・一括昇格まで進んでいた。
+#     あわせて、値を取るスカラーフラグが異なる値で2回指定されたとき、後の値が黙って勝っていた（parseArgs）。
+#     comment は先頭の1語だけを投稿し、残りを黙って捨てていた。
+# 検査: (1) 塞いだ19経路 × {--zzz / abc / -x}（migrate sub-issue・promote・weekly-project-audit は dry-run / -n も）で
+#       exit 1・止めた語を示すエラー・書き込み系 API の呼び出し 0 件（スタブのログが空）・ローカルファイル不変。
+#       スタブの応答は「ガードを抜けたら本実行が成功する」ように十分に用意してある。応答を空にすると、ガードがなくても
+#       スタブの throw で exit 1 になり、検査が空振りで PASS する。そのためエラー文言まで確かめる。
+#       (2) 対照: 余剰なしの正しい入力ではガードのメッセージが出ない。(3) 重複フラグ。(4) comment の本文連結。
+# 安全条件: HOME を新規の一時ディレクトリに隔離し、OCTOKIT_STUB_ENV でスタブを指定する。GH_TOKEN は渡さない。
+echo ""
+echo "§W66  余った引数・重複フラグを黙って無視しない（Issue #2113）"
+
+W66_P0=$PASS
+_W66_TMP=$(mktemp /tmp/todo-test-w66-XXXXXX)
+cat > "$_W66_TMP" << 'W66_CONFORMANCE_EOF'
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { spawn } = require('child_process');
+const ENGINE = process.argv[2], STUB = process.argv[3];
+const E = require(ENGINE);
+const out = [];
+const ok = (desc) => out.push(['ok', desc].join('\t'));
+const ng = (desc, detail) => out.push(['ng', desc, String(detail).replace(/\n/g, '\\n')].join('\t'));
+const check = (desc, cond, detail) => (cond ? ok(desc) : ng(desc, detail));
+const TMPROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'w66-'));
+const msg = (lang, key, vars) => E.MESSAGES[lang][key].replace(/\{(\w+)\}/g, (m, k) => (vars && k in vars ? vars[k] : m));
+
+// ガードを抜けたら本実行が成功するだけの応答を十分に用意する（空応答だとスタブの throw で exit 1 になり、検査が空振りする）
+const G = (n, labels, body) => ({ data: { number: n, id: 9000 + n, title: 'W66', body: body || '', labels: (labels || [{ name: '🎯 next' }]), state: 'open', html_url: 'https://example.invalid/' + n } });
+const many = (v, n) => Array.from({ length: n }, () => v);
+const RESP = JSON.stringify({
+  'issues.get': many(G(42, [{ name: '🎯 next' }], 'project: #43\n'), 6),
+  'issues.update': many({ data: {} }, 6),
+  'issues.create': many(G(99), 3),
+  'issues.createComment': many({ data: { id: 1 } }, 3),
+  'issues.addLabels': many({ data: [] }, 6),
+  'issues.removeLabel': many({ data: [] }, 6),
+  'issues.createLabel': many({ data: {} }, 6),
+  'issues.deleteLabel': many({ data: {} }, 3),
+  'issues.listForRepo': many({ data: [G(42, [{ name: '🎯 next' }], 'project: #43\n').data, G(43, [{ name: '📁 project' }]).data] }, 6),
+  'issues.listLabelsForRepo': many({ data: [] }, 3),
+  'GET /repos/{owner}/{repo}/labels/{name}': many({ data: { name: 'x' } }, 8),
+  'GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues': many({ data: [] }, 4),
+  'POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues': many({ data: {} }, 4),
+  'DELETE /repos/{owner}/{repo}/issues/{issue_number}/sub_issue': many({ data: {} }, 4),
+});
+const TPL_BEFORE = '{"tn":{"gtd":"next","priority":"p3"}}\n';
+const VIEW_BEFORE = '{"vn":{"gtd":"next"}}\n';
+
+function run(argv, opts) {
+  opts = opts || {};
+  return new Promise((resolve) => {
+    const home = fs.mkdtempSync(path.join(TMPROOT, 'h-'));
+    fs.mkdirSync(path.join(home, '.claude'));
+    fs.writeFileSync(path.join(home, '.claude', 'todo-templates.json'), TPL_BEFORE);
+    fs.writeFileSync(path.join(home, '.claude', 'todo-views.json'), VIEW_BEFORE);
+    const log = path.join(home, 'stub.log');
+    const env = {
+      PATH: process.env.PATH, HOME: home, OCTOKIT_STUB_ENV: STUB, OCTOKIT_STUB_RESPONSES_ENV: opts.resp || RESP,
+      OCTOKIT_STUB_LOG_ENV: log, TODO_REPO_OWNER: 'test', TODO_REPO_NAME: 'test', TODAY: '2026-10-18',
+    };
+    if (opts.lang === 'en') env.LANG_ENV = 'en';
+    if (opts.files) for (const [f, c] of Object.entries(opts.files)) fs.writeFileSync(path.join(home, f), c);
+    const p = spawn(process.execPath, [ENGINE, 'run', ...argv], { env, cwd: home, stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '', stderr = '';
+    p.stdout.on('data', d => stdout += d); p.stderr.on('data', d => stderr += d);
+    p.stdin.end();
+    const timer = setTimeout(() => p.kill('SIGKILL'), 20000);
+    p.on('close', (code) => {
+      clearTimeout(timer);
+      let calls = null; // null = ログを読めなかった（「0 件」とは区別する）
+      try { calls = fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)); } catch (e) { calls = e.code === 'ENOENT' ? [] : null; }
+      let tplAfter = null, viewAfter = null;
+      try { tplAfter = fs.readFileSync(path.join(home, '.claude', 'todo-templates.json'), 'utf8'); } catch (e) {}
+      try { viewAfter = fs.readFileSync(path.join(home, '.claude', 'todo-views.json'), 'utf8'); } catch (e) {}
+      fs.rmSync(home, { recursive: true, force: true });
+      resolve({ code, stdout, stderr, calls, tplAfter, viewAfter });
+    });
+  });
+}
+async function pool(items, n, fn) {
+  const res = new Array(items.length); let i = 0;
+  await Promise.all(Array.from({ length: n }, async () => { while (i < items.length) { const k = i++; res[k] = await fn(items[k], k); } }));
+  return res;
+}
+
+// 塞いだ19経路（判断表のグループ A1〜A4 と B）。base は余剰なしの正しい入力
+const ROUTES = [
+  ['A1 done', ['done', '42']], ['A1 move', ['move', '42', 'someday']], ['A1 edit', ['edit', '42', '--due', '2026-12-01']],
+  ['A2 tag rename', ['tag', 'rename', 'old', 'new']], ['A2 label add', ['label', 'add', 'foo']],
+  ['A2 label delete', ['label', 'delete', 'foo']], ['A2 label rename', ['label', 'rename', 'old', 'new']],
+  ['A3 template save from', ['template', 'save', 'tn', 'from', '42']], ['A3 template save (inline)', ['template', 'save', 'tn', 'next']],
+  ['A3 template delete', ['template', 'delete', 'tn']],
+  ['A4 archive reopen', ['archive', 'reopen', '50']], ['A4 view delete', ['view', 'delete', 'vn']],
+  ['A4 bulk move', ['bulk', 'move', '42', 'someday']], ['A4 bulk priority', ['bulk', 'priority', '42', 'p1']],
+  ['A4 unlink', ['unlink', '42']], ['A4 review-someday', ['review-someday', '42']],
+  ['A4 migrate sub-issue', ['migrate', 'sub-issue']],
+  ['B promote', ['promote']], ['B weekly-project-audit', ['weekly-project-audit']],
+];
+const DRYRUN_ROUTES = ['A4 migrate sub-issue', 'B promote', 'B weekly-project-audit'];
+
+(async () => {
+  check('塞いだ経路が19本である（判断表の A1〜A4 と B）', ROUTES.length === 19, 'ROUTES=' + ROUTES.length);
+  const cases = [];
+  for (const [id, base] of ROUTES) {
+    const inputs = ['--zzz', 'abc', '-x'];
+    if (DRYRUN_ROUTES.includes(id)) inputs.push('dry-run', '-n');
+    for (const tok of inputs) cases.push({ id, base, tok, argv: [...base, tok] });
+  }
+  const res = await pool(cases, 8, c => run(c.argv));
+  res.forEach((r, i) => {
+    const c = cases[i];
+    const want = c.tok === '--zzz' ? msg('ja', 'error.unknown_flag', { flag: '--zzz' }) : msg('ja', 'error.extra_positional', { extra: c.tok });
+    const writes = r.calls === null ? -1 : r.calls.filter(x => /^(issues\.(update|create|createComment|addLabels|removeLabel|setLabels|createLabel|deleteLabel)|POST |DELETE |PATCH |PUT )/.test(x.method)).length;
+    check(c.id + ' + ' + c.tok + ': exit 1・止めた語を示す・API 呼び出し 0 件・ローカルファイル不変',
+      r.code === 1 && r.stderr.includes(want) && writes === 0 && r.calls !== null && r.calls.length === 0 && r.tplAfter === TPL_BEFORE && r.viewAfter === VIEW_BEFORE,
+      'argv=' + JSON.stringify(c.argv) + ' code=' + r.code + ' calls=' + JSON.stringify(r.calls && r.calls.map(x => x.method)) + ' stderr=' + JSON.stringify(r.stderr).slice(0, 300));
+  });
+
+  // 対照: 余剰なしの正しい入力では「余分な引数」「不明なフラグ」が出ない（ガードの過剰発火がない）
+  const ctl = await pool(ROUTES, 8, ([id, base]) => run(base));
+  ctl.forEach((r, i) => {
+    check(ROUTES[i][0] + ' 対照（余剰なし）: ガードのエラーが出ない',
+      r.calls !== null && !r.stderr.includes(msg('ja', 'error.extra_positional', { extra: '' }).split('{')[0]) && !r.stderr.includes('不明なフラグです'),
+      'argv=' + JSON.stringify(ROUTES[i][1]) + ' code=' + r.code + ' stderr=' + JSON.stringify(r.stderr).slice(0, 300));
+  });
+  // 対照（書き込みまで実際に進む）: ガードの外にあるデータ経路を壊していないこと
+  const go = await run(['done', '42']);
+  check('対照: done 42 は exit 0 で close まで進む（issues.update が記録される）', go.code === 0 && go.calls && go.calls.some(x => x.method === 'issues.update'), 'code=' + go.code + ' stderr=' + go.stderr.slice(0, 200));
+  const goMig = await run(['migrate', 'sub-issue', '--dry-run']);
+  check('対照: migrate sub-issue --dry-run は exit 0・書き込みなし', goMig.code === 0 && goMig.calls !== null && !goMig.calls.some(x => /^(POST|DELETE)/.test(x.method)), 'code=' + goMig.code + ' stderr=' + goMig.stderr.slice(0, 200));
+  const goUnlink = await run(['unlink', '42', '--force']);
+  check('対照: unlink 42 --force は許可フラグとしてガードを通る', !goUnlink.stderr.includes('余分な引数') && !goUnlink.stderr.includes('不明なフラグ'), 'code=' + goUnlink.code + ' stderr=' + goUnlink.stderr.slice(0, 200));
+  const goMigDup = await run(['migrate', 'sub-issue', '--dry-run', '--dry-run']);
+  check('対照: migrate sub-issue --dry-run --dry-run（同じ許可フラグの重複）は止めない', goMigDup.code === 0, 'code=' + goMigDup.code + ' stderr=' + goMigDup.stderr.slice(0, 200));
+
+  // 英語ロケール
+  const en = await run(['promote', '--dry-run'], { lang: 'en' });
+  check('LANG_ENV=en: promote --dry-run は英語で止まる（日本語が混ざらない）',
+    en.code === 1 && en.stderr.includes(msg('en', 'error.unknown_flag', { flag: '--dry-run' })) && !/[぀-ヿ一-鿿]/.test(en.stderr) && en.calls.length === 0, 'stderr=' + JSON.stringify(en.stderr));
+  const en2 = await run(['migrate', 'sub-issue', '-n'], { lang: 'en' });
+  check('LANG_ENV=en: migrate sub-issue -n は英語で止まり、ヒントに --dry-run を示す',
+    en2.code === 1 && en2.stderr.includes(msg('en', 'error.extra_positional', { extra: '-n' })) && en2.stderr.includes('/todo migrate sub-issue --dry-run') && !/[぀-ヿ一-鿿]/.test(en2.stderr) && en2.calls.length === 0, 'stderr=' + JSON.stringify(en2.stderr));
+  const en3 = await run(['done', '42', 'abc'], { lang: 'en' });
+  check('LANG_ENV=en: done 42 abc は英語で止まる', en3.code === 1 && en3.stderr.includes(msg('en', 'error.extra_positional', { extra: 'abc' })) && !/[぀-ヿ一-鿿]/.test(en3.stderr) && en3.calls.length === 0, 'stderr=' + JSON.stringify(en3.stderr));
+
+  // 呼び出し順序: フラグ字面と非フラグ余剰の混在では「不明なフラグ」が先に出る（既存の規約）
+  const mix = await run(['done', '42', 'abc', '--zzz']);
+  check('混在（done 42 abc --zzz）: 不明なフラグが先に報告される', mix.code === 1 && mix.stderr.includes('不明なフラグです: --zzz') && !mix.stderr.includes('余分な引数'), 'stderr=' + JSON.stringify(mix.stderr));
+  // 複数語の余剰はすべて示す
+  const multi = await run(['bulk', 'move', '42', 'someday', 'abc', 'def']);
+  check('複数語の余剰（bulk move 42 someday abc def）: 余剰をすべて示す', multi.code === 1 && multi.stderr.includes('余分な引数があります: abc def') && multi.calls.length === 0, 'stderr=' + JSON.stringify(multi.stderr));
+  // 旧挙動の直接再現: 位置引数を黙って捨てなくなった
+  const ar = await run(['archive', 'reopen', '50', 'next']);
+  check('archive reopen 50 next: 「next に戻す」つもりの入力を inbox へ黙って戻さない', ar.code === 1 && ar.stderr.includes('余分な引数があります: next') && ar.calls.length === 0, 'stderr=' + JSON.stringify(ar.stderr));
+
+  // ── 重複フラグ（parseArgs の1か所）
+  const dupBase = (flagArgs, id) => ({ id, argv: flagArgs });
+  const DUP_BLOCK = [
+    ['edit 42 --due 2026-10-01 --due 2026-10-02', ['edit', '42', '--due', '2026-10-01', '--due', '2026-10-02'], '--due'],
+    ['edit 42 --desc one --desc two', ['edit', '42', '--desc', 'one', '--desc', 'two'], '--desc'],
+    ['edit 42 --recur daily --recur weekly', ['edit', '42', '--recur', 'daily', '--recur', 'weekly'], '--recur'],
+    ['edit 42 --project 43 --project 44', ['edit', '42', '--project', '43', '--project', '44'], '--project'],
+    ['edit 42 --estimate 1h --estimate 2h', ['edit', '42', '--estimate', '1h', '--estimate', '2h'], '--estimate'],
+    ['edit 42 --activate 2026-11-01 --activate 2026-11-02', ['edit', '42', '--activate', '2026-11-01', '--activate', '2026-11-02'], '--activate'],
+    ['edit 42 --depends-on 44 --depends-on 45', ['edit', '42', '--depends-on', '44', '--depends-on', '45'], '--depends-on'],
+    ['edit 42 --resume-condition a --resume-condition b', ['edit', '42', '--resume-condition', 'a', '--resume-condition', 'b'], '--resume-condition'],
+    ['edit 42 --due 2026-11-01 --before 1d --before 2d', ['edit', '42', '--due', '2026-11-01', '--before', '1d', '--before', '2d'], '--before'],
+    ['done 42 --actual 1h --actual 2h', ['done', '42', '--actual', '1h', '--actual', '2h'], '--actual'],
+    ['done 42 --note a --note b', ['done', '42', '--note', 'a', '--note', 'b'], '--note'],
+    ['label add foo --color ff0000 --color 00ff00', ['label', 'add', 'foo', '--color', 'ff0000', '--color', '00ff00'], '--color'],
+    ['template save tn --due-offset 3 --due-offset 5', ['template', 'save', 'tn', '--due-offset', '3', '--due-offset', '5'], '--due-offset'],
+    ['add next t --body A --body B', ['add', 'next', 't', '--body', 'A', '--body', 'B'], '--body'],
+    ['add next t --body-file /nonexistent/a --body-file /nonexistent/b', ['add', 'next', 't', '--body-file', '/nonexistent/a', '--body-file', '/nonexistent/b'], '--body-file'],
+    ['add next t --priority p1 --priority p2', ['add', 'next', 't', '--priority', 'p1', '--priority', 'p2'], '--priority'],
+    ['add next t --p1 --p2（ショートハンド同士）', ['add', 'next', 't', '--p1', '--p2'], '--priority'],
+    ['edit 42 --p1 --priority p3（ショートハンドと --priority の混在）', ['edit', '42', '--p1', '--priority', 'p3'], '--priority'],
+    ['edit 42 --priority p3 --p1（順序を逆にしても同じ）', ['edit', '42', '--priority', 'p3', '--p1'], '--priority'],
+  ];
+  const dr = await pool(DUP_BLOCK, 8, d => run(d[1]));
+  dr.forEach((r, i) => {
+    const d = DUP_BLOCK[i];
+    check('重複フラグ ' + d[0] + ': exit 1・重複を示す・API 呼び出し 0 件',
+      r.code === 1 && r.stderr.includes(msg('ja', 'error.duplicate_flag', { flag: d[2], first: '', second: '' }).split(d[2])[0] + d[2] + ' が異なる値で複数回指定されています') && r.calls !== null && r.calls.length === 0,
+      'argv=' + JSON.stringify(d[1]) + ' code=' + r.code + ' calls=' + JSON.stringify(r.calls && r.calls.map(x => x.method)) + ' stderr=' + JSON.stringify(r.stderr).slice(0, 300));
+  });
+  // 値の取り違えを防ぐ: 先の値と後の値の両方がメッセージに載る
+  const dv = await run(['edit', '42', '--due', '2026-10-01', '--due', '2026-10-02']);
+  check('重複フラグのエラーに先の値と後の値の両方が載る', dv.stderr.includes('2026-10-01 / 2026-10-02'), 'stderr=' + JSON.stringify(dv.stderr));
+  const dvEn = await run(['edit', '42', '--due', '2026-10-01', '--due', '2026-10-02'], { lang: 'en' });
+  check('重複フラグ LANG_ENV=en: 英語で止まる', dvEn.code === 1 && dvEn.stderr.includes('Error: --due was given more than once with different values: 2026-10-01 / 2026-10-02') && !/[぀-ヿ一-鿿]/.test(dvEn.stderr), 'stderr=' + JSON.stringify(dvEn.stderr));
+
+  // 通すもの: 同じ値の重複 / --label の複数指定 / 正規化後に同じ値 / --body と --body-file の併用（優先順位は変えない）
+  const PASS_BLOCK = [
+    ['edit 42 --due 2026-11-01 --due 2026-11-01（同じ値）', ['edit', '42', '--due', '2026-11-01', '--due', '2026-11-01']],
+    ['edit 42 --p1 --p1（同じショートハンド）', ['edit', '42', '--p1', '--p1']],
+    ['edit 42 --p1 --priority p1（同じ値）', ['edit', '42', '--p1', '--priority', 'p1']],
+    ['edit 42 --depends-on #44 --depends-on 44（正規化後に同じ）', ['edit', '42', '--depends-on', '#44', '--depends-on', '44']],
+    ['template save tn --due-offset +3 --due-offset 3（正規化後に同じ）', ['template', 'save', 'tn', '--due-offset', '+3', '--due-offset', '3']],
+    ['add next t --label a --label b（--label は複数指定が仕様）', ['add', 'next', 't', '--label', 'a', '--label', 'b']],
+    ['add next t --body A --body-file /nonexistent/f（別フラグの併用は優先順位を変えない）', ['add', 'next', 't', '--body', 'A', '--body-file', '/nonexistent/f']],
+  ];
+  const pr = await pool(PASS_BLOCK, 8, d => run(d[1]));
+  pr.forEach((r, i) => check('重複フラグを通す: ' + PASS_BLOCK[i][0], r.calls !== null && !r.stderr.includes('複数回指定されています'), 'argv=' + JSON.stringify(PASS_BLOCK[i][1]) + ' stderr=' + JSON.stringify(r.stderr).slice(0, 300)));
+  // 1つだけ指定した従来の入力は変わらない（書き込みまで進む）
+  const single = await run(['edit', '42', '--due', '2026-11-01']);
+  check('対照: edit 42 --due 2026-11-01（1回だけ）は exit 0 で更新する', single.code === 0 && single.calls.some(x => x.method === 'issues.update'), 'code=' + single.code + ' stderr=' + single.stderr.slice(0, 200));
+
+  // parseArgs を直接呼ぶ単体確認（値の取り込み・--label・正規化後の値）
+  const pa = E.parseArgs(['t', '--label', 'a', '--label', 'b', '--due', 'x', '--due', 'x', '--depends-on', '#4', '--depends-on', '4', '--due-offset', '+3', '--p2', '--priority', 'p2']);
+  check('parseArgs 単体: 同値の重複は1つの値になり、--label は両方残る',
+    pa.due === 'x' && pa.dependsOn === '4' && pa.dueOffset === '3' && pa.priority === 'p2' && JSON.stringify(pa.labels) === '["a","b"]' && JSON.stringify(pa.extra) === '["t"]', JSON.stringify(pa));
+  let thrown = null;
+  const origWrite = process.stderr.write; process.stderr.write = () => true;
+  try { E.parseArgs(['--due', 'a', '--due', 'b']); } catch (e) { thrown = e; } finally { process.stderr.write = origWrite; }
+  check('parseArgs 単体: 異なる値の重複は CLI 終了の例外（isCliExit）になる', thrown !== null && E.isCliExit(thrown) && thrown.exitCode === 1, String(thrown));
+
+  // ── comment: 余った語を空白でつないで本文にする（desc / rename と同じ）
+  const cm = async (argv, id, resp) => { const r = await run(argv, { resp }); const c = (r.calls || []).filter(x => x.method === 'issues.createComment'); return { r, body: c.length ? c[0].args.body : null, n: c.length }; };
+  const c1 = await cm(['comment', '42', 'hello', 'world'], 'c1');
+  check('comment 42 hello world: 「hello world」が投稿される（先頭の1語だけにならない）', c1.r.code === 0 && c1.n === 1 && c1.body === 'hello world', JSON.stringify({ code: c1.r.code, body: c1.body, err: c1.r.stderr.slice(0, 200) }));
+  const c2 = await cm(['comment', '42', 'hello'], 'c2');
+  check('comment 42 hello: 従来どおり「hello」が投稿される', c2.r.code === 0 && c2.n === 1 && c2.body === 'hello', JSON.stringify({ body: c2.body }));
+  const c3 = await cm(['comment', '42', '複数 語 の 本文'], 'c3');
+  check('comment 42 "<空白入りの1引数>": そのまま投稿される', c3.r.code === 0 && c3.body === '複数 語 の 本文', JSON.stringify({ body: c3.body }));
+  const c4 = await cm(['comment', '42', 'first', '--body', 'second'], 'c4');
+  check('comment 42 first --body second: --body が優先され second が投稿される（W26-11 の仕様を変えない）', c4.r.code === 0 && c4.n === 1 && c4.body === 'second', JSON.stringify({ body: c4.body }));
+  const c5 = await cm(['comment', '42', 'a', 'b', '--body', 'X', 'c'], 'c5');
+  check('comment 42 a b --body X c: 位置引数が複数あっても --body が優先される', c5.r.code === 0 && c5.body === 'X', JSON.stringify({ body: c5.body }));
+  const c6 = await cm(['comment', '42', 'hello', '--zzz'], 'c6');
+  check('comment 42 hello --zzz: 未知フラグは従来どおり止まる（API 0 件）', c6.r.code === 1 && c6.r.stderr.includes('不明なフラグです: --zzz') && c6.r.calls.length === 0, 'stderr=' + JSON.stringify(c6.r.stderr));
+  const c7 = await cm(['comment', '42', 'a', '-x'], 'c7');
+  check('comment 42 a -x: 単ダッシュの語は本文の一部として連結される（desc と同じ）', c7.r.code === 0 && c7.body === 'a -x', JSON.stringify({ body: c7.body }));
+  const c8 = await cm(['comment', '42'], 'c8');
+  check('comment 42（本文なし）: Usage で止まる（API 0 件）', c8.r.code === 1 && c8.r.calls.length === 0, 'stderr=' + JSON.stringify(c8.r.stderr));
+
+  process.stdout.write(out.join('\n') + '\n');
+  fs.rmSync(TMPROOT, { recursive: true, force: true });
+})().catch((e) => { console.error(e && e.stack || e); process.exit(2); });
+W66_CONFORMANCE_EOF
+
+_W66_OUT=$(node "$_W66_TMP" "$ENGINE" "$STUB" 2>"$_W66_TMP.err"); _W66_EC=$?
+if [ "$_W66_EC" -ne 0 ]; then
+  printf "  ❌ §W66 の実行失敗 (exit %s): %s\n" "$_W66_EC" "$(head -c 600 "$_W66_TMP.err" 2>/dev/null)"; FAIL=$((FAIL+1))
+else
+  while IFS=$'\t' read -r _st _desc _detail; do
+    [ -z "$_st" ] && continue
+    case "$_st" in
+      ok) printf "  ✅ §W66 %s\n" "$_desc"; PASS=$((PASS+1)) ;;
+      *) printf "  ❌ §W66 %s\n     %s\n" "$_desc" "$_detail"; FAIL=$((FAIL+1)) ;;
+    esac
+  done <<< "$_W66_OUT"
+fi
+rm -f "$_W66_TMP" "$_W66_TMP.err"
+# 19経路 × 3 入力 + dry-run 系 3経路 × 2 入力 = 63、対照 19 + 他 → 検査が空振りしていない下限
+W66_N=$((PASS-W66_P0))
+if [ "$W66_N" -lt 130 ]; then
+  printf "  ❌ §W66 アサーション数が少なすぎる (%s 件。130 件未満は検査の空振りとみなす)\n" "$W66_N"; FAIL=$((FAIL+1))
+fi
 
 echo ""
 echo "=========================================="
