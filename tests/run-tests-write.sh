@@ -769,6 +769,18 @@ assert_eq "W10-3 境界値: issues.addLabels 呼び出しゼロ（既にnextの�
 assert_eq "W10-3 境界値: issues.removeLabel 呼び出しゼロ（既にnextのためラベル変更なし）" "0" "$(log_count "$W10_3_LOG" issues.removeLabel)"
 rm -f "$W10_3_LOG"
 
+# W10-4 境界値（#2171）: close 直後の一覧 API が反映遅延で完了Issue自身を返しても、
+# 昇格候補ヒントに完了Issue自身が出ないこと
+W10_4_LOG=$(mktemp /tmp/todo-test-w10-4-XXXXXX)
+W10_4_RESP='{"issues.get":[{"data":{"number":730,"id":9730,"title":"Just Closed Task","body":"project: #301\n","labels":[{"name":"🌈 someday"}]}},{"data":{"number":301,"title":"Project Y"}}],"issues.update":[{}],"issues.listForRepo":[{"data":[{"number":730,"title":"Just Closed Task","body":"project: #301\n","labels":[{"name":"🌈 someday"}],"updated_at":""},{"number":731,"title":"Sibling Task Y","body":"project: #301\n","labels":[{"name":"🌈 someday"}],"updated_at":""}]}]}'
+W10_4_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W10_4_RESP" OCTOKIT_STUB_LOG_ENV="$W10_4_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" api done-issue 730 2>&1); W10_4_EC=$?
+assert_exit_ok "W10-4 境界値: exit 0" "$W10_4_EC"
+assert_contains "W10-4 境界値: 昇格候補ヒントに兄弟Issue(#731)は含まれる" '#731' "$W10_4_OUT"
+assert_not_contains "W10-4 境界値: 昇格候補ヒントに完了Issue自身(#730)が含まれない" '#730' "$W10_4_OUT"
+rm -f "$W10_4_LOG"
+
 # ──────────────────────────────────────────
 # §W11  runAdd — parseArgs タグ判定の空白制約（Issue #1660 バグ2）
 # ──────────────────────────────────────────
@@ -2359,18 +2371,62 @@ assert_exit_ok "W26-10【核心・回帰】「--body」で始まる本文(--body
 assert_contains "W26-10: body が --body で始まるテキストそのまま投稿される" '"body":"--body を説明する文章"' "$(log_lines_for_method "$W26_10_LOG" issues.createComment)"
 rm -f "$W26_10_LOG"
 
-# W26-11【仕様固定】位置引数とフラグを同時指定した場合、フラグが優先され位置引数は無視される
-# （仕様判断: 現状の「フラグ優先・位置引数は無視」で仕様として確定。偶発挙動ではなく
-# 意図した挙動であることをテストでロックインする）
-W26_11_LOG=$(mktemp /tmp/todo-test-w26-11-XXXXXX)
-W26_11_RESP='{"issues.createComment":[{"data":{"id":11}}]}'
-W26_11_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W26_11_RESP" OCTOKIT_STUB_LOG_ENV="$W26_11_LOG" \
-  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
-  node "$ENGINE" run comment 52 "位置引数のテキスト（無視される）" --body "フラグの本文（採用される）" 2>&1); W26_11_EC=$?
-assert_exit_ok "W26-11【仕様固定】位置引数+フラグ同時指定: exit 0" "$W26_11_EC"
-assert_contains "W26-11: body はフラグ側の値になる" '"body":"フラグの本文（採用される）"' "$(log_lines_for_method "$W26_11_LOG" issues.createComment)"
-assert_not_contains "W26-11: 位置引数側のテキストは使われない（仕様として確定）" '"body":"位置引数のテキスト（無視される）"' "$(log_lines_for_method "$W26_11_LOG" issues.createComment)"
-rm -f "$W26_11_LOG"
+# W26-11【仕様変更 #2170】位置引数と --body / --body-file の併用はエラー（投稿しない・exit 1）
+# （従来は「フラグ優先・位置引数は黙って無視」を固定していた。無視された語が失われるため #2170 でエラー化）
+w26_run() { # $1=tag $2..=comment 以降の引数。W26_OUT/W26_EC/W26_LOG を設定する
+  local tag="$1"; shift
+  W26_LOG=$(mktemp /tmp/todo-test-w26-$tag-XXXXXX)
+  W26_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV='{"issues.createComment":[{"data":{"id":11}}]}' OCTOKIT_STUB_LOG_ENV="$W26_LOG" \
+    TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+    node "$ENGINE" run comment "$@" 2>&1); W26_EC=$?
+}
+w26_run 11 52 "位置引数のテキスト" --body "フラグの本文"
+assert_exit_fail "W26-11【#2170】位置引数+--body: exit 1" "$W26_EC"
+assert_contains "W26-11: 併用エラーメッセージ(ja)" "本文の指定方法を1つにしてください" "$W26_OUT"
+assert_eq "W26-11: createComment は0回" "0" "$(log_count "$W26_LOG" issues.createComment)"
+rm -f "$W26_LOG"
+W26_11B_F=$(mktemp /tmp/todo-test-w26-11b-body-XXXXXX); printf 'file-body' > "$W26_11B_F"
+w26_run 11b 52 "位置引数のテキスト" --body-file "$W26_11B_F"
+rm -f "$W26_11B_F"
+assert_exit_fail "W26-11b【#2170】位置引数+--body-file: exit 1" "$W26_EC"
+assert_contains "W26-11b: 併用エラーメッセージ" "本文の指定方法を1つにしてください" "$W26_OUT"
+assert_eq "W26-11b: createComment は0回" "0" "$(log_count "$W26_LOG" issues.createComment)"
+rm -f "$W26_LOG"
+w26_run 11c 52 --body "フラグの本文" "後ろの位置引数"
+assert_exit_fail "W26-11c【#2170】--body の後ろに位置引数: exit 1" "$W26_EC"
+assert_eq "W26-11c: createComment は0回" "0" "$(log_count "$W26_LOG" issues.createComment)"
+rm -f "$W26_LOG"
+# 英語メッセージ
+W26_11D_OUT=$(LANG_ENV=en OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV='{}' TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo \
+  node "$ENGINE" run comment 52 hello --body world 2>&1)
+assert_contains "W26-11d: 併用エラーメッセージ(en)" "Use only one way to specify the body" "$W26_11D_OUT"
+
+# W26-12【#2170】--body / --body-file を異なる値で2回渡したらエラー、同じ値なら通る
+w26_run 12 53 --body "A" --body "B"
+assert_exit_fail "W26-12【#2170】--body 異値2回: exit 1" "$W26_EC"
+assert_contains "W26-12: duplicate_flag と同じ文言" "--body が異なる値で複数回指定されています: A / B" "$W26_OUT"
+assert_eq "W26-12: createComment は0回" "0" "$(log_count "$W26_LOG" issues.createComment)"
+rm -f "$W26_LOG"
+w26_run 12b 53 --body-file /tmp/a.txt --body-file /tmp/b.txt
+assert_exit_fail "W26-12b【#2170】--body-file 異値2回: exit 1" "$W26_EC"
+assert_contains "W26-12b: duplicate_flag と同じ文言" "--body-file が異なる値で複数回指定されています: /tmp/a.txt / /tmp/b.txt" "$W26_OUT"
+assert_eq "W26-12b: createComment は0回" "0" "$(log_count "$W26_LOG" issues.createComment)"
+rm -f "$W26_LOG"
+w26_run 12c 53 --body "same" --body "same"
+assert_exit_ok "W26-12c【#2170】--body 同値2回は通る: exit 0" "$W26_EC"
+assert_contains "W26-12c: body が投稿される" '"body":"same"' "$(log_lines_for_method "$W26_LOG" issues.createComment)"
+rm -f "$W26_LOG"
+# 変えないもの: --body + --body-file は --body-file 優先
+W26_12D_F=$(mktemp /tmp/todo-test-w26-12d-body-XXXXXX); printf 'from-file' > "$W26_12D_F"
+w26_run 12d 53 --body "inline" --body-file "$W26_12D_F"
+assert_exit_ok "W26-12d --body + --body-file は従来どおり exit 0" "$W26_EC"
+assert_contains "W26-12d: --body-file が優先される" '"body":"from-file"' "$(log_lines_for_method "$W26_LOG" issues.createComment)"
+rm -f "$W26_LOG" "$W26_12D_F"
+# 変えないもの: 位置引数のみ（複数語は空白連結）
+w26_run 12e 53 hello world
+assert_exit_ok "W26-12e 位置引数のみ(複数語): exit 0" "$W26_EC"
+assert_contains "W26-12e: 空白連結" '"body":"hello world"' "$(log_lines_for_method "$W26_LOG" issues.createComment)"
+rm -f "$W26_LOG"
 
 # ──────────────────────────────────────────
 # §W27  runAdd — 未知フラグを黙ってタイトルへ連結しない（Issue #1921 パターンA）
@@ -7479,13 +7535,13 @@ assert_contains "W65-15 警告(en)" "Closed issue fetching reached the limit of 
 w65_run '[[3001,"2026-10-30T00:00:00Z"]]' ja -- run report 400d
 assert_contains "W65-16 警告(ja)" "クローズ済み Issue の取得が上限の 3000 件に達したため、このレポートの完了件数は実際より少ない可能性があります。期間を短くすると正確に集計できます。" "$W65_ERR"
 assert_eq "W65-16 ja の完了件数も 3000" "3000" "$W65_COUNT"
-# --- 変えないもの: report 以外の closed 取得（fetchRecentClosed）は件数指定のまま・since なし ---
+# --- stats / dashboard も期間ベース（#2152 で変更。#2138 時点では件数指定のままだった）。詳細は §W66 ---
 w65_run '[[60,"2026-10-30T00:00:00Z"]]' en -- run stats
-assert_eq "W65-17 stats: closed の listForRepo 1回（変えない）" "1" "$W65_CALLS"
-assert_eq "W65-17 stats: since なし（変えない）" "none" "$W65_SINCE"
-assert_eq "W65-17 stats: per_page 50（変えない）" "50" "$W65_PERPAGE"
+assert_eq "W65-17 stats: closed の listForRepo 1回" "1" "$W65_CALLS"
+assert_eq "W65-17 stats: since は 7日窓の1日手前（#2152）" "2026-10-24T00:00:00Z" "$W65_SINCE"
+assert_eq "W65-17 stats: per_page 100（#2152）" "100" "$W65_PERPAGE"
 w65_run '[[60,"2026-10-30T00:00:00Z"]]' en -- run dashboard
-assert_eq "W65-18 dashboard: since なし・per_page 30（変えない）" "none 30" "${W65_SINCE} ${W65_PERPAGE}"
+assert_eq "W65-18 dashboard: since・per_page（#2152）" "2026-10-24T00:00:00Z 100" "${W65_SINCE} ${W65_PERPAGE}"
 
 W65_N=$((PASS-W65_P0))
 if [ "$W65_N" -lt 41 ]; then
@@ -7493,7 +7549,293 @@ if [ "$W65_N" -lt 41 ]; then
 fi
 rm -rf "$W65_HOME"
 
-# ── §W66 Issue #2113: 余った引数・重複フラグを黙って無視しない ──
+# ── §W66 Issue #2152: dashboard / today / stats の完了数を期間ベースに、archive list を閉じた順に ──
+# 型: §W65（#2138）と同じ「closed を件数固定・作成日の降順で取る」。旧は fetchRecentClosed（dashboard / today 30件、stats 50件、archive 30件）で、
+# 古く作られて最近閉じた Issue と、件数を超えた分が数えられなかった（archive は「最近閉じた順」ではなく「作成日の新しい順」の一覧だった）。
+# 新: dashboard / stats は 8日前 00:00Z、today は 1日前 00:00Z 以降を fetchClosedSince で取る。archive list は fetchLatestClosed
+# （updated の降順で1ページ → closedAt の降順に並べ直して30件）。変えないもの: api list-closed（外部インターフェース。fetchRecentClosed のまま）。
+# スタブはメソッド単位のキューなので、run dashboard / today / stats は open の2ページ（空）→ closed の順、archive / api は closed だけを並べる。
+# 安全条件: HOME を一時ディレクトリに隔離し、OCTOKIT_STUB_ENV でスタブを指定する。応答はファイル（@path）で渡す。
+echo ""
+echo "§W66  dashboard / today / stats / archive の closed 取得（Issue #2152）"
+
+W66_P0=$PASS
+W66_HOME=$(mktemp -d /tmp/todo-test-w66-XXXXXX)
+W66_LOG="${W66_HOME}/stub.jsonl"
+W66_RESP="${W66_HOME}/resp.json"
+
+# w66_resp <空の open ページ数> <segments-json>: segments は [[件数, closed_at, PRなら1, 分刻みなら1], ...]。
+# 番号は降順（= 作成日の降順）。4番目が1なら、その segment の k 番目は closed_at + k 分（後ろほど最近閉じた）
+w66_resp() {
+  node -e '
+    const openPages = process.argv[1], segs = JSON.parse(process.argv[2]);
+    const items = []; let num = 900000;
+    for (const [n, closedAt, pr, step] of segs) for (let k = 0; k < n; k++, num--) {
+      const c = step ? new Date(Date.parse(closedAt) + k * 60000).toISOString() : closedAt;
+      items.push({ number: num, id: num + 9000, title: "W66 " + num, body: "", labels: [{ name: "🎯 next" }], state: "closed", closed_at: c, updated_at: c, ...(pr ? { pull_request: {} } : {}) });
+    }
+    // open ページ数が "T" のときは、1ページ目に今日（TODAY=2026-11-01）が期限の open を1件置く（renderToday はタスク0件だと完了数を出す前に終わるため）
+    const pages = openPages === "T"
+      ? [{ data: [{ number: 800000, id: 809000, title: "W66 due today", body: "due: 2026-11-01", labels: [{ name: "🎯 next" }], state: "open", updated_at: "2026-11-01T00:00:00Z" }] }, { data: [] }]
+      : Array.from({ length: +openPages }, () => ({ data: [] }));
+    for (let i = 0; i < items.length; i += 100) pages.push({ data: items.slice(i, i + 100) });
+    if (items.length % 100 === 0) pages.push({ data: [] });
+    require("fs").writeFileSync(process.argv[3], JSON.stringify({ "issues.listForRepo": pages }));
+  ' "$1" "$2" "$W66_RESP"
+}
+# w66_run <空の open ページ数> <segments-json> <lang> -- <args...>: W66_OUT / W66_ERR / W66_EC /
+#   W66_CALLS（closed の listForRepo 回数）/ W66_ARGS（closed 呼び出しの since,per_page,sort,direction。全回同じ前提で1回目）
+w66_run() {
+  case "$W66_HOME" in
+    /tmp/todo-test-w66-??????) : ;;
+    *) printf "  ❌ W66 隔離 HOME を作れていないため実行しない (%s)\n" "$W66_HOME"; FAIL=$((FAIL+1)); W66_CALLS=ERR; W66_EC=99; return 1 ;;
+  esac
+  : > "$W66_LOG"
+  local op="$1" segs="$2" lang="$3"; shift 4
+  w66_resp "$op" "$segs"
+  W66_OUT=$(env -u LANG_ENV HOME="$W66_HOME" LANG_ENV="$lang" OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="@${W66_RESP}" OCTOKIT_STUB_LOG_ENV="$W66_LOG" \
+    TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-11-01 \
+    node "$ENGINE" "$@" 2>"${W66_HOME}/stderr"); W66_EC=$?
+  W66_ERR=$(cat "${W66_HOME}/stderr")
+  local info; info=$(LOGFILE="$W66_LOG" node -e '
+    const fs = require("fs");
+    const calls = fs.readFileSync(process.env.LOGFILE, "utf8").trim().split("\n").filter(Boolean).map(l => JSON.parse(l))
+      .filter(c => c.method === "issues.listForRepo" && c.args.state === "closed");
+    const a = calls.length ? calls[0].args : {};
+    const s = v => v === undefined ? "none" : String(v);
+    process.stdout.write(calls.length + " " + [a.since, a.per_page, a.sort, a.direction].map(s).join(","));')
+  set -- $info; W66_CALLS="$1"; W66_ARGS="$2"
+}
+# w66_archive_nums: archive list の出力から番号を順に空白区切りで返す
+w66_archive_nums() { printf '%s\n' "$W66_OUT" | node -e 'let t="";process.stdin.on("data",d=>t+=d).on("end",()=>{process.stdout.write(t.split("\n").map(l=>(l.match(/^  #(\d+)  /)||[])[1]).filter(Boolean).join(" "))})'; }
+
+# 共通の応答: 先頭に「期間外に閉じた古い closed」250件（作成日の降順で前に来る）、後ろに期間内の closed
+W66_OLD='[250,"2026-07-01T00:00:00Z"]'
+
+# --- dashboard ---
+# 今日（JST 11-01）3件・今週 2件。旧は先頭30件（すべて期間外）しか見ず 0 / 0 だった
+w66_run 2 "[${W66_OLD},[3,\"2026-11-01T01:00:00Z\"],[2,\"2026-10-28T00:00:00Z\"]]" en -- run dashboard
+assert_contains "W66-1【核心】dashboard: 後ろのページの完了を数える（今日3 / 今週5）" "Today: 3 completed / This week: 5 completed" "$W66_OUT"
+assert_eq "W66-1 dashboard: closed 呼び出しは since=8日前 00:00Z・per_page 100・並び順は既定" "2026-10-24T00:00:00Z,100,none,none" "$W66_ARGS"
+assert_eq "W66-1 dashboard: closed の listForRepo 3回（250+5件）" "3" "$W66_CALLS"
+assert_eq "W66-1 dashboard: exit 0" "0" "$W66_EC"
+# 今週 45件（旧は30件で頭打ち）
+w66_run 2 '[[45,"2026-10-30T00:00:00Z"]]' en -- run dashboard
+assert_contains "W66-2 dashboard: 今週 45件（旧の上限30を超えて数える）" "This week: 45 completed" "$W66_OUT"
+w66_run 2 "[${W66_OLD},[3,\"2026-11-01T01:00:00Z\"],[2,\"2026-10-28T00:00:00Z\"]]" ja -- run dashboard
+assert_contains "W66-3 dashboard(ja)" "今日: 3件完了 / 今週: 5件完了" "$W66_OUT"
+# --- today ---
+w66_run T "[${W66_OLD},[2,\"2026-11-01T01:00:00Z\"]]" en -- run today
+assert_contains "W66-4【核心】today: 後ろのページの今日の完了 2件を数える" "2 completed today" "$W66_OUT"
+assert_eq "W66-4 today: since=1日前 00:00Z" "2026-10-31T00:00:00Z,100,none,none" "$W66_ARGS"
+# 境界: 10-31T14:59:59Z = JST 10-31 23:59（数えない）/ 10-31T15:00:00Z = JST 11-01 00:00（数える）
+w66_run T '[[1,"2026-10-31T14:59:59Z"],[1,"2026-10-31T15:00:00Z"]]' en -- run today
+assert_contains "W66-5 today 境界: JST の今日に入る1件だけ" "1 completed today" "$W66_OUT"
+# --- stats ---
+w66_run 2 "[${W66_OLD},[60,\"2026-10-30T00:00:00Z\"]]" en -- run stats
+assert_contains "W66-6【核心】stats: 直近7日 60件（旧は50件上限・作成日順で 0件）" "Last 7 days: 60 completed" "$W66_OUT"
+assert_eq "W66-6 stats: since=8日前 00:00Z" "2026-10-24T00:00:00Z,100,none,none" "$W66_ARGS"
+# 境界: d7ago = 2026-10-25T00:00:00Z（stats() の判定）。その直前は数えない
+w66_run 2 '[[1,"2026-10-25T00:00:00Z"],[1,"2026-10-24T23:59:59Z"]]' en -- run stats
+assert_contains "W66-7 stats 境界: d7ago ちょうどは数え、直前は数えない" "Last 7 days: 1 completed" "$W66_OUT"
+# --- archive list ---
+# 40件。作成日の降順（番号降順）で並ぶが、閉じた日時は後ろほど新しい（#899961 が最新）。旧は API 順の先頭30件（#900000〜#899971）
+w66_run 0 '[[40,"2026-10-01T00:00:00Z",0,1]]' en -- run archive list
+W66_NUMS=$(w66_archive_nums)
+assert_eq "W66-8【核心】archive list: 30件" "30" "$(printf '%s\n' "$W66_NUMS" | wc -w | tr -d ' ')"
+assert_eq "W66-8 archive list: 先頭は最も最近閉じた #899961" "899961" "$(printf '%s\n' "$W66_NUMS" | cut -d' ' -f1)"
+assert_eq "W66-8 archive list: 末尾は30番目に最近閉じた #899990" "899990" "$(printf '%s\n' "$W66_NUMS" | awk '{print $NF}')"
+assert_eq "W66-8 archive list: sort=updated・direction=desc・per_page 100・since なし" "none,100,updated,desc" "$W66_ARGS"
+assert_eq "W66-8 archive list: listForRepo 1回（ページングしない）" "1" "$W66_CALLS"
+# PR は除く
+w66_run 0 '[[5,"2026-10-01T00:00:00Z",1,1],[3,"2026-10-02T00:00:00Z",0,1]]' en -- run archive list
+assert_eq "W66-9 archive list: PR を除き Issue 3件だけ" "3" "$(w66_archive_nums | wc -w | tr -d ' ')"
+w66_run 0 '[[3,"2026-10-01T00:00:00Z",0,1]]' en -- run archive list someday
+assert_contains "W66-10 archive list someday: 該当なし（絞り込みは従来どおり）" "No completed tasks" "$W66_OUT"
+# --- 変えないもの: api list-closed（fetchRecentClosed のまま。件数指定・作成日の降順・since なし）---
+w66_run 0 '[[60,"2026-10-30T00:00:00Z"]]' en -- api list-closed --limit 50
+assert_eq "W66-11 api list-closed --limit 50: 50件（変えない）" "50" "$(printf '%s' "$W66_OUT" | node -e 'let t="";process.stdin.on("data",d=>t+=d).on("end",()=>{try{process.stdout.write(String(JSON.parse(t).length))}catch(e){process.stdout.write("ERR")}})')"
+assert_eq "W66-11 api list-closed: per_page 50・since / sort なし（変えない）" "none,50,none,none" "$W66_ARGS"
+# --- closedSinceIso（since の計算。月・年・閏日をまたぐ）---
+W66_SINCE=$(ENGINE_PATH="$ENGINE" node -e '
+  const e = require(process.env.ENGINE_PATH);
+  process.stdout.write([["2026-11-01",8],["2026-11-01",1],["2026-03-01",1],["2028-03-01",1],["2026-01-03",8]].map(([d,n]) => e.closedSinceIso(d,n)).join(" "));')
+assert_eq "W66-12 closedSinceIso: 月・閏日・年をまたぐ" "2026-10-24T00:00:00Z 2026-10-31T00:00:00Z 2026-02-28T00:00:00Z 2028-02-29T00:00:00Z 2025-12-26T00:00:00Z" "$W66_SINCE"
+# --- 型の残り: run 層で fetchRecentClosed を呼ぶ箇所は 0（api list-closed だけ）---
+W66_SCAN=$(ENGINE_PATH="$ENGINE" node -e '
+  const s = require("fs").readFileSync(process.env.ENGINE_PATH, "utf8").split("\n");
+  const hits = s.map((l, i) => [i + 1, l]).filter(([, l]) => /await fetchRecentClosed\(/.test(l));
+  process.stdout.write(hits.length + ":" + hits.map(([n, l]) => /list-closed|limit, fields/.test(l) ? "api" : "other@" + n).join(","));')
+assert_eq "W66-13 fetchRecentClosed の呼び出しは api list-closed の1か所だけ" "1:api" "$W66_SCAN"
+
+W66_N=$((PASS-W66_P0))
+if [ "$W66_N" -lt 23 ]; then
+  printf "  ❌ §W66 アサーション数が少なすぎる (%s 件。23 件未満は検査の空振りとみなす)\n" "$W66_N"; FAIL=$((FAIL+1))
+fi
+rm -rf "$W66_HOME"
+
+# ── §W67 Issue #2104: 直接サブコマンドは必須の入力が欠けても未捕捉例外で落ちない ──
+# 型: 直接サブコマンド（main() の switch）が位置引数・env をそのまま下層へ渡しており、欠けると
+# undefined.match() / new Date(undefined).toISOString() / ENOENT 等の未捕捉例外（スタックトレース）で落ちていた
+# （変更前の実測: 116 コマンド中 17 件。list-all 等6件は TODAY_ENV なし、normalize-due 等8件は位置引数なし、
+# template save / save-from / view save は ~/.claude がない HOME）。新: env → 引数の変換層（envToday / envJsonArray /
+# envRequired / requireArgs / argJsonArray）で検出し、exitWith() で Usage を出して exit 1。
+# W67-1 は全数走査: サブコマンド一覧をソースから抽出し（main / apiMain / runMain の case）、全部を同じ条件で実行する。
+# 安全条件: 子プロセスの env は PATH と HOME だけ（親の GH_TOKEN 等を継承しない）。HOME は一時ディレクトリ、
+# gh は必ず失敗する偽物。トークン・Octokit モジュール・TODO_REPO_* がないことを走査の前に確かめ、満たさなければ実行しない。
+echo ""
+echo "§W67  直接サブコマンドの必須入力の欠け（Issue #2104）"
+
+W67_P0=$PASS
+W67_HOME=$(mktemp -d /tmp/todo-test-w67-XXXXXX)
+W67_SCAN_JS="${W67_HOME}/scan.js"
+cat > "$W67_SCAN_JS" << 'W67_SCAN_EOF'
+// 使い方: node <this> <engine> <sandbox>
+const fs = require('fs'), path = require('path');
+const { spawnSync } = require('child_process');
+const [engine, sandbox] = process.argv.slice(2);
+const src = fs.readFileSync(engine, 'utf8').split('\n');
+const range = re => { const s = src.findIndex(l => re.test(l)); let e = s + 1; while (e < src.length && !/^}/.test(src[e])) e++; return s < 0 ? [0, 0] : [s, e]; };
+const cmds = [];
+{ // main(): 4スペース字下げがトップレベル、8スペースが validate / template / view の下位
+  const [s, e] = range(/^function main\(\)/); let top = null;
+  for (let i = s; i < e; i++) {
+    let m;
+    if ((m = src[i].match(/^    case '([a-z0-9-]+)'/))) { top = m[1]; if (top !== 'api' && top !== 'run') cmds.push([top]); }
+    else if ((m = src[i].match(/^        case '([a-z0-9-]+)'/)) && ['validate', 'template', 'view'].includes(top)) cmds.push([top, m[1]]);
+  }
+  cmds.push(['validate'], ['template'], ['view'], ['no-such-command'], []);
+}
+for (const [name, re] of [['api', /^async function apiMain\(/], ['run', /^async function runMain\(/]]) {
+  const [s, e] = range(re); const seen = new Set();
+  for (let i = s; i < e; i++) { const m = src[i].match(/case '([a-z0-9-]+)'/); if (m && !seen.has(m[1])) { seen.add(m[1]); cmds.push([name, m[1]]); } }
+  cmds.push([name]);
+}
+const home = path.join(sandbox, 'home'), fakebin = path.join(sandbox, 'fakebin');
+fs.mkdirSync(home); fs.mkdirSync(fakebin);
+fs.writeFileSync(path.join(fakebin, 'gh'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+const env = { PATH: fakebin + ':' + path.dirname(process.execPath) + ':/usr/bin:/bin', HOME: home };
+const unsafe = ['GH_TOKEN', 'GITHUB_TOKEN', 'TODO_REPO_OWNER', 'TODO_REPO_NAME', 'OCTOKIT_STUB_ENV'].filter(k => env[k])
+  .concat(['github-token', 'node_modules'].filter(f => fs.existsSync(path.join(home, '.claude', f))));
+if (unsafe.length) { console.log('UNSAFE ' + unsafe.join(',')); process.exit(0); }
+const STACK_RE = /^\s+at .+[(:]\d+|^Node\.js v\d/m;
+const hits = [];
+for (const argv of cmds) {
+  const r = spawnSync(process.execPath, [engine, ...argv], { env, input: '', timeout: 15000, encoding: 'utf8' });
+  if (STACK_RE.test(r.stderr || '') || r.signal) hits.push((argv.join(' ') || '(no args)') + ' => ' + (((r.stderr || '').match(/^(\w*Error[^\n]*)/m) || [, r.signal])[1]));
+}
+console.log('SCANNED ' + cmds.length);
+console.log('UNCAUGHT ' + hits.length);
+for (const h of hits) console.log('  ' + h);
+W67_SCAN_EOF
+
+case "$W67_HOME" in
+  /tmp/todo-test-w67-??????)
+    W67_SCAN=$(node "$W67_SCAN_JS" "$ENGINE" "$W67_HOME" 2>&1) ;;
+  *) W67_SCAN="UNSAFE home=${W67_HOME}" ;;
+esac
+assert_not_contains "W67-0 走査の安全条件（トークン・Octokit・TODO_REPO_* なし）" "UNSAFE" "$W67_SCAN"
+W67_SCANNED=$(printf '%s\n' "$W67_SCAN" | sed -n 's/^SCANNED //p')
+if [ "${W67_SCANNED:-0}" -ge 100 ]; then
+  printf "  ✅ W67-1 走査したサブコマンド数が 100 以上 (%s)\n" "$W67_SCANNED"; PASS=$((PASS+1))
+else
+  printf "  ❌ W67-1 走査したサブコマンド数が少なすぎる (%s。一覧の抽出が壊れている)\n" "${W67_SCANNED:-なし}"; FAIL=$((FAIL+1))
+fi
+assert_contains "W67-1 未捕捉例外（スタックトレース）0件（一覧は失敗時に表示）" "UNCAUGHT 0" "$W67_SCAN"
+
+# w67 <env 代入...> -- <args...>: env は PATH / HOME と指定分だけ。W67_OUT / W67_ERR / W67_EC
+W67_RUN_HOME="${W67_HOME}/run-home"
+w67() {
+  local envs=()
+  while [ "$1" != "--" ]; do envs+=("$1"); shift; done; shift
+  rm -rf "$W67_RUN_HOME"; mkdir -p "$W67_RUN_HOME"
+  W67_OUT=$(env -i PATH="$PATH" HOME="$W67_RUN_HOME" ${envs[@]+"${envs[@]}"} node "$ENGINE" "$@" 2>"${W67_HOME}/stderr" </dev/null); W67_EC=$?
+  W67_ERR=$(cat "${W67_HOME}/stderr")
+}
+# w67_usage_err <desc> <stderr に含まれる文字列>: exit 1・指定文字列あり・スタックトレースなし
+w67_usage_err() {
+  assert_eq "$1: exit 1" "1" "$W67_EC"
+  assert_contains "$1: メッセージ" "$2" "$W67_ERR"
+  assert_not_contains "$1: スタックトレースなし" "    at " "$W67_ERR"
+}
+
+# --- TODAY_ENV（集計・表示系。未設定・形式違い・実在しない日付）---
+w67 -- list-all
+w67_usage_err "W67-2 list-all TODAY_ENV なし" "Error: TODAY_ENV is not set"
+assert_contains "W67-2 list-all: Usage を示す" "Usage: TODAY_ENV=YYYY-MM-DD [OPEN_ENV=<json array>] [CLOSED_ENV=<json array>] todo-engine.js list-all" "$W67_ERR"
+assert_eq "W67-2 list-all: 途中まで stdout へ書かない" "" "$W67_OUT"
+w67 TODAY_ENV=garbage -- dashboard
+w67_usage_err "W67-3 dashboard TODAY_ENV=garbage" "Error: TODAY_ENV must be a valid YYYY-MM-DD date: garbage"
+w67 TODAY_ENV=2026-02-30 -- report
+w67_usage_err "W67-4 report TODAY_ENV=2026-02-30（実在しない日付）" "Error: TODAY_ENV must be a valid YYYY-MM-DD date: 2026-02-30"
+w67 -- done-count
+w67_usage_err "W67-5 done-count TODAY_ENV なし（従来は黙って 0 を出していた）" "Error: TODAY_ENV is not set"
+w67 TODAY_ENV=2026-04-05 'CLOSED_ENV=[{"number":1,"closedAt":"2026-04-05T01:00:00Z"}]' -- done-count
+assert_eq "W67-6 done-count 正常系は従来どおり" "0:1" "${W67_EC}:${W67_OUT}"
+# --- OPEN_ENV / CLOSED_ENV / CONTEXTS_ENV（JSON 配列）---
+w67 TODAY_ENV=2026-04-05 OPEN_ENV=garbage -- list-summary
+w67_usage_err "W67-7 list-summary OPEN_ENV が JSON でない" "Error: OPEN_ENV is not valid JSON"
+w67 TODAY_ENV=2026-04-05 'OPEN_ENV={}' -- stats
+w67_usage_err "W67-8 stats OPEN_ENV が配列でない" "Error: OPEN_ENV must be a JSON array"
+w67 TODAY_ENV=2026-04-05 CLOSED_ENV=garbage -- today
+w67_usage_err "W67-9 today CLOSED_ENV が JSON でない" "Error: CLOSED_ENV is not valid JSON"
+w67 TODAY_ENV=2026-04-05 OPEN_ENV= -- weekly-summary
+assert_eq "W67-10 OPEN_ENV が空文字なら []（従来どおり）" "0" "$W67_EC"
+# --- 位置引数（日付ユーティリティ・gtd-label・validate）---
+w67 -- normalize-due
+w67_usage_err "W67-11 normalize-due 引数なし" "Usage: todo-engine.js normalize-due <expr> <today YYYY-MM-DD>"
+w67 -- normalize-due today
+w67_usage_err "W67-12 normalize-due today（基準日なし）" "Error: missing argument"
+w67 -- first-due daily
+w67_usage_err "W67-13 first-due daily（基準日なし）" "Usage: todo-engine.js first-due <recur> <today YYYY-MM-DD>"
+w67 -- next-due-catchup daily 2026-01-01
+w67_usage_err "W67-14 next-due-catchup の今日なし" "Usage: todo-engine.js next-due-catchup <recur> <base YYYY-MM-DD> <today YYYY-MM-DD>"
+w67 -- add-days 2026-01-01
+w67_usage_err "W67-15 add-days 日数なし（従来は NaN-NaN-NaN）" "Usage: todo-engine.js add-days <YYYY-MM-DD> <days>"
+w67 -- next-due daily 2026-01-01
+assert_eq "W67-16 next-due 正常系は従来どおり" "0:2026-01-02" "${W67_EC}:${W67_OUT}"
+w67 -- gtd-label
+w67_usage_err "W67-17 gtd-label 引数なし" "Usage: todo-engine.js gtd-label <label>"
+w67 -- validate due
+w67_usage_err "W67-18 validate due 値なし" "Usage: todo-engine.js validate due <value>"
+w67 -- validate due ''
+assert_eq "W67-19 validate due ''（期日削除）は従来どおり通る" "0" "$W67_EC"
+w67 -- validate recur
+w67_usage_err "W67-20 validate recur 値なし" "Usage: todo-engine.js validate recur <value>"
+w67 -- validate ctx
+w67_usage_err "W67-21 validate ctx 値なし" "Usage: todo-engine.js validate ctx <value>"
+w67 -- validate number
+w67_usage_err "W67-22 validate number 値なしは従来の positive_int のまま" "正の整数"
+w67 -- find-unknown-flag daily
+w67_usage_err "W67-23 find-unknown-flag JSON でない引数" "Error: expected a JSON array: daily"
+w67 -- compute-github-ms '[[0,100],[50,150]]'
+assert_eq "W67-24 compute-github-ms 正常系は従来どおり" "0:150" "${W67_EC}:${W67_OUT}"
+# --- template / view（名前の env 必須・~/.claude がない HOME）---
+w67 -- template save
+w67_usage_err "W67-25 template save TNAME_ENV なし" "Usage: TNAME_ENV=<name> todo-engine.js template save"
+assert_eq "W67-25 template save: 名前 undefined のテンプレートを作らない" "no" "$([ -e "${W67_RUN_HOME}/.claude/todo-templates.json" ] && echo yes || echo no)"
+w67 -- template show
+w67_usage_err "W67-26 template show TNAME_ENV なし" "Error: TNAME_ENV is not set"
+w67 TNAME_ENV=w67tpl GTD_ENV=next -- template save
+assert_eq "W67-27 template save: ~/.claude がない HOME でも保存できる" "0" "$W67_EC"
+assert_contains "W67-27 template save: ファイルに保存される" '"w67tpl"' "$(cat "${W67_RUN_HOME}/.claude/todo-templates.json" 2>/dev/null)"
+w67 TNAME_ENV=w67tpl CONTEXTS_ENV=garbage -- template save-from
+w67_usage_err "W67-28 template save-from CONTEXTS_ENV が JSON でない" "Error: CONTEXTS_ENV is not valid JSON"
+w67 -- view use
+w67_usage_err "W67-29 view use VNAME_ENV なし" "Usage: VNAME_ENV=<name> todo-engine.js view use"
+w67 VNAME_ENV=w67view GTD_ENV=next -- view save
+assert_eq "W67-30 view save: ~/.claude がない HOME でも保存できる" "0" "$W67_EC"
+assert_contains "W67-30 view save: ファイルに保存される" '"w67view"' "$(cat "${W67_RUN_HOME}/.claude/todo-views.json" 2>/dev/null)"
+w67 -- view list
+assert_eq "W67-31 view list（名前不要）は従来どおり" "0" "$W67_EC"
+
+W67_N=$((PASS-W67_P0))
+if [ "$W67_N" -lt 70 ]; then
+  printf "  ❌ §W67 アサーション数が少なすぎる (%s 件。70 件未満は検査の空振りとみなす)\n" "$W67_N"; FAIL=$((FAIL+1))
+fi
+rm -rf "$W67_HOME"
+
+# ── §W68 Issue #2113: 余った引数・重複フラグを黙って無視しない ──
 # 型: 固定の位置引数だけを取るハンドラが、その後ろに残ったトークンを黙って捨てて本実行していた。
 #     `--` 始まりの語は guardUnknownFlag が止めるが、単ダッシュ `-x` や裸の `abc` / `dry-run` / `-n` は
 #     UNKNOWN_FLAG_RE に合わないため素通りし、書き込み・一括登録・一括昇格まで進んでいた。
@@ -7506,11 +7848,11 @@ rm -rf "$W65_HOME"
 #       (2) 対照: 余剰なしの正しい入力ではガードのメッセージが出ない。(3) 重複フラグ。(4) comment の本文連結。
 # 安全条件: HOME を新規の一時ディレクトリに隔離し、OCTOKIT_STUB_ENV でスタブを指定する。GH_TOKEN は渡さない。
 echo ""
-echo "§W66  余った引数・重複フラグを黙って無視しない（Issue #2113）"
+echo "§W68  余った引数・重複フラグを黙って無視しない（Issue #2113）"
 
-W66_P0=$PASS
-_W66_TMP=$(mktemp /tmp/todo-test-w66-XXXXXX)
-cat > "$_W66_TMP" << 'W66_CONFORMANCE_EOF'
+W68_P0=$PASS
+_W68_TMP=$(mktemp /tmp/todo-test-w66-XXXXXX)
+cat > "$_W68_TMP" << 'W68_CONFORMANCE_EOF'
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -7525,7 +7867,7 @@ const TMPROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'w66-'));
 const msg = (lang, key, vars) => E.MESSAGES[lang][key].replace(/\{(\w+)\}/g, (m, k) => (vars && k in vars ? vars[k] : m));
 
 // ガードを抜けたら本実行が成功するだけの応答を十分に用意する（空応答だとスタブの throw で exit 1 になり、検査が空振りする）
-const G = (n, labels, body) => ({ data: { number: n, id: 9000 + n, title: 'W66', body: body || '', labels: (labels || [{ name: '🎯 next' }]), state: 'open', html_url: 'https://example.invalid/' + n } });
+const G = (n, labels, body) => ({ data: { number: n, id: 9000 + n, title: 'W68', body: body || '', labels: (labels || [{ name: '🎯 next' }]), state: 'open', html_url: 'https://example.invalid/' + n } });
 const many = (v, n) => Array.from({ length: n }, () => v);
 const RESP = JSON.stringify({
   'issues.get': many(G(42, [{ name: '🎯 next' }], 'project: #43\n'), 6),
@@ -7723,9 +8065,9 @@ const DRYRUN_ROUTES = ['A4 migrate sub-issue', 'B promote', 'B weekly-project-au
   const c3 = await cm(['comment', '42', '複数 語 の 本文'], 'c3');
   check('comment 42 "<空白入りの1引数>": そのまま投稿される', c3.r.code === 0 && c3.body === '複数 語 の 本文', JSON.stringify({ body: c3.body }));
   const c4 = await cm(['comment', '42', 'first', '--body', 'second'], 'c4');
-  check('comment 42 first --body second: --body が優先され second が投稿される（W26-11 の仕様を変えない）', c4.r.code === 0 && c4.n === 1 && c4.body === 'second', JSON.stringify({ body: c4.body }));
+  check('comment 42 first --body second: 併用はエラーで投稿されない（#2170。旧仕様は --body 優先）', c4.r.code === 1 && c4.n === 0 && c4.r.stderr.includes('本文の指定方法を1つにしてください'), JSON.stringify({ code: c4.r.code, n: c4.n, err: c4.r.stderr.slice(0, 200) }));
   const c5 = await cm(['comment', '42', 'a', 'b', '--body', 'X', 'c'], 'c5');
-  check('comment 42 a b --body X c: 位置引数が複数あっても --body が優先される', c5.r.code === 0 && c5.body === 'X', JSON.stringify({ body: c5.body }));
+  check('comment 42 a b --body X c: 位置引数が複数あってもエラーで投稿されない（#2170）', c5.r.code === 1 && c5.n === 0, JSON.stringify({ code: c5.r.code, n: c5.n }));
   const c6 = await cm(['comment', '42', 'hello', '--zzz'], 'c6');
   check('comment 42 hello --zzz: 未知フラグは従来どおり止まる（API 0 件）', c6.r.code === 1 && c6.r.stderr.includes('不明なフラグです: --zzz') && c6.r.calls.length === 0, 'stderr=' + JSON.stringify(c6.r.stderr));
   const c7 = await cm(['comment', '42', 'a', '-x'], 'c7');
@@ -7736,25 +8078,25 @@ const DRYRUN_ROUTES = ['A4 migrate sub-issue', 'B promote', 'B weekly-project-au
   process.stdout.write(out.join('\n') + '\n');
   fs.rmSync(TMPROOT, { recursive: true, force: true });
 })().catch((e) => { console.error(e && e.stack || e); process.exit(2); });
-W66_CONFORMANCE_EOF
+W68_CONFORMANCE_EOF
 
-_W66_OUT=$(node "$_W66_TMP" "$ENGINE" "$STUB" 2>"$_W66_TMP.err"); _W66_EC=$?
-if [ "$_W66_EC" -ne 0 ]; then
-  printf "  ❌ §W66 の実行失敗 (exit %s): %s\n" "$_W66_EC" "$(head -c 600 "$_W66_TMP.err" 2>/dev/null)"; FAIL=$((FAIL+1))
+_W68_OUT=$(node "$_W68_TMP" "$ENGINE" "$STUB" 2>"$_W68_TMP.err"); _W68_EC=$?
+if [ "$_W68_EC" -ne 0 ]; then
+  printf "  ❌ §W68 の実行失敗 (exit %s): %s\n" "$_W68_EC" "$(head -c 600 "$_W68_TMP.err" 2>/dev/null)"; FAIL=$((FAIL+1))
 else
   while IFS=$'\t' read -r _st _desc _detail; do
     [ -z "$_st" ] && continue
     case "$_st" in
-      ok) printf "  ✅ §W66 %s\n" "$_desc"; PASS=$((PASS+1)) ;;
-      *) printf "  ❌ §W66 %s\n     %s\n" "$_desc" "$_detail"; FAIL=$((FAIL+1)) ;;
+      ok) printf "  ✅ §W68 %s\n" "$_desc"; PASS=$((PASS+1)) ;;
+      *) printf "  ❌ §W68 %s\n     %s\n" "$_desc" "$_detail"; FAIL=$((FAIL+1)) ;;
     esac
-  done <<< "$_W66_OUT"
+  done <<< "$_W68_OUT"
 fi
-rm -f "$_W66_TMP" "$_W66_TMP.err"
+rm -f "$_W68_TMP" "$_W68_TMP.err"
 # 19経路 × 3 入力 + dry-run 系 3経路 × 2 入力 = 63、対照 19 + 他 → 検査が空振りしていない下限
-W66_N=$((PASS-W66_P0))
-if [ "$W66_N" -lt 130 ]; then
-  printf "  ❌ §W66 アサーション数が少なすぎる (%s 件。130 件未満は検査の空振りとみなす)\n" "$W66_N"; FAIL=$((FAIL+1))
+W68_N=$((PASS-W68_P0))
+if [ "$W68_N" -lt 130 ]; then
+  printf "  ❌ §W68 アサーション数が少なすぎる (%s 件。130 件未満は検査の空振りとみなす)\n" "$W68_N"; FAIL=$((FAIL+1))
 fi
 
 echo ""
