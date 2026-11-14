@@ -141,7 +141,7 @@ GTD ラベルは `next` / `routine` / `inbox` / `waiting` / `someday` / `referen
 
 | コマンド | 引数 | 説明 |
 |---------|------|------|
-| `comment` | `<#> <テキスト> [--body "本文"] [--body-file <path>]` | Issue にコメントを追加（任意タイミング）。`--body`/`--body-file` で本文を直接指定可能（`--body-file` が優先、`add` と同じ挙動）。位置引数の `<テキスト>` も従来通り使用可（`--body`/`--body-file` 未指定時）。`--body`/`--body-file` 以外の `--` で始まる引数は未知フラグとしてエラー終了する（本文として黙って投稿しない）。`<テキスト>` が複数の語に分かれていたときは、`desc` / `rename` と同じく空白でつないで1つの本文にする（`comment 42 hello world` は「hello world」を投稿する）。`--body` / `--body-file` を指定したときは位置引数の語は使われない。書き込み系（`run_in_background: true`） |
+| `comment` | `<#> <テキスト> [--body "本文"] [--body-file <path>]` | Issue にコメントを追加（任意タイミング）。`--body`/`--body-file` で本文を直接指定可能（`--body-file` が優先、`add` と同じ挙動）。位置引数の `<テキスト>` も従来通り使用可（`--body`/`--body-file` 未指定時）。`--body`/`--body-file` 以外の `--` で始まる引数は未知フラグとしてエラー終了する（本文として黙って投稿しない）。`<テキスト>` が複数の語に分かれていたときは、`desc` / `rename` と同じく空白でつないで1つの本文にする（`comment 42 hello world` は「hello world」を投稿する）。位置引数と `--body` / `--body-file` を一緒に渡すとエラー終了する（投稿しない。本文の指定方法は1つにする）。`--body` / `--body-file` を異なる値で2回渡してもエラー（同じ値の重複は通る）。`--body` と `--body-file` の併用は従来どおり `--body-file` が優先される。書き込み系（`run_in_background: true`） |
 
 ユーザーが「#N の経緯まとめて」「#N の状況確認」「#N にこれまでのメモ一覧を見せて」のような自然言語で依頼した場合は、
 `bash ~/.claude/todo.sh api list-comments <N>` を実行し、取得結果を要約して返す。

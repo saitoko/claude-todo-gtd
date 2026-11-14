@@ -374,6 +374,8 @@ const MESSAGES = {
     'error.extra_positional_hint_template_save': 'ヒント: テンプレートにタイトルは保存できません（タイトルは template use のときに指定します）: {example}',
     'error.duplicate_flag': 'エラー: {flag} が異なる値で複数回指定されています: {first} / {second}',
     'error.duplicate_flag_hint': 'ヒント: 値は1つだけ指定してください（同じ値の重複は許可されます。--label は複数回指定できます）。',
+    'error.comment_body_conflict': 'エラー: コメント本文が複数の方法で指定されています（位置引数と {flag}）。本文の指定方法を1つにしてください',
+    'error.comment_body_conflict_hint': 'ヒント: 位置引数か --body か --body-file のどれか1つだけで本文を渡してください。',
     'hint.project_outcome': '💡 ヒント: プロジェクト名は「〜している状態」「〜が完了している」のような\n   成果物（outcome）の形で書くと Next Action を導出しやすくなります。',
     'label.desc_context': 'コンテキスト',
     'label.desc_tag': 'タグ',
@@ -769,6 +771,8 @@ const MESSAGES = {
     'error.extra_positional_hint_template_save': 'Hint: a template cannot store a title (give the title when you run template use): {example}',
     'error.duplicate_flag': 'Error: {flag} was given more than once with different values: {first} / {second}',
     'error.duplicate_flag_hint': 'Hint: give the value only once (repeating the same value is allowed; --label may be repeated).',
+    'error.comment_body_conflict': 'Error: the comment body was given in more than one way (positional text and {flag}). Use only one way to specify the body',
+    'error.comment_body_conflict_hint': 'Hint: pass the body with exactly one of: positional text, --body, or --body-file.',
     'hint.project_outcome': '💡 Hint: Project titles are easier to derive Next Actions from when written\n   as an outcome (e.g. "X is done", "X has been completed").',
     'label.desc_context': 'Context',
     'label.desc_tag': 'Tag',
@@ -2570,6 +2574,8 @@ function readJsonFile(fpath) {
 }
 
 function writeJsonFile(fpath, data) {
+  // ~/.claude がまだない環境（新規インストール直後・空 HOME）で ENOENT の未捕捉例外にしない（#2104）
+  fs.mkdirSync(path.dirname(fpath), { recursive: true });
   fs.writeFileSync(fpath, JSON.stringify(data, null, 2));
 }
 
@@ -2746,8 +2752,56 @@ function viewDelete(name) {
 // （list-all / dashboard / template / view 等。テストと外部ツールが env で入力を渡す）が
 // 受け取った env を、表示層の引数へ変換するだけの関数をここに集める。run 層（runList /
 // runDashboard / runTemplate 等）は env に書かず、引数で直接渡す。
-function envOpen() { return JSON.parse(process.env.OPEN_ENV || '[]'); }
-function envClosed() { return JSON.parse(process.env.CLOSED_ENV || '[]'); }
+//
+// #2104: 必須の入力（位置引数・env）が欠けたまま下層へ渡すと、undefined.match() や
+// new Date(undefined).toISOString() の未捕捉例外（スタックトレース）で落ちる。欠け・形式違いは
+// この層で検出し、使い方を示して exitWith() で終了する。空文字は値として扱う（validate due ''
+// は期日削除として有効）ため、位置引数で欠けとみなすのは未指定（undefined）だけ。
+
+// 配列の JSON を受け取る env（未設定・空文字は []）。JSON でない・配列でない値は使い方エラー。
+function envJsonArray(name) {
+  const raw = process.env[name];
+  if (!raw) return [];
+  let v;
+  try { v = JSON.parse(raw); }
+  catch (e) { exitWith('Error: ' + name + ' is not valid JSON: ' + e.message); }
+  if (!Array.isArray(v)) exitWith('Error: ' + name + ' must be a JSON array');
+  return v;
+}
+function envOpen() { return envJsonArray('OPEN_ENV'); }
+function envClosed() { return envJsonArray('CLOSED_ENV'); }
+// 集計・表示系の基準日 TODAY_ENV（YYYY-MM-DD・必須）。cmd は Usage 表示用のサブコマンド名。
+function envToday(cmd) {
+  const v = process.env.TODAY_ENV;
+  const m = (v || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m || !isValidCalendarDate(+m[1], +m[2], +m[3])) {
+    exitWith([
+      v ? 'Error: TODAY_ENV must be a valid YYYY-MM-DD date: ' + v : 'Error: TODAY_ENV is not set',
+      'Usage: TODAY_ENV=YYYY-MM-DD [OPEN_ENV=<json array>] [CLOSED_ENV=<json array>] todo-engine.js ' + cmd,
+    ]);
+  }
+  return v;
+}
+// テンプレート名・ビュー名などの必須 env（未設定・空文字は使い方エラー）。
+function envRequired(name, usage) {
+  const v = process.env[name];
+  if (!v) exitWith(['Error: ' + name + ' is not set', 'Usage: ' + usage]);
+  return v;
+}
+// 位置引数 args[1..count] がすべて指定されているか。usage は 'todo-engine.js ' に続く部分。
+function requireArgs(args, count, usage) {
+  for (let i = 1; i <= count; i++) {
+    if (args[i] === undefined) exitWith(['Error: missing argument', 'Usage: todo-engine.js ' + usage]);
+  }
+}
+// 配列の JSON を受け取る位置引数（テスト用の直接サブコマンド。未指定・空文字は []）。
+function argJsonArray(raw, usage) {
+  if (!raw) return [];
+  let v;
+  try { v = JSON.parse(raw); } catch (e) { v = undefined; }
+  if (!Array.isArray(v)) exitWith(['Error: expected a JSON array: ' + raw, 'Usage: todo-engine.js ' + usage]);
+  return v;
+}
 function envListFilters() {
   return {
     gtd: process.env.FILTER_GTD_ENV || '',
@@ -2763,8 +2817,8 @@ function envListFilters() {
 function envTemplateFields() {
   return {
     gtd: process.env.GTD_ENV,
-    contexts: JSON.parse(process.env.CONTEXTS_ENV || '[]'),
-    tags: JSON.parse(process.env.TAGS_ENV || '[]'),
+    contexts: envJsonArray('CONTEXTS_ENV'),
+    tags: envJsonArray('TAGS_ENV'),
     dueOffset: process.env.DUE_OFFSET_ENV,
     due: process.env.DUE_ENV,
     recur: process.env.RECUR_ENV,
@@ -3123,10 +3177,10 @@ function main() {
   // stderr は exitWith 側で書き済み。それ以外の例外は握りつぶさず再送出する。
   try {
   switch (cmd) {
-    // ユーティリティ
-    case 'normalize-due':   process.stdout.write(normalizeDue(args[1], args[2])); break;
-    case 'add-days':        process.stdout.write(addDays(args[1], parseInt(args[2]))); break;
-    case 'add-month':       process.stdout.write(addMonth(args[1])); break;
+    // ユーティリティ（日付系は位置引数をすべて必須にする。欠けると NaN の日付や未捕捉例外になる。#2104）
+    case 'normalize-due':   requireArgs(args, 2, 'normalize-due <expr> <today YYYY-MM-DD>'); process.stdout.write(normalizeDue(args[1], args[2])); break;
+    case 'add-days':        requireArgs(args, 2, 'add-days <YYYY-MM-DD> <days>'); process.stdout.write(addDays(args[1], parseInt(args[2]))); break;
+    case 'add-month':       requireArgs(args, 1, 'add-month <YYYY-MM-DD>'); process.stdout.write(addMonth(args[1])); break;
     case 'parse-body':           process.stdout.write(parseBody(args[1])); break;
     case 'extract-issue-fields': extractIssueFields(); break;
     case 'build-body':      process.stdout.write(buildBody({
@@ -3148,18 +3202,18 @@ function main() {
     }
     case 'format-time':     process.stdout.write(formatTime(args[1])); break;
     case 'priority-color':  process.stdout.write(priorityColor(args[1])); break;
-    case 'next-due':        process.stdout.write(nextDue(args[1], args[2])); break;
-    case 'first-due':       process.stdout.write(firstDueFromToday(args[1], args[2])); break;
-    case 'next-due-catchup': process.stdout.write(JSON.stringify(nextDueCatchUp(args[1], args[2], args[3]))); break;
-    case 'cycles-overdue':  process.stdout.write(String(computeCyclesOverdue(args[1], args[2], args[3]))); break;
+    case 'next-due':        requireArgs(args, 2, 'next-due <recur> <base YYYY-MM-DD>'); process.stdout.write(nextDue(args[1], args[2])); break;
+    case 'first-due':       requireArgs(args, 2, 'first-due <recur> <today YYYY-MM-DD>'); process.stdout.write(firstDueFromToday(args[1], args[2])); break;
+    case 'next-due-catchup': requireArgs(args, 3, 'next-due-catchup <recur> <base YYYY-MM-DD> <today YYYY-MM-DD>'); process.stdout.write(JSON.stringify(nextDueCatchUp(args[1], args[2], args[3]))); break;
+    case 'cycles-overdue':  requireArgs(args, 3, 'cycles-overdue <recur> <due YYYY-MM-DD> <today YYYY-MM-DD>'); process.stdout.write(String(computeCyclesOverdue(args[1], args[2], args[3]))); break;
     case 'find-unknown-flag': {
       // 未知フラグ判定の単体テスト用（Issue #1921）。入力は JSON 配列の文字列
       // （例: '["設計書を書く","--boddy-file"]' と許可リスト '["--group"]'）。
       // 検出したフラグ文字列を、なければ空文字列を stdout へ返す。
       // Octokit スタブも GitHub 接続も不要な純粋関数なので、入力文字パターン・境界値を
       // 大量に回して検証できる（tests/run-tests.sh §51）。
-      const toks = JSON.parse(args[1] || '[]');
-      const allowed = JSON.parse(args[2] || '[]');
+      const toks = argJsonArray(args[1], 'find-unknown-flag <tokens json array> [allowed json array]');
+      const allowed = argJsonArray(args[2], 'find-unknown-flag <tokens json array> [allowed json array]');
       process.stdout.write(findUnknownFlag(toks, allowed) || '');
       break;
     }
@@ -3169,8 +3223,8 @@ function main() {
       // フィールド一覧」（例: '["actual"]'）。判定結果（最初に見つかった未サポートフィールド名。
       // なければ空文字列）を stdout へ返す。メッセージ整形（guardUnsupportedFlag）は経由しない
       // ので FLAG_SUPPORTED_BY への依存はここには生じない。
-      const setFields = JSON.parse(args[1] || '[]');
-      const supportedFields = JSON.parse(args[2] || '[]');
+      const setFields = argJsonArray(args[1], 'find-unsupported-flag <set fields json array> [supported json array]');
+      const supportedFields = argJsonArray(args[2], 'find-unsupported-flag <set fields json array> [supported json array]');
       // 未設定のフィールドは parseArgs() の初期値（null、labels のみ空配列）に揃えておく必要が
       // ある。ここを省略すると dummyParsed[field] が undefined のままになり、
       // findUnsupportedFlagField() の isSet 判定（val !== null）が「undefined !== null」で
@@ -3189,7 +3243,7 @@ function main() {
       // 区間統合アルゴリズム単体テスト用（Issue #455）。入力はms単位の [start, end] 配列
       // （例: '[[0,100],[50,150],[200,250]]'）。内部でns相当に換算してcomputeGithubMs()を
       // 通し、結果をms単位の整数文字列で返す。Octokitスタブなしで区間統合の挙動を検証できる。
-      const intervalsMs = JSON.parse(args[1] || '[]');
+      const intervalsMs = argJsonArray(args[1], 'compute-github-ms <[[startMs,endMs],...]>');
       const intervalsNs = intervalsMs.map(([s, e]) => [BigInt(s) * 1000000n, BigInt(e) * 1000000n]);
       process.stdout.write(String(computeGithubMs(intervalsNs)));
       break;
@@ -3234,15 +3288,17 @@ function main() {
       break;
     }
     case 'home-path':       process.stdout.write(path.join(homeDir(), '.claude', args[1]||'')); break;
-    case 'gtd-label':       process.stdout.write(GTD_DISPLAY[args[1]] || args[1]); break;
+    case 'gtd-label':       requireArgs(args, 1, 'gtd-label <label>'); process.stdout.write(GTD_DISPLAY[args[1]] || args[1]); break;
 
     // バリデーション
+    // ctx / due / recur は値の未指定で未捕捉例外になるため、値を必須にする（'' は値として渡る。#2104）。
+    // number / name / title 等は未指定でも各 validate* が自前のエラーで止めるので従来どおり。
     case 'validate':
       switch (args[1]) {
-        case 'ctx':       validateCtx(args[2]); break;
+        case 'ctx':       requireArgs(args, 2, 'validate ctx <value>'); validateCtx(args[2]); break;
         case 'number':    validateNumber(args[2]); break;
-        case 'due':       validateDue(args[2]); break;
-        case 'recur':     validateRecur(args[2]); break;
+        case 'due':       requireArgs(args, 2, 'validate due <value>'); validateDue(args[2]); break;
+        case 'recur':     requireArgs(args, 2, 'validate recur <value>'); validateRecur(args[2]); break;
         case 'color':     validateColor(args[2]); break;
         case 'priority':  validatePriority(args[2]); break;
         case 'name':      validateName(args[2]); break;
@@ -3256,41 +3312,46 @@ function main() {
       }
       break;
 
-    // 集計・表示（env vars 経由）
-    case 'list-all':        listAll({ open: envOpen(), today: process.env.TODAY_ENV, filters: envListFilters() }); break;
-    case 'list-summary':    listSummary({ open: envOpen(), today: process.env.TODAY_ENV }); break;
-    case 'weekly-summary':  weeklySummary({ open: envOpen(), today: process.env.TODAY_ENV }); break;
-    case 'stats':           stats({ open: envOpen(), closed: envClosed(), today: process.env.TODAY_ENV }); break;
+    // 集計・表示（env vars 経由。TODAY_ENV は必須。#2104）
+    case 'list-all':        listAll({ open: envOpen(), today: envToday(cmd), filters: envListFilters() }); break;
+    case 'list-summary':    listSummary({ open: envOpen(), today: envToday(cmd) }); break;
+    case 'weekly-summary':  weeklySummary({ open: envOpen(), today: envToday(cmd) }); break;
+    case 'stats':           stats({ open: envOpen(), closed: envClosed(), today: envToday(cmd) }); break;
     case 'help':            help(); break;
-    case 'today':           renderToday({ open: envOpen(), today: process.env.TODAY_ENV, closed: envClosed() }); break;
-    case 'eisenhower':      eisenhower({ open: envOpen(), today: process.env.TODAY_ENV }); break;
-    case 'dashboard':       dashboard({ open: envOpen(), today: process.env.TODAY_ENV, closed: envClosed() }); break;
-    case 'report':          report({ open: envOpen(), closed: envClosed(), today: process.env.TODAY_ENV, days: process.env.DAYS_ENV }); break;
-    case 'done-count':      doneCount({ closed: envClosed(), today: process.env.TODAY_ENV }); break;
+    case 'today':           renderToday({ open: envOpen(), today: envToday(cmd), closed: envClosed() }); break;
+    case 'eisenhower':      eisenhower({ open: envOpen(), today: envToday(cmd) }); break;
+    case 'dashboard':       dashboard({ open: envOpen(), today: envToday(cmd), closed: envClosed() }); break;
+    case 'report':          report({ open: envOpen(), closed: envClosed(), today: envToday(cmd), days: process.env.DAYS_ENV }); break;
+    case 'done-count':      doneCount({ closed: envClosed(), today: envToday(cmd) }); break;
 
-    // テンプレート管理
-    case 'template':
+    // テンプレート管理（名前を取るものは TNAME_ENV 必須。未設定のまま保存すると "undefined" という
+    // 名前のテンプレートができてしまう。#2104）
+    case 'template': {
+      const tname = () => envRequired('TNAME_ENV', 'TNAME_ENV=<name> todo-engine.js template ' + args[1]);
       switch (args[1]) {
         case 'list':      templateList(); break;
-        case 'show':      templateShow(process.env.TNAME_ENV); break;
-        case 'save':      templateSave(process.env.TNAME_ENV, envTemplateFields()); break;
-        case 'save-from': templateSaveFrom(process.env.TNAME_ENV, envTemplateFields(), process.env.ISSUE_NUM_ENV); break;
-        case 'use':       templateUse(process.env.TNAME_ENV); break;
-        case 'delete':    templateDelete(process.env.TNAME_ENV); break;
+        case 'show':      templateShow(tname()); break;
+        case 'save':      templateSave(tname(), envTemplateFields()); break;
+        case 'save-from': templateSaveFrom(tname(), envTemplateFields(), process.env.ISSUE_NUM_ENV); break;
+        case 'use':       templateUse(tname()); break;
+        case 'delete':    templateDelete(tname()); break;
         default: exitWith('Unknown template subcommand: '+args[1]);
       }
       break;
+    }
 
-    // ビュー管理
-    case 'view':
+    // ビュー管理（名前を取るものは VNAME_ENV 必須。#2104）
+    case 'view': {
+      const vname = () => envRequired('VNAME_ENV', 'VNAME_ENV=<name> todo-engine.js view ' + args[1]);
       switch (args[1]) {
-        case 'save':   viewSave(process.env.VNAME_ENV, envViewFilters()); break;
-        case 'use':    viewUse(process.env.VNAME_ENV); break;
+        case 'save':   viewSave(vname(), envViewFilters()); break;
+        case 'use':    viewUse(vname()); break;
         case 'list':   viewList(); break;
-        case 'delete': viewDelete(process.env.VNAME_ENV); break;
+        case 'delete': viewDelete(vname()); break;
         default: exitWith('Unknown view subcommand: '+args[1]);
       }
       break;
+    }
 
     // Octokit API
     case 'api': {
@@ -4616,6 +4677,8 @@ async function fetchOpenByCategory(octokit, owner, repo, category) {
   return [...byNum.values()].sort((a, b) => b.number - a.number);
 }
 
+// 件数指定の closed 取得（listForRepo の既定順 = 作成日の降順の先頭 limit 件）。#2152 以降の呼び出し元は api list-closed だけ
+// （外部インターフェースなので挙動を変えない）。期間内の完了を数える経路は fetchClosedSince、最近閉じた順の一覧は fetchLatestClosed を使う
 async function fetchRecentClosed(octokit, owner, repo, limit, fields) {
   const allIssues = [];
   let page = 1;
@@ -4636,7 +4699,7 @@ async function fetchRecentClosed(octokit, owner, repo, limit, fields) {
   });
 }
 
-// report 用: sinceIso 以降に更新された closed Issue を全ページ取得する（#2138）。
+// report / dashboard / today / stats 用: sinceIso 以降に更新された closed Issue を全ページ取得する（#2138。#2152 で report 以外にも使う）。
 // fetchRecentClosed（件数指定）は listForRepo の既定順 = 作成日の降順で先頭から数えるため、
 // 「期間内に閉じた Issue」を取り切れる保証がない（古く作られて最近閉じた Issue は後ろのページにある）。
 // GitHub の since は updated_at で絞り込む。close すると updated_at も更新されるので
@@ -4665,6 +4728,30 @@ async function fetchClosedSince(octokit, owner, repo, sinceIso) {
     number: i.number, closedAt: i.closed_at||null, title: i.title, body: i.body||'',
     labels: i.labels.map(l => ({name:l.name})),
   }));
+}
+
+// fetchClosedSince に渡す since（todayStr の daysBack 日前の 00:00Z）を作る（#2152）。
+// 呼び出し側は「集計に要る最も古い日」より1日手前を渡す（JST の日付境界とタイムゾーン差の吸収。範囲外は表示層が closedAt で落とす）
+function closedSinceIso(todayStr, daysBack) {
+  const d = new Date(todayStr);
+  d.setDate(d.getDate() - daysBack);
+  return d.toISOString().slice(0, 10) + 'T00:00:00Z';
+}
+
+// archive list 用: 閉じた日時の新しい順に limit 件を返す（#2152）。
+// fetchRecentClosed は作成日の降順の先頭 limit 件なので、「最近閉じた Issue」の一覧にならない（古く作られて最近閉じた Issue が出ない）。
+// GitHub は closed_at で並べられないため、updated の降順で1ページ（100件）取り、closedAt の降順に並べ直して先頭 limit 件にする。
+// close で updated_at も更新されるので、直近 limit 件に入る Issue は updated の上位に来る（閉じた後にコメント・ラベル変更された
+// 古い Issue が 100 件以上割り込むと押し出されうる。一覧表示用なので許容し、ページングはしない）。
+async function fetchLatestClosed(octokit, owner, repo, limit) {
+  const { data } = await octokit.issues.listForRepo({ owner, repo, state: 'closed', sort: 'updated', direction: 'desc', per_page: 100, page: 1 });
+  return data.filter(i => !i.pull_request && i.closed_at)
+    .sort((a, b) => b.closed_at.localeCompare(a.closed_at))
+    .slice(0, limit)
+    .map(i => ({
+      number: i.number, closedAt: i.closed_at, title: i.title, body: i.body||'',
+      labels: i.labels.map(l => ({name:l.name})),
+    }));
 }
 
 // close 後の共通後処理（recur再作成 + depends_on昇格 + プロジェクト昇格候補ヒント）
@@ -4738,7 +4825,11 @@ async function postDoneProcessing(octokit, owner, repo, num, issue) {
   // そのためガードなしで常に fetchAllOpen を実行し、依存関係を確認する
   // （#1299 が #1275 完了後に昇格しなかった不具合の修正）。
   {
-    const allOpenIssues = await fetchAllOpen(octokit, owner, repo);
+    // #2171: close 直後でも GitHub の一覧 API（listForRepo state=open）は反映が遅れ、
+    // 完了したばかりの Issue 自身を返すことがある（実例: done 2113 の昇格候補ヒントに #2113 が出た）。
+    // close→fetch の順序だけでは防げないため、完了番号を明示的に除外する。
+    const allOpenIssues = (await fetchAllOpen(octokit, owner, repo))
+      .filter(i => Number(i.number) !== Number(num));
 
     // depends_on: #N 昇格トリガー — 完了した Issue を依存先とするオープン Issue を next に昇格
     {
@@ -5063,9 +5154,16 @@ async function runComment(octokit, owner, repo, tokens) {
     // #2134: 次のトークンが別のフラグの字面なら値として読まない（parseArgs の hasVal と同じ。
     // 読むと `--body --zzz` が本文 '--zzz' として投稿された）。読まなかった --body は下の分岐でエラーになる
     const hasVal = i + 1 < rest.length && !UNKNOWN_FLAG_RE.test(rest[i + 1]);
+    // #2170: 同じフラグを異なる値で2回渡したら、後勝ちで黙って採用せずエラーにする（parseArgs の #2113 と同じメッセージ）。同じ値の重複は通す
     if (tok === '--body' && hasVal) {
+      if (bodyOpt !== null && bodyOpt !== rest[i + 1]) {
+        exitWith([tpl('error.duplicate_flag', { flag: '--body', first: bodyOpt, second: rest[i + 1] }), t('error.duplicate_flag_hint')]);
+      }
       bodyOpt = rest[i + 1]; i++;
     } else if (tok === '--body-file' && hasVal) {
+      if (bodyFileOpt !== null && bodyFileOpt !== rest[i + 1]) {
+        exitWith([tpl('error.duplicate_flag', { flag: '--body-file', first: bodyFileOpt, second: rest[i + 1] }), t('error.duplicate_flag_hint')]);
+      }
       bodyFileOpt = rest[i + 1]; i++;
     } else if (UNKNOWN_FLAG_RE.test(tok) || findEqualsFormFlag([tok], false)) {
       // 未知のフラグ、または値が欠落した既知フラグ（末尾の --body-file 等）。
@@ -5081,6 +5179,12 @@ async function runComment(octokit, owner, repo, tokens) {
     }
   }
 
+  // #2170: 位置引数と --body / --body-file の併用はエラー（従来は位置引数を黙って捨てていた）。
+  // --body と --body-file の両方指定は別扱いで、従来どおり --body-file を優先する（マニュアル記載の仕様）
+  if (words.length > 0 && (bodyOpt !== null || bodyFileOpt !== null)) {
+    exitWith([tpl('error.comment_body_conflict', { flag: bodyFileOpt !== null ? '--body-file' : '--body' }), t('error.comment_body_conflict_hint')]);
+  }
+
   let text;
   if (bodyFileOpt !== null) {
     // --body-file 優先（runAdd と同じ挙動・同じエラーメッセージを再利用）
@@ -5089,7 +5193,7 @@ async function runComment(octokit, owner, repo, tokens) {
     text = bodyOpt;
   } else {
     // 従来形式: 位置引数。1語（Claude が単一トークンとして渡す形）はそのまま、複数語は空白でつなぐ（#2113）。
-    // --body / --body-file があるときはそちらが優先され、位置引数は採用されない（W26-11 で固定済みの仕様）
+    // 位置引数と --body / --body-file の併用は上でエラーにしている（#2170）
     text = words.join(' ');
   }
 
@@ -5576,7 +5680,7 @@ async function runArchive(octokit, owner, repo, tokens) {
   const sub = tokens[0] || 'list';
   if (sub === 'list') {
     const filter = tokens[1] || '';
-    const closed = await fetchRecentClosed(octokit, owner, repo, 30, null);
+    const closed = await fetchLatestClosed(octokit, owner, repo, 30);
     let items = closed;
     if (filter && (GTD_LABELS.includes(filter) || filter === PROJECT_LABEL)) {
       items = closed.filter(i => i.labels && i.labels.some(l => normLabel(l.name) === filter));
@@ -5612,11 +5716,14 @@ async function runArchive(octokit, owner, repo, tokens) {
   }
 }
 
+// #2152: dashboard / today / stats の完了数は closed を期間（since）で取る。旧: fetchRecentClosed の件数固定（30 / 50件・作成日の降順）で、
+// 古く作られて最近閉じた Issue と、件数を超えた分が数えられなかった。窓は表示層の判定に合わせる:
+// 7日（d7ago = today の UTC 0時の7日前）は8日前から、今日（closedAt の JST 日付）は1日前から取る
 async function runDashboard(octokit, owner, repo) {
   const today = getToday();
   const [open, closed] = await Promise.all([
     fetchAllOpen(octokit, owner, repo, { parallel: true }),
-    fetchRecentClosed(octokit, owner, repo, 30, ['closedAt','number'])
+    fetchClosedSince(octokit, owner, repo, closedSinceIso(today, 8))
   ]);
   dashboard({ open, today, closed });
 }
@@ -5625,7 +5732,7 @@ async function runToday(octokit, owner, repo) {
   const today = getToday();
   const [open, closed] = await Promise.all([
     fetchAllOpen(octokit, owner, repo, { parallel: true }),
-    fetchRecentClosed(octokit, owner, repo, 30, ['closedAt','number'])
+    fetchClosedSince(octokit, owner, repo, closedSinceIso(today, 1))
   ]);
   renderToday({ open, today, closed });
 }
@@ -5641,7 +5748,7 @@ async function runStats(octokit, owner, repo) {
   const todayStr = getToday();
   const [open, closed] = await Promise.all([
     fetchAllOpen(octokit, owner, repo, { parallel: true }),
-    fetchRecentClosed(octokit, owner, repo, 50, ['closedAt'])
+    fetchClosedSince(octokit, owner, repo, closedSinceIso(todayStr, 8))
   ]);
   stats({ open, closed, today: todayStr });
 }
@@ -5670,9 +5777,7 @@ async function runReport(octokit, owner, repo, tokens) {
   // #2138: closed は件数（旧: 200件固定）ではなく期間の開始日で取る。開始日は report() と同じ計算
   // （days の正規化 `parseInt || 7` も同じ）。JST の日付境界とタイムゾーン差を吸収するため1日手前から取る
   // （範囲外は report() が closedAt の JST 日付で落とす）
-  const sinceDate = new Date(todayStr);
-  sinceDate.setDate(sinceDate.getDate() - (parseInt(days) || 7) - 1);
-  const sinceIso = sinceDate.toISOString().slice(0, 10) + 'T00:00:00Z';
+  const sinceIso = closedSinceIso(todayStr, (parseInt(days) || 7) + 1);
   const [open, closed] = await Promise.all([
     fetchAllOpen(octokit, owner, repo, { parallel: true }),
     fetchClosedSince(octokit, owner, repo, sinceIso)
@@ -6850,7 +6955,7 @@ module.exports = {
   findBracketedGtdLabel, guardBracketedGtdLabel, findUnsupportedFlagField, guardUnsupportedFlag,
   guardExtraPositional, guardNoExtra, parseArgs, getToday, toJstDateStr, ensureLabel, fetchAndParseIssue,
   addSubIssue, listSubIssues, removeSubIssue, updateIssueBody, runOut, runAdd, runList,
-  fetchAllOpen, fetchOpenByCategory, labelNamesForCategory, fetchRecentClosed, fetchClosedSince, createRecurIssue, postDoneProcessing, runDone, execMoveGtd,
+  fetchAllOpen, fetchOpenByCategory, labelNamesForCategory, fetchRecentClosed, fetchClosedSince, closedSinceIso, fetchLatestClosed, createRecurIssue, postDoneProcessing, runDone, execMoveGtd,
   removeLabelIfPresent, execRemoveLabels, runMove, sanitizeCommentBody, assertCommentBody, createCommentSanitized, runComment, runEdit,
   runDue, runDesc, runRecur, runLink, runRename, runPriority, normalizeTagTokens, validateTagLabels, renameCtxLabel,
   runTag, runUntag, runLabel, runSearch, runArchive, runDashboard, runToday, runEisenhower,
@@ -6858,6 +6963,7 @@ module.exports = {
   runReviewSomeday, runPromote, runPromoteProject, runUnlink, runWeeklyProjectAudit,
   runMigrateSubIssue, reservedTitleGuardWord, reservedMultiwordFirstWord, runMain,
   envOpen, envClosed, envListFilters, envTemplateFields, envViewFilters,
+  envJsonArray, envToday, envRequired, requireArgs, argJsonArray,
   detectGtd, extractTags, parseActualOrExit, findEqualsFormFlag, ensurePriorityLabel, completeIssue, fetchParentProject, swapGtdLabel, replacePriorityLabel, getReviewedAt, getRecurValue, getBodyProjectNum,
   readBodyFileOrExit, ensureCtxLabel, ensureTagLabel,
   CTX_LABEL_COLOR, TAG_LABEL_COLOR, EXTRA_LABEL_COLOR, PROJECT_LABEL_COLOR,
