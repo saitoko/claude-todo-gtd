@@ -1477,25 +1477,17 @@ assert_eq "Daily Review: hour=23→evening" "evening" "$(detect_mode 23)"
 # Evening step1: closedAt フィルタ
 DR_CLOSED='[
   {"number":50,"title":"done-today-1","closedAt":"2026-04-05T10:00:00Z"},
-  {"number":51,"title":"done-today-2","closedAt":"2026-04-05T18:30:00Z"},
+  {"number":51,"title":"done-today-2","closedAt":"2026-04-04T16:00:00Z"},
   {"number":52,"title":"done-yesterday","closedAt":"2026-04-04T12:00:00Z"},
   {"number":53,"title":"done-old","closedAt":"2026-03-30T08:00:00Z"}
 ]'
-DR_TODAY_COUNT=$(TODAY_ENV="$TEST_TODAY" CLOSED_ENV="$DR_CLOSED" node -e "
-  const today=process.env.TODAY_ENV;
-  const closed=JSON.parse(process.env.CLOSED_ENV);
-  const cnt=closed.filter(i=>i.closedAt&&i.closedAt.slice(0,10)===today).length;
-  process.stdout.write(String(cnt));
-")
+# #2168: 旧ロジック（closedAt の UTC 日付 slice(0,10)）をテスト内で再現せず、本体の done-count（toJstDateStr, #1748）を呼ぶ。
+# #51 は UTC では 04-04 だが JST では 04-05 01:00。JST で数えれば 2件、UTC 日付で数える実装なら #51 を落として 1件になる。
+DR_TODAY_COUNT=$(TZ=Asia/Tokyo TODAY_ENV="$TEST_TODAY" CLOSED_ENV="$DR_CLOSED" node "$ENGINE" done-count)
 assert_eq "Daily Review: closedAt 今日=2件" "2" "$DR_TODAY_COUNT"
 
 # closedAt ゼロ件
-DR_ZERO_COUNT=$(TODAY_ENV="$TEST_TODAY" CLOSED_ENV='[{"number":60,"title":"old","closedAt":"2026-03-01T10:00:00Z"}]' node -e "
-  const today=process.env.TODAY_ENV;
-  const closed=JSON.parse(process.env.CLOSED_ENV);
-  const cnt=closed.filter(i=>i.closedAt&&i.closedAt.slice(0,10)===today).length;
-  process.stdout.write(String(cnt));
-")
+DR_ZERO_COUNT=$(TZ=Asia/Tokyo TODAY_ENV="$TEST_TODAY" CLOSED_ENV='[{"number":60,"title":"old","closedAt":"2026-03-01T10:00:00Z"}]' node "$ENGINE" done-count)
 assert_eq "Daily Review: closedAt 今日=0件" "0" "$DR_ZERO_COUNT"
 
 # Evening step3: 明日の due フィルタ

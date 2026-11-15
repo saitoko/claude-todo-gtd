@@ -101,6 +101,17 @@ create_issue() {
     | grep -oE '[0-9]+$'
 }
 
+# 閉じた Issue を本体（fetchClosedSince + closedSinceIso）と同じ方式で取る（#2168）。
+# --state closed --limit N は作成日順の先頭N件なので、閉じた Issue が増えると最近閉じたものが欠ける。
+# 引数: today（YYYY-MM-DD）/ daysBack（本体の呼び出しと同じ値）。出力: CLOSED_ENV 用の JSON 配列
+closed_since_json() {
+  local since
+  since=$(node -e "const d=new Date(process.argv[1]);d.setDate(d.getDate()-Number(process.argv[2]));process.stdout.write(d.toISOString().slice(0,10)+'T00:00:00Z')" "$1" "$2")
+  gh api -X GET "repos/${REPO}/issues" -f state=closed -f since="$since" -f per_page=100 --paginate \
+    --jq '.[] | select(.pull_request | not) | {number, title, body: (.body // ""), closedAt: .closed_at, labels: [.labels[] | {name}]}' \
+    | jq -s '.'
+}
+
 echo ""
 echo "=========================================="
 echo " GitHub接続テスト: $REPO"
@@ -955,7 +966,7 @@ echo "§W  stats コマンド（統計情報）"
 
 TODAY=$(date +%Y-%m-%d)
 STATS_OPEN=$(gh issue list --repo "$REPO" --state open --json number,title,body,labels --limit 200)
-STATS_CLOSED=$(gh issue list --repo "$REPO" --state closed --json closedAt --limit 200)
+STATS_CLOSED=$(closed_since_json "$TODAY" 8)  # runStats と同じ窓
 STATS_OUT=$(OPEN_ENV="$STATS_OPEN" CLOSED_ENV="$STATS_CLOSED" TODAY_ENV="$TODAY" LANG_ENV=ja node "$ENGINE_PATH" stats 2>/dev/null || true)
 
 STATS_TOTAL=$(printf '%s' "$STATS_OUT" | sed -nE 's/.*全タスク: ([0-9]+)件.*/\1/p')
@@ -1060,7 +1071,7 @@ track "$NUM_DASH3"
 
 sleep 2
 DASH_GH_OPEN=$(gh issue list --repo "$REPO" --state open --json number,title,body,labels --limit 200)
-DASH_GH_CLOSED=$(gh issue list --repo "$REPO" --state closed --limit 30 --json number,closedAt)
+DASH_GH_CLOSED=$(closed_since_json "$TODAY_GH" 8)  # runDashboard と同じ窓
 
 # 製品の dashboard コマンドを実行する。分類（overdue/today/inbox）は製品の判断に
 # 委ね、テスト側は出力テキストを見出し単位で分割して該当 Issue の有無・件数を
@@ -1208,7 +1219,7 @@ gh issue close "$NUM_RPT" --repo "$REPO" 2>/dev/null
 sleep 2
 
 RPT_OPEN_GH=$(gh issue list --repo "$REPO" --state open --json number,title,body,labels --limit 200)
-RPT_CLOSED_GH=$(gh issue list --repo "$REPO" --state closed --limit 200 --json number,title,labels,closedAt,body)
+RPT_CLOSED_GH=$(closed_since_json "$TODAY_GH" 8)  # runReport（weekly = 7日 + 1）と同じ窓
 
 # 製品の report コマンドを実行し、実出力から完了数・完了一覧を取得する。
 RPT_OUT=$(OPEN_ENV="$RPT_OPEN_GH" TODAY_ENV="$TODAY_GH" DAYS_ENV="7" CLOSED_ENV="$RPT_CLOSED_GH" LANG_ENV=ja \

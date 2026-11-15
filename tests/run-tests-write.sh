@@ -6198,26 +6198,26 @@ w58_open() {
   printf '{"number":%s,"id":9%s,"title":"W58 open %s","body":"%s","labels":[%s],"updated_at":"2026-10-01T00:00:00Z"}' "$n" "$n" "$n" "$body" "$ljson"
 }
 
-# ── T-e1: template use の親 project 確認（Issue 作成の「後」に確認し、失敗分岐は警告して exit 0） ──
+# ── T-e1: template use の親 project 確認（#2103 で Issue 作成の「前」に移動。project でない・404 は exit 1 で何も作らない、404 以外の取得失敗は警告して作成を続ける） ──
 mkdir -p "$W58_HOME/.claude"
 printf '%s' '{"w58tpl":{"gtd":"next","project":710}}' > "$W58_HOME/.claude/todo-templates.json"
 W58_CREATE='"issues.create":[{"data":{"number":71001,"id":971001,"html_url":"https://example.invalid/71001"}}]'
 
 w58_run "{\"$W58_L\":[{}],$W58_CREATE,\"issues.get\":[{\"data\":$(w58_issue 710 '📁 project')}],\"$W58_SUB\":[{\"data\":{}}]}" run template use w58tpl
 assert_exit_ok "W58 T-e1【対照】親が project: exit 0" "$W58_EC"
-assert_eq "W58 T-e1【対照】親が project: 作成 → 親取得 → sub-issue 登録の順" "LABEL? > issues.create > issues.get > SUB+" "$(w58_seq "$W58_LOG")"
+assert_eq "W58 T-e1【対照】親が project: 親取得 → 作成 → sub-issue 登録の順（#2103）" "issues.get > LABEL? > issues.create > SUB+" "$(w58_seq "$W58_LOG")"
 assert_not_contains "W58 T-e1【対照】警告は出ない" "is not a project" "$W58_ERR"
 
 w58_run "{\"$W58_L\":[{}],$W58_CREATE,\"issues.get\":[{\"data\":$(w58_issue 710 '🎯 next')}]}" run template use w58tpl
-assert_exit_ok "W58 T-e1 親が project でない: exit 0（警告して終わる）" "$W58_EC"
-assert_contains "W58 T-e1 親が project でない: warn.not_a_project" "⚠️ #710 is not a project" "$W58_ERR"
-assert_eq "W58 T-e1 親が project でない: Issue は作成済み・sub-issue 登録なし" "LABEL? > issues.create > issues.get" "$(w58_seq "$W58_LOG")"
-assert_contains "W58 T-e1 親が project でない: 作成完了メッセージは出ている" "Created Issue #71001" "$W58_OUT"
+assert_exit_fail "W58 T-e1 親が project でない: exit 1（#2103）" "$W58_EC"
+assert_contains "W58 T-e1 親が project でない: error.not_a_project" "#710 is not a project" "$W58_ERR"
+assert_eq "W58 T-e1 親が project でない: 親取得だけで止まり何も作らない（#2103）" "issues.get" "$(w58_seq "$W58_LOG")"
 
 w58_run "{\"$W58_L\":[{}],$W58_CREATE,\"issues.get\":[$W58_E500]}" run template use w58tpl
-assert_exit_ok "W58 T-e1 親の取得失敗: exit 0（警告して終わる）" "$W58_EC"
-assert_contains "W58 T-e1 親の取得失敗: warn.project_fetch_failed" "⚠️ Failed to fetch project #710: boom" "$W58_ERR"
-assert_eq "W58 T-e1 親の取得失敗: Issue は作成済み・sub-issue 登録なし" "LABEL? > issues.create > issues.get" "$(w58_seq "$W58_LOG")"
+assert_exit_ok "W58 T-e1 親の取得失敗（5xx）: exit 0（警告して作成を続ける）" "$W58_EC"
+assert_contains "W58 T-e1 親の取得失敗（5xx）: warn.project_fetch_failed" "⚠️ Failed to fetch project #710: boom" "$W58_ERR"
+assert_eq "W58 T-e1 親の取得失敗（5xx）: Issue は作成・sub-issue 登録なし・親の再取得もしない" "issues.get > LABEL? > issues.create" "$(w58_seq "$W58_LOG")"
+assert_contains "W58 T-e1 親の取得失敗（5xx）: 作成完了メッセージは出ている" "Created Issue #71001" "$W58_OUT"
 
 # ── T-e2: migrate sub-issue の親確認（取得失敗 → errors / project でない → skipped） ──
 W58_MIG_LIST="\"issues.listForRepo\":[{\"data\":[$(w58_open 721 '🎯 next' 'project: #720\n')]}]"
@@ -8097,6 +8097,99 @@ rm -f "$_W68_TMP" "$_W68_TMP.err"
 W68_N=$((PASS-W68_P0))
 if [ "$W68_N" -lt 130 ]; then
   printf "  ❌ §W68 アサーション数が少なすぎる (%s 件。130 件未満は検査の空振りとみなす)\n" "$W68_N"; FAIL=$((FAIL+1))
+fi
+
+# ── §W69 Issue #2103: 親 project の確認は書き込みより前（template use / add --project）。404 は止める、それ以外の取得失敗は警告して続ける ──
+# 型: 「親 project を作成後に確認している」「404 とそれ以外を区別していない」。
+# 親が project でない / 存在しない（404）なら、書き込み系 API（issues.create / createLabel / sub_issues 登録）を1回も呼ばず exit 1。
+# 404 以外の取得失敗（5xx 等）は従来どおり警告して作成を続ける。link / migrate sub-issue は変えていない（W58 T-e2 / T-e3 が固定）。
+echo ""
+echo "§W69  親 project の確認は書き込みより前（Issue #2103）"
+
+W69_P0=$PASS
+W69_HOME=$(mktemp -d /tmp/todo-test-w69-XXXXXX)
+W69_LOG="$W69_HOME/stub.jsonl"
+W69_E404='{"__throw":true,"status":404,"message":"Not Found"}'
+W69_E500='{"__throw":true,"status":500,"message":"boom"}'
+W69_LBL='GET /repos/{owner}/{repo}/labels/{name}'
+W69_SUB='POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues'
+W69_CREATE='"issues.create":[{"data":{"number":69001,"id":969001,"html_url":"https://example.invalid/69001"}}]'
+mkdir -p "$W69_HOME/.claude"
+printf '%s' '{"w69tpl":{"gtd":"next","context":["@w69ctx"],"project":690}}' > "$W69_HOME/.claude/todo-templates.json"
+
+w69_run() { # <responses-json> -- <args...>
+  case "$W69_HOME" in
+    /tmp/todo-test-w69-??????) : ;;
+    *) printf "  ❌ W69 隔離 HOME を作れていないため実行しない (%s)\n" "$W69_HOME"; FAIL=$((FAIL+1)); W69_OUT=""; W69_ERR=""; W69_EC=99; return 1 ;;
+  esac
+  : > "$W69_LOG"
+  local resp="$1"; shift
+  shift  # --
+  W69_OUT=$(env -u LANG_ENV HOME="$W69_HOME" LANG_ENV=en OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$resp" OCTOKIT_STUB_LOG_ENV="$W69_LOG" \
+    TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-11-15 \
+    node "$ENGINE" "$@" 2>"$W69_HOME/stderr"); W69_EC=$?
+  W69_ERR=$(cat "$W69_HOME/stderr")
+}
+# 書き込み系 API（ラベル作成を含む）+ sub-issue 登録の呼び出し回数の合計
+w69_writes() {
+  local n=0 m
+  for m in issues.create issues.update issues.addLabels issues.removeLabel issues.createLabel issues.createComment "$W69_SUB"; do
+    n=$((n + $(log_count "$W69_LOG" "$m")))
+  done
+  echo "$n"
+}
+w69_issue() { # <num> <label>
+  printf '{"data":{"number":%s,"id":%s,"title":"W69 %s","body":"","labels":[{"name":"%s"}],"state":"open"}}' "$1" "$((1000+$1))" "$1" "$2"
+}
+W69_NEWLBL="\"$W69_LBL\":[$W69_E404,$W69_E404],\"issues.createLabel\":[{},{}]"
+
+# template use: 親が project でない
+w69_run "{$W69_NEWLBL,$W69_CREATE,\"issues.get\":[$(w69_issue 690 '🎯 next')],\"$W69_SUB\":[{\"data\":{}}]}" -- run template use w69tpl
+assert_eq "W69-1 template use 親が project でない: exit 1" "1" "$W69_EC"
+assert_contains "W69-1 template use 親が project でない: error.not_a_project" "Error: #690 is not a project" "$W69_ERR"
+assert_eq "W69-1 template use 親が project でない: 書き込み系 API は0回（ラベルも Issue も作らない）" "0" "$(w69_writes)"
+assert_not_contains "W69-1 template use 親が project でない: 作成完了メッセージを出さない" "Created Issue" "$W69_OUT"
+# template use: 親が 404
+w69_run "{$W69_NEWLBL,$W69_CREATE,\"issues.get\":[$W69_E404],\"$W69_SUB\":[{\"data\":{}}]}" -- run template use w69tpl
+assert_eq "W69-2 template use 親が 404: exit 1" "1" "$W69_EC"
+assert_contains "W69-2 template use 親が 404: error.project_fetch_failed" "Error: Failed to fetch project #690: Not Found" "$W69_ERR"
+assert_eq "W69-2 template use 親が 404: 書き込み系 API は0回" "0" "$(w69_writes)"
+# template use: 親が 5xx → 警告して作成を続ける（sub-issue 登録は省く）
+w69_run "{$W69_NEWLBL,$W69_CREATE,\"issues.get\":[$W69_E500],\"$W69_SUB\":[{\"data\":{}}]}" -- run template use w69tpl
+assert_eq "W69-3 template use 親が 5xx: exit 0（作成を続ける）" "0" "$W69_EC"
+assert_contains "W69-3 template use 親が 5xx: 警告" "⚠️ Failed to fetch project #690: boom" "$W69_ERR"
+assert_eq "W69-3 template use 親が 5xx: issues.create 1回" "1" "$(log_count "$W69_LOG" issues.create)"
+assert_eq "W69-3 template use 親が 5xx: sub-issue 登録は0回" "0" "$(log_count "$W69_LOG" "$W69_SUB")"
+# template use 対照: 親が project なら 親取得 → 作成 → sub-issue 登録
+w69_run "{$W69_NEWLBL,$W69_CREATE,\"issues.get\":[$(w69_issue 690 '📁 project')],\"$W69_SUB\":[{\"data\":{}}]}" -- run template use w69tpl
+assert_eq "W69-4 template use 親が project（対照）: exit 0" "0" "$W69_EC"
+assert_eq "W69-4 template use 親が project（対照）: issues.create 1回 + sub-issue 登録 1回" "2" "$(( $(log_count "$W69_LOG" issues.create) + $(log_count "$W69_LOG" "$W69_SUB") ))"
+assert_eq "W69-4 template use 親が project（対照）: 親の取得は1回だけ（作成後に取り直さない）" "1" "$(log_count "$W69_LOG" issues.get)"
+
+# add --project: 親が 404
+w69_run "{$W69_NEWLBL,$W69_CREATE,\"issues.get\":[$W69_E404],\"$W69_SUB\":[{\"data\":{}}]}" -- run add next w69child @w69ctx --project 690
+assert_eq "W69-5 add --project 親が 404: exit 1" "1" "$W69_EC"
+assert_contains "W69-5 add --project 親が 404: error.project_fetch_failed" "Error: Failed to fetch project #690: Not Found" "$W69_ERR"
+assert_eq "W69-5 add --project 親が 404: 書き込み系 API は0回" "0" "$(w69_writes)"
+# add --project: 親が 5xx → 警告して作成を続ける
+w69_run "{$W69_NEWLBL,$W69_CREATE,\"issues.get\":[$W69_E500],\"$W69_SUB\":[{\"data\":{}}]}" -- run add next w69child @w69ctx --project 690
+assert_eq "W69-6 add --project 親が 5xx: exit 0（作成を続ける）" "0" "$W69_EC"
+assert_contains "W69-6 add --project 親が 5xx: 警告" "⚠️ Failed to fetch project #690: boom" "$W69_ERR"
+assert_eq "W69-6 add --project 親が 5xx: issues.create 1回" "1" "$(log_count "$W69_LOG" issues.create)"
+assert_eq "W69-6 add --project 親が 5xx: sub-issue 登録は0回" "0" "$(log_count "$W69_LOG" "$W69_SUB")"
+# add --project: 親が project でない（#2102 (c) の挙動が変わっていない対照）
+w69_run "{$W69_NEWLBL,$W69_CREATE,\"issues.get\":[$(w69_issue 690 '🎯 next')]}" -- run add next w69child @w69ctx --project 690
+assert_eq "W69-7 add --project 親が project でない（対照）: exit 1" "1" "$W69_EC"
+assert_eq "W69-7 add --project 親が project でない（対照）: 書き込み系 API は0回" "0" "$(w69_writes)"
+
+# link は変えない: 親が 404 でも exit 1（従来どおり project_fetch_failed）。migrate sub-issue は 404 でも errors に数えて続行
+w69_run "{\"issues.get\":[$(w69_issue 691 '🎯 next'),$W69_E404]}" -- run link 691 692
+assert_eq "W69-8 link 親が 404: exit 1（従来どおり）" "1" "$W69_EC"
+assert_contains "W69-8 link 親が 404: error.project_fetch_failed" "Error: Failed to fetch project #692: Not Found" "$W69_ERR"
+rm -rf "$W69_HOME"
+W69_N=$((PASS-W69_P0))
+if [ "$W69_N" -lt 25 ]; then
+  printf "  ❌ §W69 アサーション数が少なすぎる (%s 件。25 件未満は検査の空振りとみなす)\n" "$W69_N"; FAIL=$((FAIL+1))
 fi
 
 echo ""

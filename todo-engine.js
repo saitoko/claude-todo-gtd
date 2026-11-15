@@ -4360,6 +4360,10 @@ async function runAdd(octokit, owner, repo, tokens) {
     const parentNum = parseInt(parsed.project);
     const parent = await fetchParentProject(octokit, owner, repo, parentNum);
     if (parent.status === 'fetch_failed') {
+      // #2103: 404（存在しない番号）は何も作らず exit 1。それ以外の取得失敗（ネットワーク断・5xx 等）は警告して続行
+      if (parent.error && parent.error.status === 404) {
+        exitWith(tpl('error.project_fetch_failed', { num: parentNum, msg: parent.error.message }));
+      }
       process.stderr.write(tpl('warn.project_fetch_failed', { num: parentNum, msg: parent.error.message })+'\n');
     } else {
       if (parent.status === 'not_project') {
@@ -5914,6 +5918,25 @@ async function runTemplate(octokit, owner, repo, tokens) {
     const desc = tmpl.desc || '';
     const title = overrideTitle || name;
 
+    // #2103: 親 project の確認は Issue 作成・ラベル作成より前に行う（add --project と同じ挙動）。
+    // 親が project でない / 存在しない（404）なら何も作らず exit 1。404 以外の取得失敗は警告して作成を続ける
+    // （本文の project: #N で親子関係は残る。sub-issue 登録だけ省く）
+    let parentVerified = false;
+    if (proj) {
+      const parentNum = parseInt(proj);
+      const parent = await fetchParentProject(octokit, owner, repo, parentNum);
+      if (parent.status === 'fetch_failed') {
+        if (parent.error && parent.error.status === 404) {
+          exitWith(tpl('error.project_fetch_failed', { num: parentNum, msg: parent.error.message }));
+        }
+        process.stderr.write(tpl('warn.project_fetch_failed', { num: parentNum, msg: parent.error.message })+'\n');
+      } else if (parent.status === 'not_project') {
+        exitWith(tpl('error.not_a_project', { num: parentNum }));
+      } else {
+        parentVerified = true;
+      }
+    }
+
     const labels = [GTD_DISPLAY[gtd]];
     for (const ctx of contexts) {
       await ensureCtxLabel(octokit, owner, repo, ctx);
@@ -5943,19 +5966,9 @@ async function runTemplate(octokit, owner, repo, tokens) {
     if (due) createdMsg += '\n' + tpl('add.due_line', { due });
     runOut(createdMsg);
 
-    // sub-issue 登録（テンプレートに project が含まれる場合）
-    if (proj) {
-      const parentNum = parseInt(proj);
-      const parent = await fetchParentProject(octokit, owner, repo, parentNum);
-      if (parent.status === 'fetch_failed') {
-        process.stderr.write(tpl('warn.project_fetch_failed', { num: parentNum, msg: parent.error.message })+'\n');
-        return;
-      }
-      if (parent.status === 'not_project') {
-        process.stderr.write(tpl('warn.not_a_project', { num: parentNum })+'\n');
-        return;
-      }
-      await addSubIssue(octokit, owner, repo, parentNum, newIssue.id);
+    // sub-issue 登録（親は作成前に確認済み。取得失敗で続行した場合は登録を省く）
+    if (parentVerified) {
+      await addSubIssue(octokit, owner, repo, parseInt(proj), newIssue.id);
     }
   } else if (sub === 'delete') {
     const name = tokens[1];
