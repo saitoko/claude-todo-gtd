@@ -16,6 +16,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `comment` に位置引数の本文と `--body` / `--body-file` を一緒に渡したとき、位置引数を黙って捨てて投稿せず、エラー終了するようにした（Issue #2170）。従来は `comment 42 hello --body world` が「world」だけを投稿し、「hello」は失われていた。今後は書き込みの前に「本文の指定方法を1つにしてください」で終了コード 1 になり、投稿しない。あわせて `--body` / `--body-file` を異なる値で2回渡したときも、後の値を採用せず `--body が異なる値で複数回指定されています: A / B` でエラー終了する（#2113 の `parseArgs` と同じメッセージ。同じ値の重複は通る）。変えていないもの: `--body` と `--body-file` を両方付けたときに `--body-file` を使う挙動、位置引数だけのときに語を空白でつなぐ挙動（#2113）。
 - `comment` の位置引数の本文が複数の語に分かれていたとき、先頭の1語だけでなくすべてを空白でつないで投稿するようにした（Issue #2113）。従来は `comment 42 hello world` が「hello」だけを投稿し、「world」を黙って捨てていた（`desc` と `rename` は余った語を連結する）。1語だけの場合と、空白を含む1つの引数として渡した場合は変わらない。`--body` / `--body-file` を指定したときは従来どおりそちらが優先され、位置引数の語は使われない（`--body-file` が `--body` より優先される点も変えていない）
 
+- `template use` と `add --project` の親 project の確認が、Issue・ラベルを作る前にそろうようにした（Issue #2103）。従来の `template use` は Issue を作った後で親を確認していたため、親が project でなくても Issue が作られ、警告を出して終了コード 0 で終わっていた。`add --project` は親が project でなければ作成前に止まっていたが、親の番号が存在しない（404）場合は警告して作成を続けていた。今後は、親が project でない場合も、親が存在しない（404）場合も、`template use` と `add --project` のどちらも、ラベル・Issue を1つも作らずエラーメッセージを出して終了コード 1 になる。404 以外の取得失敗（ネットワーク断・5xx 等）は従来どおり警告して作成を続ける（本文の `project: #N` で親子関係が残るため、sub-issue の登録だけを省く）。`template use` は作成後に親を取り直すのをやめ、作成前に確認した結果で sub-issue を登録する。`link` と `migrate sub-issue` の挙動は変えていない（`link` は取得失敗で終了コード 1、`migrate sub-issue` は1件ずつスキップする設計のまま）。
+
 ### Fixed
 
 - `done` の直後に出るプロジェクト昇格候補のヒントに、いま完了したばかりの Issue 自身が並ぶことがあったのを直した（Issue #2171）。Issue を閉じた後にオープン Issue の一覧を取り直しているが、GitHub の一覧 API は閉じた直後の状態をすぐには反映せず、閉じた Issue を返すことがあった。今後は完了した番号を一覧から明示的に除く。`done` / `bulk done` / `api done-issue` の3経路とも同じ後処理を通るため、すべてに効く。depends_on による next への自動昇格の挙動は変わらない。
