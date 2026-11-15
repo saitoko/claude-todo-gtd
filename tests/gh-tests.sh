@@ -123,7 +123,8 @@ echo "§A  優先度ラベル作成（p1/p2/p3）"
 # ─────────────────────────────────────────────
 
 for PRI in p1 p2 p3; do
-  PCOLOR=$(case "$PRI" in p1) echo B60205;; p2) echo FBCA04;; p3) echo 0075CA;; esac)
+  # bash 3.2 は $( ) 内の case のパターンを閉じる ) をコマンド置換の終わりと誤認するため、case を外に出す（#2190）
+  case "$PRI" in p1) PCOLOR=B60205;; p2) PCOLOR=FBCA04;; p3) PCOLOR=0075CA;; esac
   gh label create "$PRI" --repo "$REPO" --color "$PCOLOR" --description "優先度" 2>/dev/null || true
 done
 
