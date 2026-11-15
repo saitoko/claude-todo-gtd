@@ -356,6 +356,9 @@ For calling the GitHub REST API directly from iOS Shortcuts, see scenario 40 in 
 bash tests/run-tests.sh
 
 # GitHub integration tests (creates/manipulates real issues)
+# Creates the labels it needs and runs with a temporary HOME, so your own
+# ~/.claude/todo-templates.json is not touched. Requires `gh auth login` (or GH_TOKEN)
+# and @octokit/rest installed via `npm install --prefix ~/.claude @octokit/rest`.
 bash tests/gh-tests.sh
 ```
 

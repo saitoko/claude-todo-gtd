@@ -33,9 +33,51 @@ ENGINE_PATH="$SCRIPT_DIR/scripts/todo-engine.js"
 [ -f "$ENGINE_PATH" ] || ENGINE_PATH="$SCRIPT_DIR/todo-engine.js"  # 公開リポジトリはルート直下レイアウト
 
 # run サブコマンド（実 @octokit/rest 経由）は GH_TOKEN/GITHUB_TOKEN を直接参照し、
-# gh auth token への自動フォールバックを持たない。gh CLI が認証済みであることを前提に
-# ここで1度だけ取得し、run サブコマンドを直接呼び出すテスト全箇所で使い回す。
-GH_TOKEN_LIVE="$(gh auth token 2>/dev/null || true)"
+# gh auth token への自動フォールバックを持たない。GH_TOKEN / GITHUB_TOKEN が設定済みなら
+# それを使い、なければ gh CLI の認証から1度だけ取得して、run サブコマンドを直接呼び出す
+# テスト全箇所で使い回す。HOME を隔離する前（下のブロックより前）に取得する必要がある
+# （gh の認証情報は HOME 配下の設定ファイルに保存されているため）。
+GH_TOKEN_LIVE="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+[ -n "$GH_TOKEN_LIVE" ] || GH_TOKEN_LIVE="$(gh auth token 2>/dev/null || true)"
+if [ -z "$GH_TOKEN_LIVE" ]; then
+  echo "エラー: GitHub のトークンを取得できません。gh auth login を実行するか GH_TOKEN を設定してください。" >&2
+  echo "ERROR: no GitHub token. Run 'gh auth login' or set GH_TOKEN." >&2
+  exit 1
+fi
+export GH_TOKEN="$GH_TOKEN_LIVE"
+
+# ─── HOME の隔離 ───────────────────────────────────────────
+# テストは ~/.claude/todo-templates.json（テンプレート）を読み書きする。本物の HOME のまま
+# 流すと利用者のテンプレートを書き換えるため、一時ディレクトリを HOME にして実行する。
+# - gh の認証は上で取得した GH_TOKEN を export して引き継ぐ
+# - エンジンは ~/.claude/node_modules の @octokit/rest を読むので、元の ~/.claude/node_modules を
+#   一時 HOME の .claude/node_modules から symlink で参照させる
+#   （導入手順は npm install --prefix ~/.claude @octokit/rest。元 HOME は $HOME から解決する）
+ORIG_HOME="$HOME"
+TEST_HOME=""
+cleanup_test_home() {
+  # symlink（node_modules）は rm -rf でリンクだけが消え、参照先は消えない
+  if [ -n "${TEST_HOME:-}" ] && [ -d "$TEST_HOME" ]; then
+    rm -rf "$TEST_HOME"
+  fi
+}
+setup_test_home() {
+  local base="${TMPDIR:-/tmp}"
+  base="$(cd "$base" && pwd)"  # macOS の TMPDIR は末尾 / を含むため正規化する
+  TEST_HOME="$(mktemp -d "$base/todo-gh-tests-home-XXXXXX")" || return 1
+  mkdir -p "$TEST_HOME/.claude"
+  if [ -d "$ORIG_HOME/.claude/node_modules" ]; then
+    ln -s "$ORIG_HOME/.claude/node_modules" "$TEST_HOME/.claude/node_modules"
+  else
+    echo "警告: ${ORIG_HOME}/.claude/node_modules がありません。run 系テストは失敗します（npm install --prefix ~/.claude @octokit/rest）" >&2
+  fi
+  export HOME="$TEST_HOME"
+}
+trap cleanup_test_home EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+setup_test_home || { echo "エラー: 一時 HOME を作成できません" >&2; exit 1; }
+# ────────────────────────────────────────────────────────────
 
 # 絵文字ラベル変数（Windows環境でのシェル渡し問題を回避）
 LBL_NEXT="🎯 next"
@@ -89,6 +131,32 @@ wait_field() {
   return 1
 }
 
+# 一覧・検索の結果に Issue 番号が現れる（present）／消える（absent）まで再取得を繰り返す。
+# 書き込み直後の一覧は反映が遅れることがあるため、wait_field の一覧版として使う。
+# usage: wait_listed <present|absent> "<番号 ...>" <command...>
+#   command の出力は「番号の配列」または「number を持つオブジェクトの配列」の JSON
+#   present: 全番号が現れるまで / absent: 全番号が消えるまで（最大15回）
+# 結果（最後に取得した出力）は WAIT_RESULT に格納
+wait_listed() {
+  local mode="$1" nums="$2" max=15 i=0 n found nums_out all_ok
+  shift 2
+  WAIT_RESULT=""
+  while [ "$i" -lt "$max" ]; do
+    WAIT_RESULT=$("$@" 2>/dev/null || true)
+    nums_out=$(printf '%s' "$WAIT_RESULT" | jq -r 'if type=="array" then .[] else empty end | if type=="object" then .number else . end' 2>/dev/null || true)
+    all_ok=1
+    for n in $nums; do
+      found=0
+      printf '%s\n' "$nums_out" | grep -qx "$n" && found=1
+      if [ "$mode" = "present" ] && [ "$found" -ne 1 ]; then all_ok=0; fi
+      if [ "$mode" = "absent" ] && [ "$found" -ne 0 ]; then all_ok=0; fi
+    done
+    [ "$all_ok" -eq 1 ] && return 0
+    i=$((i+1)); sleep 1
+  done
+  return 1
+}
+
 # ショートカット: よく使うフィールドの jq フィルタ
 LABELS_FILTER='[.labels[].name] | join(",")'
 BODY_FILTER='.body'
@@ -119,13 +187,23 @@ echo "=========================================="
 
 # ─────────────────────────────────────────────
 echo ""
-echo "§A  優先度ラベル作成（p1/p2/p3）"
+echo "§A  前提ラベル作成（優先度 p1/p2/p3 と GTD ラベル）"
 # ─────────────────────────────────────────────
 
 for PRI in p1 p2 p3; do
   # bash 3.2 は $( ) 内の case のパターンを閉じる ) をコマンド置換の終わりと誤認するため、case を外に出す（#2190）
   case "$PRI" in p1) PCOLOR=B60205;; p2) PCOLOR=FBCA04;; p3) PCOLOR=0075CA;; esac
   gh label create "$PRI" --repo "$REPO" --color "$PCOLOR" --description "優先度" 2>/dev/null || true
+done
+
+# テストが gh issue create --label に渡すラベルは、gh CLI では存在しないと
+# "could not add label: ... not found" で失敗するため、ここで先にすべて作る（既存なら無視）。
+# - GTD ラベル7種: 本体の GTD_DISPLAY と同じ表記
+# - 絵文字なし "next": テストの大半（27箇所）が --label "next" で作成し、テンプレートの保存元の
+#   GTD 判定（jq の . == "next"）も絵文字なしの名前を前提にしている。本体は絵文字を除いて
+#   正規化して同じ GTD として扱う（normLabel）ため、そのまま前提ラベルとして作る
+for GL in "$LBL_NEXT" "🔁 routine" "$LBL_INBOX" "$LBL_WAITING" "$LBL_SOMEDAY" "$LBL_PROJECT" "$LBL_REFERENCE" "next"; do
+  gh label create "$GL" --repo "$REPO" --color EDEDED --description "GTD" 2>/dev/null || true
 done
 
 LABELS=$(gh label list --repo "$REPO" --json name -q '[.[].name] | join(",")' 2>/dev/null)
@@ -699,6 +777,7 @@ NUM_RECUR2=$(create_issue "[test] recurコマンドテスト" --label "next" --l
 track "$NUM_RECUR2"
 
 # recur set: weekly を設定
+wait_field "$NUM_RECUR2" body "$BODY_FILTER" match "due: $TODAY"
 CURRENT=$(gh issue view "$NUM_RECUR2" --repo "$REPO" --json body -q '.body' 2>/dev/null)
 DUE_VAL=$(echo "$CURRENT" | grep '^due: ' | sed 's/^due: //')
 PROJECT_VAL=$(echo "$CURRENT" | grep '^project: #' | sed 's/^project: #//')
@@ -941,10 +1020,10 @@ echo "§V  search コマンド（オープンIssue検索）"
 NUM_SEARCH=$(create_issue "[test] 検索テスト用ユニークキーワードXQ7" --label "next" --label "p3" --body "test")
 track "$NUM_SEARCH"
 
-# キーワード検索（GitHub APIの反映を待つ）
-sleep 3
-SEARCH_RESULT=$(gh issue list --repo "$REPO" --state open --search "ユニークキーワードXQ7" \
-  --json number -q '[.[].number] | join(",")' 2>/dev/null)
+# キーワード検索（検索インデックスの反映をポーリングで待つ。最後まで出なければ従来どおり skip）
+wait_listed present "$NUM_SEARCH" gh issue list --repo "$REPO" --state open --search "ユニークキーワードXQ7" \
+  --json number -q '[.[].number]'
+SEARCH_RESULT=$(printf '%s' "$WAIT_RESULT" | jq -r 'join(",")' 2>/dev/null || true)
 if echo "$SEARCH_RESULT" | grep -q "$NUM_SEARCH"; then
   ok "search: キーワードで検索ヒット (#$NUM_SEARCH)"
 else
@@ -967,7 +1046,9 @@ echo "§W  stats コマンド（統計情報）"
 
 TODAY=$(date +%Y-%m-%d)
 STATS_OPEN=$(gh issue list --repo "$REPO" --state open --json number,title,body,labels --limit 200)
-STATS_CLOSED=$(closed_since_json "$TODAY" 8)  # runStats と同じ窓
+# §R でクローズした Issue が閉じた一覧に出るまで待つ
+wait_listed present "$NUM_BD1 $NUM_BD2 $NUM_BD3" closed_since_json "$TODAY" 8  # runStats と同じ窓
+STATS_CLOSED="$WAIT_RESULT"
 STATS_OUT=$(OPEN_ENV="$STATS_OPEN" CLOSED_ENV="$STATS_CLOSED" TODAY_ENV="$TODAY" LANG_ENV=ja node "$ENGINE_PATH" stats 2>/dev/null || true)
 
 STATS_TOTAL=$(printf '%s' "$STATS_OUT" | sed -nE 's/.*全タスク: ([0-9]+)件.*/\1/p')
@@ -1070,8 +1151,9 @@ track "$NUM_DASH2"
 NUM_DASH3=$(create_issue "[test] dashboard inbox" --label "📥 inbox" --body "test")
 track "$NUM_DASH3"
 
-sleep 2
-DASH_GH_OPEN=$(gh issue list --repo "$REPO" --state open --json number,title,body,labels --limit 200)
+# 作成した3件が open 一覧に出るまでポーリングする（固定 sleep では足りないことがある）
+wait_listed present "$NUM_DASH1 $NUM_DASH2 $NUM_DASH3" gh issue list --repo "$REPO" --state open --json number,title,body,labels --limit 200
+DASH_GH_OPEN="$WAIT_RESULT"
 DASH_GH_CLOSED=$(closed_since_json "$TODAY_GH" 8)  # runDashboard と同じ窓
 
 # 製品の dashboard コマンドを実行する。分類（overdue/today/inbox）は製品の判断に
@@ -1217,10 +1299,12 @@ echo "§AC  Report 統合テスト（Pro機能）"
 NUM_RPT=$(create_issue "[test] report テスト" --label "next" --label "p3" --body "test")
 track "$NUM_RPT"
 gh issue close "$NUM_RPT" --repo "$REPO" 2>/dev/null
-sleep 2
 
-RPT_OPEN_GH=$(gh issue list --repo "$REPO" --state open --json number,title,body,labels --limit 200)
-RPT_CLOSED_GH=$(closed_since_json "$TODAY_GH" 8)  # runReport（weekly = 7日 + 1）と同じ窓
+# クローズが一覧に反映されるまでポーリングする（固定 sleep では足りないことがある）
+wait_listed present "$NUM_RPT" closed_since_json "$TODAY_GH" 8  # runReport（weekly = 7日 + 1）と同じ窓
+RPT_CLOSED_GH="$WAIT_RESULT"
+wait_listed absent "$NUM_RPT" gh issue list --repo "$REPO" --state open --json number,title,body,labels --limit 200
+RPT_OPEN_GH="$WAIT_RESULT"
 
 # 製品の report コマンドを実行し、実出力から完了数・完了一覧を取得する。
 RPT_OUT=$(OPEN_ENV="$RPT_OPEN_GH" TODAY_ENV="$TODAY_GH" DAYS_ENV="7" CLOSED_ENV="$RPT_CLOSED_GH" LANG_ENV=ja \
@@ -1982,9 +2066,11 @@ track "$M2_NEXT_NUM"
 if [ -n "$M2_NEXT_NUM" ]; then
   # gh api で next ラベルフィルタ取得を検証
   # URL エンコード: 🎯 next → %F0%9F%8E%AF%20next
-  M2_TODAY_RESULT=$(gh api \
+  # 作成直後は一覧に出るまで遅れることがあるのでポーリングする
+  wait_listed present "$M2_NEXT_NUM" gh api \
     "repos/${REPO}/issues?labels=%F0%9F%8E%AF%20next&state=open&per_page=20" \
-    --jq '[.[].number]' 2>/dev/null || echo "[]")
+    --jq '[.[].number]'
+  M2_TODAY_RESULT="${WAIT_RESULT:-[]}"
 
   if echo "$M2_TODAY_RESULT" | grep -q "$M2_NEXT_NUM"; then
     ok "M2-2: today 取得に newly 作成の next Issue (#$M2_NEXT_NUM) が含まれる"
@@ -2039,10 +2125,11 @@ if [ -n "$M2_NEXT_NUM" ]; then
   fi
 
   # closed Issue は next 一覧から消えることを確認
-  sleep 1
-  M2_TODAY_AFTER=$(gh api \
+  # クローズが一覧に反映されるまでポーリングする
+  wait_listed absent "$M2_NEXT_NUM" gh api \
     "repos/${REPO}/issues?labels=%F0%9F%8E%AF%20next&state=open&per_page=20" \
-    --jq '[.[].number]' 2>/dev/null || echo "[]")
+    --jq '[.[].number]'
+  M2_TODAY_AFTER="${WAIT_RESULT:-[]}"
   if echo "$M2_TODAY_AFTER" | grep -q "$M2_NEXT_NUM"; then
     fail "M2-3: クローズ後も next 一覧に残っている" "一覧: $M2_TODAY_AFTER"
   else

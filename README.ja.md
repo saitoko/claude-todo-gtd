@@ -353,6 +353,8 @@ iOS Shortcuts から GitHub REST API を直接呼び出す場合は `tests/scena
 bash tests/run-tests.sh
 
 # GitHub統合テスト（実際にIssueを作成・操作）
+# 必要なラベルは自動作成し、一時 HOME で実行するので自分の ~/.claude/todo-templates.json は変更されません。
+# `gh auth login`（または GH_TOKEN）と、`npm install --prefix ~/.claude @octokit/rest` での @octokit/rest 導入が前提です。
 bash tests/gh-tests.sh
 ```
 
