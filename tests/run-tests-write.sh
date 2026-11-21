@@ -5487,6 +5487,32 @@ assert_eq "W42-12【核心】issues.create は呼ばれない（孤児 Issue を
 assert_eq "W42-12: ラベル作成系の API も呼ばれない" "0" "$(log_count "$W42_12_LOG" 'GET /repos/{owner}/{repo}/labels/{name}')"
 rm -f "$W42_12_LOG"
 
+# W42-13 edit --project は廃止（#2192）。Issue 取得（issues.get）も更新（issues.update）も
+# 呼ばず exit 1 し、/todo link への誘導を表示する。親確認なしの body 書き換えを許さない。
+W42_13_LOG=$(mktemp /tmp/todo-test-w42-13-XXXXXX)
+W42_13_RESP='{"issues.get":[{"data":{"number":70070,"title":"T","body":"","labels":[{"name":"🎯 next"}]}}],"issues.update":[{"data":{}}]}'
+W42_13_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W42_13_RESP" OCTOKIT_STUB_LOG_ENV="$W42_13_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run edit 70070 --project 70071 2>&1); W42_13_EC=$?
+assert_exit_fail "W42-13 edit --project(#2192): exit 1" "$W42_13_EC"
+assert_contains "W42-13: link への誘導（修正例）" "/todo link 70070 70071" "$W42_13_OUT"
+assert_eq "W42-13【核心】issues.get は呼ばれない（取得前に止まる）" "0" "$(log_count "$W42_13_LOG" issues.get)"
+assert_eq "W42-13【核心】issues.update は呼ばれない（本文を書き換えない）" "0" "$(log_count "$W42_13_LOG" issues.update)"
+# W42-13b 他フラグとの併用でも止まる / --project の値が非数でも同じ誘導（番号検証より先）
+W42_13B_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W42_13_RESP" OCTOKIT_STUB_LOG_ENV="$W42_13_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run edit 70070 --due 2026-12-01 --project abc 2>&1); W42_13B_EC=$?
+assert_exit_fail "W42-13b edit --due X --project abc: exit 1" "$W42_13B_EC"
+assert_contains "W42-13b: link への誘導" "/todo link 70070" "$W42_13B_OUT"
+assert_eq "W42-13b: 書き込み系 API は呼ばれない" "0" "$(log_count "$W42_13_LOG" issues.update)"
+# W42-13c --project なしの edit は従来どおり更新される（回帰）
+W42_13C_OUT=$(OCTOKIT_STUB_ENV="$STUB" OCTOKIT_STUB_RESPONSES_ENV="$W42_13_RESP" OCTOKIT_STUB_LOG_ENV="$W42_13_LOG" \
+  TODO_REPO_OWNER=test-owner TODO_REPO_NAME=test-repo TODAY=2026-04-05 \
+  node "$ENGINE" run edit 70070 --due 2026-12-01 2>&1); W42_13C_EC=$?
+assert_exit_ok "W42-13c edit --due のみ: exit 0（回帰）" "$W42_13C_EC"
+assert_eq "W42-13c: issues.update が1回呼ばれる" "1" "$(log_count "$W42_13_LOG" issues.update)"
+rm -f "$W42_13_LOG"
+
 # W42-12b 親が project のとき: 従来どおり作成され sub-issue 登録される
 W42_12B_LOG=$(mktemp /tmp/todo-test-w42-12b-XXXXXX)
 W42_12B_RESP='{"GET /repos/{owner}/{repo}/labels/{name}":[{}],"issues.create":[{"data":{"number":70062,"id":970062,"html_url":"https://example.invalid/70062"}}],"issues.get":[{"data":{"number":70063,"title":"Proj","body":"","labels":[{"name":"📁 project"}]}}],"POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues":[{"data":{}}]}'
@@ -5876,6 +5902,7 @@ const NOGUARD_PROBES = {
     const lines = r.stderr.split('\n');
     let good;
     if (c.supported) good = !r.stderr.includes(msg('ja', 'error.flag_not_supported', { flag })) && Array.isArray(r.log);
+    else if (c.k === 'edit' && c.f === 'project') good = r.code === 1 && r.stderr.includes(msg('ja', 'error.edit_project_removed', { num: '42', parent: '5' })) && Array.isArray(r.log) && r.log.length === 0; // #2192: 汎用エラーでなく /todo link への専用誘導
     else good = r.code === 1 && lines.length === 4 && lines[0].startsWith('Usage: ') && lines[1] === msg('ja', 'error.flag_not_supported', { flag })
       && lines[2] === msg('ja', 'error.flag_not_supported_hint', { flag, commands }) && lines[3] === '' && Array.isArray(r.log) && r.log.length === 0;
     const p = perSpec[c.k] = perSpec[c.k] || { n: 0, bad: [] };
@@ -6096,7 +6123,6 @@ w57_route "run link (project)"    0 -- run link 42 @N@
 w57_route "run archive reopen"    0 -- run archive reopen @N@
 W57_SKIP_EMPTY=1 w57_route "run template save from" 0 -- run template save w57tpl from @N@
 # フラグの値として番号を取る経路（--project / --depends-on。後者は先頭 # を従来から許す）
-w57_route "run edit --project"     0 -- run edit 42 --project @N@
 w57_route "run edit --depends-on"  1 -- run edit 42 --depends-on @N@
 W57_SKIP_EMPTY=1 w57_route "run add --project"      0 -- run add w57-title --project @N@
 # 従来から厳密だった経路（回帰確認）

@@ -486,6 +486,7 @@ const MESSAGES = {
     'error.no_project_link': 'エラー: #{num} にプロジェクト紐付けがありません。',
     'link.unlinked': '✅ #{num} のプロジェクト紐付けを解除しました。',
     'error.unlink_mismatch': 'エラー: #{num} の body は project: #{parent} を指していますが、GitHub 上その親には sub-issue として登録されていません。body のみ解除する場合は /todo unlink {num} --force を実行してください。',
+    'error.edit_project_removed': 'エラー: /todo edit の --project は廃止されました（親 project を確認せず body だけを書き換えるため）。親 project の設定・変更は /todo link を使ってください。\n  例: /todo link {num} {parent}',
     'error.unlink_failed': 'エラー: #{num} の sub-issue 解除に失敗したため、body は更新していません。',
     'error.unlink_list_failed': 'エラー: #{num} の sub-issue 一覧取得（親 #{parent}）に失敗したため、body は更新していません。時間をおいて再実行してください。',
     'link.unlinked_mismatch': '⚠️ #{num} のプロジェクト紐付け（body）のみ解除しました（GitHub 上の sub-issue 関係は元々ありませんでした）。',
@@ -883,6 +884,7 @@ const MESSAGES = {
     'error.no_project_link': 'Error: #{num} has no project link.',
     'link.unlinked': '✅ #{num} project link removed.',
     'error.unlink_mismatch': 'Error: #{num} body points to project: #{parent}, but it is not registered as a sub-issue of that parent on GitHub. To remove the body link only, run /todo unlink {num} --force.',
+    'error.edit_project_removed': 'Error: --project of /todo edit has been removed (it rewrote only the body without checking the parent project). To set or change the parent project, use /todo link.\n  Example: /todo link {num} {parent}',
     'error.unlink_failed': 'Error: Failed to unlink sub-issue for #{num}; body was not updated.',
     'error.unlink_list_failed': 'Error: Failed to fetch sub-issue list (parent #{parent}) for #{num}; body was not updated. Please retry later.',
     'link.unlinked_mismatch': '⚠️ #{num} project link (body) removed only (there was no matching sub-issue relation on GitHub).',
@@ -3798,7 +3800,7 @@ const COMMAND_SPECS = {
   },
   'edit': {
     helpKey: 'edit',
-    supportedFields: ['due','recur','project','desc','estimate','before',
+    supportedFields: ['due','recur','desc','estimate','before',
       'activate','dependsOn','resumeCondition','priority'],
     unknownFlag: { slots: { extra: HINT_OPTIONS } },
     extraPositional: { hint: EXTRA_SINGLE },
@@ -5214,10 +5216,16 @@ async function runEdit(octokit, owner, repo, tokens) {
   if (!num) { exitWith(t('error.positive_int')); }
   assertIssueNumberArg(tokens[0]);
   const parsed = parseArgs(tokens.slice(1));
+  // #2192: edit --project は親 project を確認せず body の `project: #N` だけを書き換えていた
+  // （非 project への紐付け・sub-issue 未登録の不整合）。廃止して /todo link へ誘導する。
+  // Issue 取得・更新より前に落とす（本文は一切書き換えない）。
+  if (parsed.project !== null) {
+    exitWith(tpl('error.edit_project_removed', { num: String(num), parent: parsed.project || '<project-#>' }));
+  }
   // #1921 パターンB: 未知フラグ（`--duee` 等のタイポ・値欠落した既知フラグ）を黙って捨てず、
   // Issue 取得より前に落とす。edit は自由記述の位置引数を持たないため許可リストは空。
   const EDIT_USAGE = 'Usage: /todo edit <#> [--due <date>] [--desc <text>] [--recur <pattern>] '
-                   + '[--priority p1|p2|p3] [--p1|--p2|--p3] [--project <#>] [--estimate <time>] '
+                   + '[--priority p1|p2|p3] [--p1|--p2|--p3] [--estimate <time>] '
                    + '[--activate <date>] [--before <duration>] [--depends-on <#>] [--resume-condition <text>]';
   guardUnknownFlag(parsed.extra, [], EDIT_USAGE, 'error.unknown_flag_hint_options');
   // #1934 パート1: runEdit が実際に読むのは due/recur/project/desc/estimate/before/
@@ -5248,7 +5256,6 @@ async function runEdit(octokit, owner, repo, tokens) {
     if (parsed.recur === 'clear') { recur = ''; changed.push('recur → '+t('edit.clear')); }
     else { validateRecur(parsed.recur); recur = parsed.recur; changed.push('recur → '+recur); }
   }
-  if (parsed.project !== null) { validateNumber(parsed.project); project = parsed.project; changed.push('project → #'+project); }
   if (parsed.desc !== null) { desc = parsed.desc; changed.push('desc → '+desc); }
   if (parsed.estimate !== null) {
     const em = parseTime(parsed.estimate);

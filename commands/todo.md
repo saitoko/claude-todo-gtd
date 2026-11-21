@@ -118,7 +118,7 @@ GTD ラベルは `next` / `routine` / `inbox` / `waiting` / `someday` / `referen
 | `list` | `[GTD] [@ctx] [#tag] [p1\|p2\|p3] [project <番号>] [--group] [--no-due] [--no-estimate] [--json]` | タスク一覧（フィルタ組み合わせ可）。`--group` で期限別グルーピング表示。`--no-due` で期限未設定のタスクのみ表示（`--group` より優先）。`--no-estimate` で見積もり未設定のタスクのみ表示。`--json` で JSON 出力（他フラグと併用可） |
 | `done` | `<#> [--actual 時間] [--note "テキスト"]` | タスク完了（recurあれば次のIssue自動作成）。`--note` を指定すると close 後にコメントを追加（振り返りメモ等） |
 | `move` | `<#> <GTD> [--note "テキスト"]` | GTDカテゴリ変更。`--note` を指定するとラベル変更後にコメントを追加（降格理由等）。`routine` への移動は移動先Issueが既に `recur` を持つことが必須（未設定ならエラー。先に `edit --recur` で設定する） |
-| `edit` | `<#> [--due 日付] [--desc テキスト] [--recur パターン\|clear] [--priority p1\|p2\|p3\|clear\|--p1\|--p2\|--p3] [--project 番号] [--estimate 時間] [--activate 日付] [--before 期間] [--depends-on 番号] [--resume-condition テキスト]` | 複数フィールド一括編集（後半4つの使い方は「チクラーファイル」節を参照） |
+| `edit` | `<#> [--due 日付] [--desc テキスト] [--recur パターン\|clear] [--priority p1\|p2\|p3\|clear\|--p1\|--p2\|--p3] [--estimate 時間] [--activate 日付] [--before 期間] [--depends-on 番号] [--resume-condition テキスト]` | 複数フィールド一括編集（後半4つの使い方は「チクラーファイル」節を参照）。親 project の設定・変更は `--project` ではなく `/todo link <#> <project-#>` を使う（`edit --project` は親確認なしに body だけを書き換えるため廃止。指定すると Issue 取得前にエラー終了する。Issue #2192） |
 | `rename` | `<#> <新タイトル>` | タイトル変更 |
 | `due` | `<#> <日付>` | 期日設定。日付に空白を含む場合はクォートする（例: `due 42 "今週 金曜"`）。クォートせず値の後に余分な引数を渡すとエラー終了する |
 | `desc` | `<#> <テキスト>` | 説明に追記（上書きは `edit --desc` を使う）。テキスト省略はエラー |
