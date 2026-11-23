@@ -22,13 +22,11 @@ GitHub Issues をバックエンドに使った、Claude Code 用の GTD（Getti
 
 ## インストール
 
-### プラグインインストール（マーケットプレイス審査中）
+### プラグインインストール（Anthropic Directory）
 
-> **注意:** claude-todo-gtd は Claude Code コミュニティマーケットプレイスへ申請済みで、現在審査中です。掲載されるまで下記コマンドは動作しません。それまでは[下記の手順](#前提条件)による手動インストールをご利用ください。
+claude-todo-gtd は Anthropic Directory に掲載されています。プラグインの一覧画面（Claude Code では `/plugin`、Claude アプリではプラグイン画面）で **claude-todo-gtd** を検索してインストールしてください。
 
-```bash
-claude plugin install claude-todo-gtd@claude-community
-```
+> **注意:** ディレクトリの掲載版は最新リリースより遅れることがあります。最新版を使う場合は[下記の手順](#前提条件)による手動インストールをご利用ください。
 
 インストール後、タスクを保存するプライベート GitHub リポジトリを作成し、下記の環境変数を設定してください（手順の3〜4を参照）。
 

@@ -21,13 +21,11 @@ Just type `/todo` to add, manage, and review tasks entirely from the terminal.
 
 ## Installation
 
-### Plugin install (under marketplace review)
+### Plugin install (Anthropic Directory)
 
-> **Note:** claude-todo-gtd has been submitted to the Claude Code community marketplace and is under review. Until it is listed, the command below will not work. Please use the [manual install](#manual-install) in the meantime.
+claude-todo-gtd is listed in the Anthropic Directory. Open the plugin browser (`/plugin` in Claude Code, or the plugins screen in the Claude app), search for **claude-todo-gtd**, and install it.
 
-```bash
-claude plugin install claude-todo-gtd@claude-community
-```
+> **Note:** The directory listing may lag behind the latest release. To get the newest version, use the [manual install](#manual-install).
 
 After installing, create a private GitHub repository to store your tasks and set the environment variables below (see step 3–4 of the manual install).
 
