@@ -32,6 +32,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - Anthropic Directory 向けの配布用ブランチ `directory` を新設した。v2.10.0 は Directory の検証で「許可リスト外のファイル（.js / .sh / .example）」「ユーザーの端末の資格情報を読む記述」「256 KB 超で検査できないファイル」を理由に差し戻されたため、プラグインとして動作するのに必要な `.claude-plugin/plugin.json` / `commands/todo.md` / `LICENSE` / `README.md` の4ファイルだけを直下に置いたブランチを `scripts/build-directory-branch.sh` で生成する（README の原本は `plugin-dist/README.md`）。スクリプトは拡張子・先頭の `#!`・256 KiB 未満・UTF-8 と NUL バイト・資格情報を連想させる文字列を検証し、1つでも違反すれば何もコミットしない。履歴は書き換えず、2回目以降は新しいコミットを積む。push はしない。
 - `.claude-plugin/plugin.json` の version を 2.10.1 にし、description から CLI mode (todo.sh) の言及を外した（プラグインとして働くのは `commands/todo.md` と GitHub MCP のみのため）。CLI 版の使い方は従来どおり README の手動インストールを参照。
+- プラグインのアイコン `.claude-plugin/icon.png`（512×512 の PNG。PWA と同じ絵柄）を追加し、`directory` ブランチの配布物に含めるようにした（Directory の「No icon」警告への対応）。`scripts/build-directory-branch.sh` は、アイコンについて PNG の署名・512〜2048 px の正方形・2 MB 未満・zip データを含まないことを検証する。
 
 ---
 

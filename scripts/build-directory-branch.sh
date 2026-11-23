@@ -8,6 +8,7 @@
 #   commands/todo.md             <- from main
 #   LICENSE                      <- from main
 #   README.md                    <- from plugin-dist/README.md on main
+#   .claude-plugin/icon.png      <- from main (square PNG, 512-2048 px, < 2 MB)
 #
 # - First run creates an orphan branch; later runs add a new commit on top of the
 #   existing branch. History is never rewritten (no force push is needed).
@@ -26,8 +27,10 @@ MAX_BYTES=262144
 FORBIDDEN='GH_TOKEN|GITHUB_TOKEN|gh auth token|github-token|\.env'
 
 # destination path in the distribution branch | source path in main
-DIST_DEST=(".claude-plugin/plugin.json" "commands/todo.md" "LICENSE" "README.md")
-DIST_SRC=(".claude-plugin/plugin.json" "commands/todo.md" "LICENSE" "plugin-dist/README.md")
+DIST_DEST=(".claude-plugin/plugin.json" "commands/todo.md" "LICENSE" "README.md" ".claude-plugin/icon.png")
+DIST_SRC=(".claude-plugin/plugin.json" "commands/todo.md" "LICENSE" "plugin-dist/README.md" ".claude-plugin/icon.png")
+ICON=".claude-plugin/icon.png"
+MAX_ICON_BYTES=2097152
 
 TMPBASE=""
 WT=""
@@ -47,6 +50,25 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# validate_icon <file>: PNG signature, square 512-2048 px, < 2 MB, no zip data.
+validate_icon() {
+  local f="$1" sig size w h
+  sig="$(head -c 8 "${f}" | od -An -tx1 | tr -d ' \n')" || die "validate: cannot read ${ICON}"
+  [ "${sig}" = "89504e470d0a1a0a" ] || die "validate: ${ICON} is not a PNG"
+  size="$(wc -c < "${f}" | tr -d ' ')" || die "validate: cannot get size of ${ICON}"
+  case "${size}" in ''|*[!0-9]*) die "validate: bad size for ${ICON}: '${size}'" ;; esac
+  [ "${size}" -lt "${MAX_ICON_BYTES}" ] || die "validate: ${ICON} is ${size} bytes (limit ${MAX_ICON_BYTES})"
+  # IHDR width/height are big-endian 32-bit integers at byte offsets 16 and 20.
+  w="$(od -An -j16 -N4 -tu1 "${f}" | awk 'NF{print ($1*16777216)+($2*65536)+($3*256)+$4; exit}')" || die "validate: cannot read ${ICON} width"
+  h="$(od -An -j20 -N4 -tu1 "${f}" | awk 'NF{print ($1*16777216)+($2*65536)+($3*256)+$4; exit}')" || die "validate: cannot read ${ICON} height"
+  case "${w}${h}" in ''|*[!0-9]*) die "validate: bad dimensions for ${ICON}: '${w}x${h}'" ;; esac
+  [ "${w}" = "${h}" ] || die "validate: ${ICON} is not square (${w}x${h})"
+  [ "${w}" -ge 512 ] && [ "${w}" -le 2048 ] || die "validate: ${ICON} is ${w}px (allowed 512-2048)"
+  if LC_ALL=C grep -q -a "$(printf 'PK\003\004')" "${f}"; then
+    die "validate: ${ICON} looks like it holds a zip archive"
+  fi
+}
+
 # validate_dir <dir>: every check fails closed (an unreadable result is a failure).
 validate_dir() {
   local dir="$1" f rel expected actual size nul_free total head2 rc
@@ -59,12 +81,17 @@ validate_dir() {
   if [ "${expected}" != "${actual}" ]; then
     echo "expected:" >&2; echo "${expected}" >&2
     echo "actual:" >&2; echo "${actual}" >&2
-    die "validate: file set differs from the allowed 4 files"
+    die "validate: file set differs from the allowed ${#DIST_DEST[@]} files"
   fi
 
   for rel in "${DIST_DEST[@]}"; do
     f="${dir}/${rel}"
     [ -f "${f}" ] && [ -r "${f}" ] || die "validate: cannot read ${rel}"
+
+    if [ "${rel}" = "${ICON}" ]; then
+      validate_icon "${f}"
+      continue
+    fi
 
     # (b) extension: .md / .json, or the file named LICENSE
     case "${rel}" in
@@ -114,7 +141,7 @@ main() {
   mkdir -p "${staged}"
 
   # Take committed content only; refuse if the working tree differs for those paths.
-  for i in 0 1 2 3; do
+  for i in "${!DIST_DEST[@]}"; do
     blob="${DIST_SRC[${i}]}"
     git -C "${REPO_ROOT}" cat-file -e "HEAD:${blob}" 2>/dev/null || die "missing in HEAD: ${blob}"
     if [ -n "$(git -C "${REPO_ROOT}" status --porcelain -- "${blob}")" ]; then
@@ -146,7 +173,7 @@ main() {
   if [ -n "$(git -C "${WT}" ls-files)" ]; then
     git -C "${WT}" rm -rf --quiet -- . || die "cannot clear worktree"
   fi
-  for i in 0 1 2 3; do
+  for i in "${!DIST_DEST[@]}"; do
     mkdir -p "$(dirname "${WT}/${DIST_DEST[${i}]}")"
     cp "${staged}/${DIST_DEST[${i}]}" "${WT}/${DIST_DEST[${i}]}"
     git -C "${WT}" add -- "${DIST_DEST[${i}]}"
