@@ -50,6 +50,16 @@ cp todo-engine.js ~/.claude/todo-engine.js
 cp todo.sh ~/.claude/todo.sh
 ```
 
+### Directory 配布用ブランチ（`directory`）への反映
+
+Anthropic Directory は main ではなく **`directory` ブランチを追跡している**（プラグインに必要な4ファイルだけを直下に置いた配布用ブランチ。`.js` / `.sh` / `.example` などの許可リスト外のファイルや、資格情報を連想させる記述は Directory の検証で差し戻される）。リリース時は次の順で行う。
+
+1. `.claude-plugin/plugin.json` の version を上げ、PR を main にマージする
+2. main をチェックアウトした状態で `bash scripts/build-directory-branch.sh` を実行する（`commands/todo.md` / `plugin.json` / `LICENSE` / `plugin-dist/README.md`（→ `README.md`）を検証し、`directory` ブランチに新しいコミットを積む。履歴は書き換えない。push はしない）
+3. 表示された `git push origin directory` を実行する（force push は使わない）
+
+配布用 README の原本は `plugin-dist/README.md`。`GH_TOKEN` / `GITHUB_TOKEN` / `gh auth token` / `github-token` / `.env` に一致する行があるとスクリプトが拒否する。
+
 ## エンジンの構造（エントリポイントと export）
 
 `todo-engine.js` はコマンドラインから直接実行されたときだけ `main()` を呼ぶ（ファイル末尾の `if (require.main === module) main();`）。`require()` しても何も実行されず、純粋関数・定数・run ハンドラは `module.exports` から使える。
